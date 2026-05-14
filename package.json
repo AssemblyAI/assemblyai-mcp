@@ -1,0 +1,30 @@
+{
+  "name": "assemblyai-databricks-mcp",
+  "version": "0.1.0",
+  "description": "MCP server wrapping AssemblyAI for the Databricks Marketplace",
+  "type": "module",
+  "engines": {
+    "node": "24.15.0"
+  },
+  "scripts": {
+    "build": "next build",
+    "dev": "next dev",
+    "start": "next start",
+    "test": "tsx src/smoke-test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.26.0",
+    "mcp-handler": "1.1.0",
+    "next": "16.2.3",
+    "react": "19.2.5",
+    "react-dom": "19.2.5",
+    "zod": "4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "24.12.2",
+    "@types/react": "19.2.14",
+    "tsx": "4.21.0",
+    "typescript": "6.0.2"
+  }
+}

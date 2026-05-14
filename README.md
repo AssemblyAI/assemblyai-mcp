@@ -1,45 +1,41 @@
-# AssemblyAI MCP Server (Databricks connection-test MVP)
+# AssemblyAI Databricks MCP Server
 
-A minimal MCP server that wraps AssemblyAI's transcription API and exposes it
-to Databricks via the Marketplace MCP integration. The server speaks
-**Streamable HTTP** (the only transport Databricks supports for external MCP
-servers) and does **pass-through Bearer auth** — each Databricks user pastes
-their own AssemblyAI API key as the Bearer token in the HTTP connection. The
-server stores no AssemblyAI credentials.
+A minimal MCP server that wraps the AssemblyAI transcription API for the
+Databricks Marketplace. Built with Next.js 16 + `mcp-handler` + the official
+`@modelcontextprotocol/sdk`, deployed (eventually) as a Vercel serverless
+function. Mirrors the structure of AssemblyAI's docs MCP server for
+operational alignment.
 
 ## Tools
 
-- **`transcribe(audio_url, speaker_labels=False, summarization=False)`** —
-  submits the URL to AssemblyAI and blocks until the transcript is finished or
-  times out (5 min). Returns the transcript text plus optional speakers /
-  summary.
-- **`get_transcript(transcript_id)`** — re-fetches a previously submitted
-  transcript. Useful when `transcribe` times out on a long file.
+- **`submit_transcript(audio_url, speaker_labels?, summarization?)`** —
+  submits a public URL to AssemblyAI and returns `{ transcript_id, status }`
+  immediately. Does **not** block on polling.
+- **`get_transcript(transcript_id)`** — single fetch of the current state.
+  The agent polls this in a loop (~every 3s) until `status` is `completed`
+  or `error`.
 
-## Quickstart (local)
+## Auth: pass-through Bearer
 
-Requires Python 3.11+ and [uv](https://docs.astral.sh/uv/).
+Databricks always prepends `Bearer ` to the token configured in the HTTP
+connection. AssemblyAI's REST API expects the raw key (no `Bearer ` prefix).
+`withMcpAuth` extracts the token, strips the prefix, and threads it into
+every tool callback via `extra.authInfo.token`. The tool calls AssemblyAI
+with `Authorization: <key>` (no prefix). No keys are written to disk or
+shared between requests.
+
+## Local dev
+
+Requires Node 24.x.
 
 ```bash
-uv sync
-uv run python -m assemblyai_mcp
+npm install
+npm test                # in-process smoke (no network, mocked AssemblyAI)
+npm run dev             # next dev on http://localhost:3000
 ```
 
-The MCP endpoint is available at `http://localhost:8000/mcp`.
-
-### Smoke test with curl
-
-```bash
-curl -i -X POST http://localhost:8000/mcp \
-  -H "Authorization: Bearer YOUR_ASSEMBLYAI_API_KEY" \
-  -H "Accept: application/json, text/event-stream" \
-  -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"curl","version":"1"}}}'
-```
-
-You should see a `mcp-session-id` response header and a JSON-RPC result. Calling
-the same endpoint without an `Authorization: Bearer …` header should return
-`401`.
+MCP endpoint: `http://localhost:3000/mcp`. OAuth metadata stub:
+`http://localhost:3000/.well-known/oauth-protected-resource`.
 
 ### Smoke test with MCP Inspector
 
@@ -47,97 +43,83 @@ the same endpoint without an `Authorization: Bearer …` header should return
 npx @modelcontextprotocol/inspector
 ```
 
-Connect to `http://localhost:8000/mcp` with transport `Streamable HTTP`, and
-under *Authentication* paste your AssemblyAI API key as the Bearer token.
+Connect to `http://localhost:3000/mcp` via Streamable HTTP, paste your
+AssemblyAI key as the Bearer token. Call `submit_transcript` with a public
+mp3 URL, then `get_transcript` with the returned id until completed.
+
+### Smoke test with curl
+
+```bash
+# No auth — expect 401
+curl -i -X POST http://localhost:3000/mcp \
+  -H "Accept: application/json, text/event-stream" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"curl","version":"1"}}}'
+
+# With your AssemblyAI key as the Bearer token — expect 200 + Mcp-Session-Id
+curl -i -X POST http://localhost:3000/mcp \
+  -H "Authorization: Bearer $ASSEMBLYAI_API_KEY" \
+  -H "Accept: application/json, text/event-stream" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"curl","version":"1"}}}'
+```
 
 ## Connecting from Databricks
 
-Prereqs (consumer side, per Databricks docs):
+Same flow as the Python version, with `/mcp` as the base path:
 
-- Workspace on Premium plan or above with Unity Catalog enabled.
-- `CREATE CONNECTION` on the metastore to create the connection.
-- `USE CONNECTION` on the connection at runtime.
-
-### 1. Expose the local server
-
-For testing, tunnel localhost so Databricks can reach it over HTTPS:
-
-```bash
-ngrok http 8000
-```
-
-Use the `https://…ngrok-free.app` URL Databricks-side.
-
-### 2. Create the HTTP connection
-
-In the Databricks workspace UI:
-
-1. Catalog → Connections → **Create connection**.
-2. Connection type: **HTTP**.
-3. Connection name: e.g. `assemblyai_mcp_test`.
-4. Host / Base URL: `https://<your-ngrok-host>` (no trailing `/mcp`).
-5. Authentication type: **Bearer token**. Paste your AssemblyAI API key — this
-   is the value the server will pass straight through to AssemblyAI.
-6. Check **Is mcp connection**.
-7. Click **Test connection** → expect green. Click **Create**.
-
-### 3. Use it in AI Playground
-
-1. Open AI Playground.
-2. Pick a model that supports tools.
-3. Tools → **+ Add tool** → **MCP Servers** → External → select
-   `assemblyai_mcp_test` → Add.
-4. Prompt:
-
-   > transcribe this audio file: https://storage.googleapis.com/aai-web-samples/news.mp4
-
-5. The model should call `transcribe`; the response should include the
-   transcript text.
-
-## Auth model — why this works for Databricks
-
-Databricks supports five HTTP-connection auth types and always prepends
-`Bearer ` to the token configured for the *Bearer token* type. AssemblyAI's
-REST API expects `Authorization: <api-key>` *without* the `Bearer ` prefix.
-This server bridges the gap:
-
-1. Inbound request: `Authorization: Bearer <api-key>` from Databricks.
-2. `BearerToContextMiddleware` strips the prefix and stashes the raw key in a
-   per-request `ContextVar`.
-3. `AssemblyAIClient.from_request_context()` reads the ContextVar and sets
-   `Authorization: <api-key>` on the outbound httpx client.
-
-No keys are written to disk or shared between requests.
+1. Tunnel: `ngrok http 3000` → grab the `https://…ngrok-free.dev` URL.
+2. Databricks workspace UI → Catalog → Connections → **Create connection**.
+3. Connection type: **HTTP**, name `assemblyai_mcp_test`.
+4. Host: ngrok hostname (no scheme, no path). Port: `443`. Base path: `/mcp`.
+5. Authentication type: **Bearer token**. Paste your AssemblyAI API key.
+6. Check **Is mcp connection** → **Test connection** → **Create**.
+7. AI Playground → add MCP tool → prompt `transcribe this audio file: <url>`.
 
 ## Project layout
 
 ```
-src/assemblyai_mcp/
-├── __init__.py
-├── __main__.py        # uvicorn entry
-├── server.py          # FastMCP + Starlette app + lifespan
-├── auth.py            # Bearer → ContextVar middleware
-├── assemblyai.py      # httpx client: submit / poll / get
-└── tools.py           # @mcp.tool definitions
+mcp-server/
+├── app/
+│   ├── mcp/[transport]/route.ts             # mcp-handler entry, wrapped with withMcpAuth
+│   └── .well-known/oauth-protected-resource/route.ts
+├── src/
+│   ├── server.ts                            # registerTools factory
+│   ├── log.ts                               # JSON logging helpers + key hashing
+│   ├── assemblyai.ts                        # fetch wrapper (submit, get, retry)
+│   ├── tools/
+│   │   ├── submit-transcript.ts
+│   │   └── get-transcript.ts
+│   └── smoke-test.ts                        # InMemoryTransport, mocked fetch
+├── package.json
+├── tsconfig.json
+├── next.config.js
+├── vercel.json
+└── README.md
 ```
 
-## Configuration
+## Logging
 
-Environment variables (see `.env.example`):
+Same JSON-to-stdout pattern as AssemblyAI's docs MCP. Every tool emits one
+event with `event`, `tool`, `keyHash`, `latencyMs`, `status`. High-signal
+events worth alerting on: `bad_audio_url`, `assemblyai_rejected_key`,
+`tool_error`. Never logs the raw API key — only `sha256(key).slice(0,12)`.
 
-| Var | Default | Notes |
-|---|---|---|
-| `HOST` | `0.0.0.0` | uvicorn bind host |
-| `PORT` | `8000` | uvicorn bind port |
-| `LOG_LEVEL` | `info` | uvicorn log level |
-| `TRANSCRIBE_POLL_INTERVAL_S` | `3` | seconds between poll attempts |
-| `TRANSCRIBE_POLL_TIMEOUT_S` | `300` | hard cap before `transcribe` errors out |
-| `ASSEMBLYAI_BASE_URL` | `https://api.assemblyai.com` | override for testing |
+## Deployment
 
-## Out of scope (Phase 1)
+Target is Vercel (`vercel deploy` once the project is linked). Vercel
+Firewall provides rate limiting and DDoS protection. The MCP endpoint will
+live at `https://<host>/mcp` with `maxDuration: 60` per the handler config.
 
-This MVP is sized for the Databricks connection test only. Deliberately
-deferred: file upload (`/v2/upload`), audio-intelligence beyond
-diarization/summarization (sentiment, entities, content moderation,
-translation, LeMUR), streaming, OAuth M2M, production hosting, observability,
-Marketplace listing assets.
+Long-term hosting target, custom domain, and Marketplace listing assets are
+out of scope here — this repo's goal is the connection-test MVP plus the
+async tool redesign.
+
+## Reference: prior Python implementation
+
+The Python `FastMCP`-based implementation that passed the original
+Databricks connection test is preserved in the **first commit** of this
+repo (`git log --reverse --oneline | head -1`). It serves as the source of
+truth for the design (auth bridge, error handling, response shapes); this
+TypeScript port carries the design forward onto a serverless-friendly
+platform.
