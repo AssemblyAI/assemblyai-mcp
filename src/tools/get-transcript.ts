@@ -43,7 +43,7 @@ export function registerGetTranscript(server: McpServer): void {
           latencyMs: Date.now() - start,
         });
         return {
-          content: [{ type: "text" as const, text: summarize(shaped) }],
+          content: [{ type: "text" as const, text: formatTranscript(shaped) }],
           structuredContent: shaped as unknown as Record<string, unknown>,
         };
       } catch (err) {
@@ -102,12 +102,50 @@ function shape(record: TranscriptRecord): ShapedTranscript {
   return out;
 }
 
-function summarize(s: ShapedTranscript): string {
-  if (s.status === "completed") {
-    return `status=completed text="${(s.text ?? "").slice(0, 200)}${(s.text ?? "").length > 200 ? "..." : ""}"`;
-  }
+/**
+ * Format the transcript into the `content[].text` payload. Some MCP clients
+ * (Databricks AI Playground at the time of writing) only surface this text
+ * to the underlying model and ignore `structuredContent`. So everything the
+ * agent might need — full text, per-speaker utterances with timestamps, and
+ * summary — must appear here as plain text.
+ */
+function formatTranscript(s: ShapedTranscript): string {
   if (s.status === "error") {
-    return `status=error ${s.error ?? ""}`;
+    return `status=error transcript_id=${s.transcript_id} error="${s.error ?? ""}"`;
   }
-  return `status=${s.status}. Not finished yet — call get_transcript again in ~3 seconds.`;
+  if (s.status !== "completed") {
+    return `status=${s.status} transcript_id=${s.transcript_id}. Not finished yet — call get_transcript again with the same id in ~3 seconds.`;
+  }
+
+  const lines: string[] = [];
+  lines.push(`status=completed transcript_id=${s.transcript_id}${s.audio_duration !== undefined ? ` audio_duration=${s.audio_duration}s` : ""}`);
+
+  if (s.text) {
+    lines.push("");
+    lines.push("--- text ---");
+    lines.push(s.text);
+  }
+
+  if (s.speakers && s.speakers.length > 0) {
+    lines.push("");
+    lines.push("--- utterances (per-speaker segments; start/end are milliseconds from audio start) ---");
+    for (const u of s.speakers) {
+      lines.push(`[${u.speaker}] ${formatMs(u.start)}–${formatMs(u.end)}: ${u.text}`);
+    }
+  }
+
+  if (s.summary) {
+    lines.push("");
+    lines.push("--- summary ---");
+    lines.push(s.summary);
+  }
+
+  return lines.join("\n");
+}
+
+function formatMs(ms: number): string {
+  const totalSec = Math.floor(ms / 1000);
+  const m = Math.floor(totalSec / 60);
+  const s = totalSec % 60;
+  return `${m}:${s.toString().padStart(2, "0")}`;
 }

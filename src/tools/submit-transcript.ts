@@ -28,7 +28,11 @@ export function registerSubmitTranscript(server: McpServer): void {
         "Returns immediately with a `transcript_id` and the current status (usually `queued`). " +
         "The caller MUST then call `get_transcript` with the returned id in a loop " +
         "(every ~3 seconds) until status becomes `completed` or `error`. " +
-        "Do not expect the transcript text from this tool — only the id.",
+        "Do not expect the transcript text from this tool — only the id. " +
+        "IMPORTANT: enable `speaker_labels` whenever the user asks anything about speakers, " +
+        "who said what, speaker changes, or per-speaker timestamps. Enable `summarization` " +
+        "when the user asks for a summary, key points, or bullet recap. These features cannot " +
+        "be retro-fitted to a finished transcript — you must re-submit with the flag set.",
       inputSchema: {
         audio_url: z
           .string()
@@ -37,12 +41,19 @@ export function registerSubmitTranscript(server: McpServer): void {
           .boolean()
           .optional()
           .default(false)
-          .describe("If true, AssemblyAI returns per-speaker utterances."),
+          .describe(
+            "Enable speaker diarization. Required if the user wants to know who said what, " +
+              "when speakers change, or per-speaker timestamps. Adds an `utterances` block " +
+              "to the eventual get_transcript response with start/end times per speaker."
+          ),
         summarization: z
           .boolean()
           .optional()
           .default(false)
-          .describe("If true, AssemblyAI auto-generates a bulleted summary."),
+          .describe(
+            "Enable AssemblyAI's auto-summary. Required if the user wants a summary, bullets, " +
+              "or key points. Adds a `summary` field to the eventual get_transcript response."
+          ),
       },
     },
     async (args, extra) => {

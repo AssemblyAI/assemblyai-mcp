@@ -208,6 +208,40 @@ async function run() {
       "5. get_transcript completed returns text",
       result.structuredContent?.text === "hello world"
     );
+    const text5 = result.content?.[0]?.text ?? "";
+    assert(
+      "5. get_transcript text payload includes full transcript text",
+      text5.includes("hello world"),
+      `payload: ${text5}`
+    );
+  });
+
+  // 5b. get_transcript completed WITH speaker utterances → must appear in text content
+  await withClientServer(async (client) => {
+    resetMock([
+      jsonResponse(200, {
+        id: "txn-d",
+        status: "completed",
+        text: "A hello. B hi there.",
+        audio_duration: 4,
+        utterances: [
+          { speaker: "A", text: "hello.", start: 0, end: 1200 },
+          { speaker: "B", text: "hi there.", start: 1500, end: 3000 },
+        ],
+      }),
+    ]);
+    const result = await callTool(client, "get_transcript", { transcript_id: "txn-d" }, "k");
+    const text5b = result.content?.[0]?.text ?? "";
+    assert(
+      "5b. utterances appear in text payload (not just structuredContent)",
+      text5b.includes("[A]") && text5b.includes("[B]") && text5b.includes("hi there"),
+      `payload: ${text5b}`
+    );
+    assert(
+      "5b. timestamps appear in text payload",
+      /\d+:\d{2}/.test(text5b),
+      `payload: ${text5b}`
+    );
   });
 
   // 6. get_transcript while processing
