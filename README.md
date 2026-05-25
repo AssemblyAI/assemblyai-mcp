@@ -76,6 +76,19 @@ Same flow as the Python version, with `/mcp` as the base path:
 6. Check **Is mcp connection** → **Test connection** → **Create**.
 7. AI Playground → add MCP tool → prompt `transcribe this audio file: <url>`.
 
+## Sample notebooks
+
+Two Databricks notebooks ship in `notebooks/` to demonstrate transcribing audio
+that lives in a Unity Catalog Volume (not on a public URL):
+
+| Notebook | Bridge to a usable `audio_url` | When to use |
+|---|---|---|
+| **`transcribe-uc-volume-direct-upload.py`** (default) | Streams bytes to AssemblyAI's `POST /v2/upload`, returns a private `upload_url` scoped to your AssemblyAI account. | Default for most users. No S3 bucket required, no presigning, works for any file size AssemblyAI accepts. |
+| `transcribe-uc-volume.py` | Copies bytes from UC Volume to an S3 bucket you own, generates a short-lived presigned URL. | Compliance / data-residency cases where audio must stay in your own cloud account until AssemblyAI fetches it. |
+
+Both notebooks then hand the resulting URL to the MCP tools (`submit_transcript`
+→ `get_transcript`) the same way AI Playground does.
+
 ## Project layout
 
 ```

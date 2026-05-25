@@ -1,6 +1,13 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # AssemblyAI on Databricks — transcribe a file from a Unity Catalog Volume
+# MAGIC # AssemblyAI on Databricks — transcribe a UC Volume file via S3 (compliance path)
+# MAGIC
+# MAGIC > **For most users the simpler path is `transcribe-uc-volume-direct-upload.py`**,
+# MAGIC > which uploads bytes directly to AssemblyAI and needs no S3 bucket.
+# MAGIC >
+# MAGIC > Use this notebook only when compliance / data-residency requirements forbid
+# MAGIC > routing audio through AssemblyAI's upload endpoint, and you need the bytes
+# MAGIC > to stay in your own cloud account until AssemblyAI fetches them.
 # MAGIC
 # MAGIC The AssemblyAI MCP server accepts a public `audio_url`. Databricks customers
 # MAGIC typically have audio inside private UC Volumes, so this notebook shows the
