@@ -41,8 +41,10 @@ re-test**. To keep that guarantee, all changes here are additive:
 2. **New inputs are always optional**, with defaults that preserve current behavior.
 3. **`get_transcript` text output only *gains* labeled sections** — existing
    sections (`--- text ---`, `--- utterances ---`, `--- sentiment ---`,
-   `--- entities ---`, `--- summary ---`) are never renamed or reshaped, because
-   Databricks AI Playground reads `content[].text`.
+   `--- entities ---`) are never renamed or reshaped, because Databricks AI
+   Playground reads `content[].text`. (A legacy `--- summary ---` section is
+   still rendered if present, but summaries now come from the
+   `summarize_transcript` tool, not `get_transcript`.)
 4. **`structuredContent` is additive only** — new fields, never removed/renamed.
 5. **Avoid deprecated AssemblyAI transcript params** (`auto_chapters`,
    `summarization`, `summary_model`, `summary_type`); use LLM Gateway instead.

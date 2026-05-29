@@ -53,8 +53,9 @@ export function registerSubmitTranscript(server: McpServer): void {
           .optional()
           .default(false)
           .describe(
-            "Enable Sentiment Analysis. English audio only. Adds a per-sentence sentiment " +
-              "(POSITIVE/NEUTRAL/NEGATIVE) with confidence and timestamps to the get_transcript response."
+            "Enable Sentiment Analysis. English audio only; runs on the universal speech models. " +
+              "Adds a per-sentence sentiment (POSITIVE/NEUTRAL/NEGATIVE) with confidence and " +
+              "timestamps to the get_transcript response."
           ),
         entity_detection: z
           .boolean()
