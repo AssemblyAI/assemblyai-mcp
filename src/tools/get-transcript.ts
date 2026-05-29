@@ -87,6 +87,8 @@ interface ShapedTranscript {
   speakers?: Array<{ speaker: string; text: string; start: number; end: number }>;
   summary?: string;
   error?: string;
+  sentiment?: Array<{ text: string; sentiment: string; confidence: number; start: number; end: number; speaker: string | null }>;
+  entities?: Array<{ text: string; entity_type: string; start: number; end: number }>;
 }
 
 function shape(record: TranscriptRecord): ShapedTranscript {
@@ -99,6 +101,9 @@ function shape(record: TranscriptRecord): ShapedTranscript {
   if (record.utterances && record.utterances.length > 0) out.speakers = record.utterances;
   if (record.summary !== undefined) out.summary = record.summary;
   if (record.error !== undefined) out.error = record.error;
+  if (record.sentiment_analysis_results && record.sentiment_analysis_results.length > 0)
+    out.sentiment = record.sentiment_analysis_results;
+  if (record.entities && record.entities.length > 0) out.entities = record.entities;
   return out;
 }
 
@@ -106,8 +111,8 @@ function shape(record: TranscriptRecord): ShapedTranscript {
  * Format the transcript into the `content[].text` payload. Some MCP clients
  * (Databricks AI Playground at the time of writing) only surface this text
  * to the underlying model and ignore `structuredContent`. So everything the
- * agent might need — full text, per-speaker utterances with timestamps, and
- * summary — must appear here as plain text.
+ * agent might need — full text, per-speaker utterances with timestamps,
+ * sentiment, entities, and summary — must appear here as plain text.
  */
 function formatTranscript(s: ShapedTranscript): string {
   if (s.status === "error") {
@@ -131,6 +136,23 @@ function formatTranscript(s: ShapedTranscript): string {
     lines.push("--- utterances (per-speaker segments; start/end are milliseconds from audio start) ---");
     for (const u of s.speakers) {
       lines.push(`[${u.speaker}] ${formatMs(u.start)}–${formatMs(u.end)}: ${u.text}`);
+    }
+  }
+
+  if (s.sentiment && s.sentiment.length > 0) {
+    lines.push("");
+    lines.push("--- sentiment (per-sentence; start/end are mm:ss) ---");
+    for (const r of s.sentiment) {
+      const who = r.speaker ? ` (Speaker ${r.speaker})` : "";
+      lines.push(`[${r.sentiment} ${r.confidence.toFixed(2)}] ${formatMs(r.start)}–${formatMs(r.end)}${who}: ${r.text}`);
+    }
+  }
+
+  if (s.entities && s.entities.length > 0) {
+    lines.push("");
+    lines.push("--- entities ---");
+    for (const e of s.entities) {
+      lines.push(`${e.entity_type}: ${e.text}`);
     }
   }
 

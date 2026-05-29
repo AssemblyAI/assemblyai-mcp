@@ -8,9 +8,15 @@
  *   3. submit_transcript URL validation rejects file://
  *   4. AssemblyAI 401 surfaces as friendly error
  *   5. get_transcript happy path (status=completed)
+ *   5b. get_transcript with speaker utterances — appears in text content with timestamps
  *   6. get_transcript while processing returns status without error
  *   7. 5xx retry-then-succeed
  *   8. 4xx no retry
+ *   9. submit_transcript sentiment_analysis flag + required speech_models
+ *   10. submit_transcript entity_detection flag
+ *   11. submit_transcript redact_pii defaults (policies + sub)
+ *   12. summarization flag is inert — no deprecated params reach AssemblyAI
+ *   13. get_transcript renders sentiment + entities sections in text content
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -346,6 +352,26 @@ async function run() {
       body.summarization === undefined && body.summary_model === undefined && body.summary_type === undefined,
       JSON.stringify(body)
     );
+  });
+
+  // 13. get_transcript renders sentiment + entities sections in the text content
+  await withClientServer(async (client) => {
+    resetMock([
+      jsonResponse(200, {
+        id: "txn-ai",
+        status: "completed",
+        text: "Acme is great.",
+        audio_duration: 3,
+        sentiment_analysis_results: [
+          { text: "Acme is great.", sentiment: "POSITIVE", confidence: 0.97, start: 0, end: 1500, speaker: "A" },
+        ],
+        entities: [{ text: "Acme", entity_type: "organization", start: 0, end: 400 }],
+      }),
+    ]);
+    const result = await callTool(client, "get_transcript", { transcript_id: "txn-ai" }, "k");
+    const text = result.content?.[0]?.text ?? "";
+    assert("13. sentiment section present", text.includes("--- sentiment") && text.includes("POSITIVE"), text);
+    assert("13. entities section present", text.includes("--- entities") && text.includes("organization: Acme"), text);
   });
 
   globalThis.fetch = originalFetch;

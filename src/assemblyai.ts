@@ -54,6 +54,15 @@ export interface TranscriptRecord {
   }>;
   summary?: string;
   error?: string;
+  sentiment_analysis_results?: Array<{
+    text: string;
+    sentiment: string;
+    confidence: number;
+    start: number;
+    end: number;
+    speaker: string | null;
+  }>;
+  entities?: Array<{ text: string; entity_type: string; start: number; end: number }>;
 }
 
 export async function submitTranscript(
