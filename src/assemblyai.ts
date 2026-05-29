@@ -10,6 +10,15 @@
 const DEFAULT_BASE_URL =
   process.env.ASSEMBLYAI_BASE_URL ?? "https://api.assemblyai.com";
 
+/** PII categories redacted when redact_pii is enabled but no policies are given. */
+export const DEFAULT_REDACT_PII_POLICIES = [
+  "person_name",
+  "phone_number",
+  "email_address",
+  "us_social_security_number",
+  "credit_card_number",
+];
+
 export class AssemblyAIError extends Error {
   status: number;
   transcriptId: string | undefined;
@@ -25,7 +34,11 @@ export class AssemblyAIError extends Error {
 export interface TranscriptSubmitOptions {
   audio_url: string;
   speaker_labels?: boolean;
-  summarization?: boolean;
+  sentiment_analysis?: boolean;
+  entity_detection?: boolean;
+  redact_pii?: boolean;
+  redact_pii_policies?: string[];
+  redact_pii_sub?: "entity_name" | "hash";
 }
 
 export interface TranscriptRecord {
@@ -49,13 +62,18 @@ export async function submitTranscript(
 ): Promise<TranscriptRecord> {
   const payload: Record<string, unknown> = { audio_url: options.audio_url };
   if (options.speaker_labels) payload.speaker_labels = true;
-  if (options.summarization) {
-    payload.summarization = true;
-    payload.summary_model = "informative";
-    payload.summary_type = "bullets";
+  if (options.sentiment_analysis) {
+    payload.sentiment_analysis = true;
+    // Sentiment Analysis requires the universal speech models.
+    payload.speech_models = ["universal-3-pro", "universal-2"];
   }
-  const data = await requestWithRetry<TranscriptRecord>(apiKey, "POST", "/v2/transcript", payload);
-  return data;
+  if (options.entity_detection) payload.entity_detection = true;
+  if (options.redact_pii) {
+    payload.redact_pii = true;
+    payload.redact_pii_policies = options.redact_pii_policies ?? DEFAULT_REDACT_PII_POLICIES;
+    payload.redact_pii_sub = options.redact_pii_sub ?? "entity_name";
+  }
+  return requestWithRetry<TranscriptRecord>(apiKey, "POST", "/v2/transcript", payload);
 }
 
 export async function getTranscript(

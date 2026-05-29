@@ -281,6 +281,73 @@ async function run() {
     );
   });
 
+  // 9. submit_transcript sentiment_analysis → payload flag + required speech_models
+  await withClientServer(async (client) => {
+    resetMock([jsonResponse(200, { id: "txn-s", status: "queued" })]);
+    await callTool(
+      client,
+      "submit_transcript",
+      { audio_url: "https://example.com/x.mp3", sentiment_analysis: true },
+      "k"
+    );
+    const body = JSON.parse(calls[0]?.body ?? "{}");
+    assert("9. sentiment_analysis flag set in payload", body.sentiment_analysis === true, JSON.stringify(body));
+    assert(
+      "9. speech_models set for sentiment",
+      Array.isArray(body.speech_models) && body.speech_models.includes("universal-3-pro"),
+      JSON.stringify(body)
+    );
+  });
+
+  // 10. submit_transcript entity_detection → payload flag
+  await withClientServer(async (client) => {
+    resetMock([jsonResponse(200, { id: "txn-e", status: "queued" })]);
+    await callTool(
+      client,
+      "submit_transcript",
+      { audio_url: "https://example.com/x.mp3", entity_detection: true },
+      "k"
+    );
+    const body = JSON.parse(calls[0]?.body ?? "{}");
+    assert("10. entity_detection flag set in payload", body.entity_detection === true, JSON.stringify(body));
+  });
+
+  // 11. submit_transcript redact_pii → flag + default policies + default sub
+  await withClientServer(async (client) => {
+    resetMock([jsonResponse(200, { id: "txn-r", status: "queued" })]);
+    await callTool(
+      client,
+      "submit_transcript",
+      { audio_url: "https://example.com/x.mp3", redact_pii: true },
+      "k"
+    );
+    const body = JSON.parse(calls[0]?.body ?? "{}");
+    assert("11. redact_pii flag set", body.redact_pii === true, JSON.stringify(body));
+    assert(
+      "11. default redact_pii_policies applied",
+      Array.isArray(body.redact_pii_policies) && body.redact_pii_policies.includes("person_name"),
+      JSON.stringify(body)
+    );
+    assert("11. default redact_pii_sub = entity_name", body.redact_pii_sub === "entity_name", JSON.stringify(body));
+  });
+
+  // 12. summarization flag is inert — no deprecated params reach AssemblyAI
+  await withClientServer(async (client) => {
+    resetMock([jsonResponse(200, { id: "txn-sum", status: "queued" })]);
+    await callTool(
+      client,
+      "submit_transcript",
+      { audio_url: "https://example.com/x.mp3", summarization: true },
+      "k"
+    );
+    const body = JSON.parse(calls[0]?.body ?? "{}");
+    assert(
+      "12. no deprecated summarization params",
+      body.summarization === undefined && body.summary_model === undefined && body.summary_type === undefined,
+      JSON.stringify(body)
+    );
+  });
+
   globalThis.fetch = originalFetch;
 
   console.log(`\n${passed} passed, ${failed} failed`);

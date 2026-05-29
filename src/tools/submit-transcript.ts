@@ -29,10 +29,12 @@ export function registerSubmitTranscript(server: McpServer): void {
         "The caller MUST then call `get_transcript` with the returned id in a loop " +
         "(every ~3 seconds) until status becomes `completed` or `error`. " +
         "Do not expect the transcript text from this tool — only the id. " +
-        "IMPORTANT: enable `speaker_labels` whenever the user asks anything about speakers, " +
-        "who said what, speaker changes, or per-speaker timestamps. Enable `summarization` " +
-        "when the user asks for a summary, key points, or bullet recap. These features cannot " +
-        "be retro-fitted to a finished transcript — you must re-submit with the flag set.",
+        "Enable `speaker_labels` whenever the user asks who said what or about speaker changes. " +
+        "Enable `sentiment_analysis` for per-sentence positive/negative/neutral (English only), " +
+        "`entity_detection` to extract named entities, and `redact_pii` to remove PII from the " +
+        "transcript text. These features cannot be retro-fitted to a finished transcript — re-submit " +
+        "with the flag set. For SUMMARIES do not set a flag here: after the transcript completes, " +
+        "call the `summarize_transcript` tool.",
       inputSchema: {
         audio_url: z
           .string()
@@ -46,13 +48,51 @@ export function registerSubmitTranscript(server: McpServer): void {
               "when speakers change, or per-speaker timestamps. Adds an `utterances` block " +
               "to the eventual get_transcript response with start/end times per speaker."
           ),
+        sentiment_analysis: z
+          .boolean()
+          .optional()
+          .default(false)
+          .describe(
+            "Enable Sentiment Analysis. English audio only. Adds a per-sentence sentiment " +
+              "(POSITIVE/NEUTRAL/NEGATIVE) with confidence and timestamps to the get_transcript response."
+          ),
+        entity_detection: z
+          .boolean()
+          .optional()
+          .default(false)
+          .describe(
+            "Enable Entity Detection. Extracts named entities (people, organizations, locations, " +
+              "phone numbers, etc.) into the get_transcript response."
+          ),
+        redact_pii: z
+          .boolean()
+          .optional()
+          .default(false)
+          .describe(
+            "Enable PII redaction of the transcript text. Sensitive values are replaced before the " +
+              "text is returned. Configure with redact_pii_policies and redact_pii_sub."
+          ),
+        redact_pii_policies: z
+          .array(z.string())
+          .optional()
+          .describe(
+            "Which PII categories to redact when redact_pii is true (e.g. person_name, phone_number, " +
+              "email_address). Defaults to a common set if omitted."
+          ),
+        redact_pii_sub: z
+          .enum(["entity_name", "hash"])
+          .optional()
+          .describe(
+            "How redacted PII is substituted: 'entity_name' replaces with [PERSON_NAME] etc. (default), " +
+              "'hash' replaces with #."
+          ),
         summarization: z
           .boolean()
           .optional()
           .default(false)
           .describe(
-            "Enable AssemblyAI's auto-summary. Required if the user wants a summary, bullets, " +
-              "or key points. Adds a `summary` field to the eventual get_transcript response."
+            "DEPRECATED / no effect. Summaries are now produced by the `summarize_transcript` tool " +
+              "after the transcript completes. Retained for compatibility only."
           ),
       },
     },
@@ -83,7 +123,11 @@ export function registerSubmitTranscript(server: McpServer): void {
         const record = await submitTranscript(apiKey, {
           audio_url: args.audio_url,
           speaker_labels: args.speaker_labels,
-          summarization: args.summarization,
+          sentiment_analysis: args.sentiment_analysis,
+          entity_detection: args.entity_detection,
+          redact_pii: args.redact_pii,
+          redact_pii_policies: args.redact_pii_policies,
+          redact_pii_sub: args.redact_pii_sub,
         });
         log({
           event: "tool_call",
