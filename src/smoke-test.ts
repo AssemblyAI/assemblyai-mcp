@@ -17,6 +17,8 @@
  *   11. submit_transcript redact_pii defaults (policies + sub)
  *   12. summarization flag is inert — no deprecated params reach AssemblyAI
  *   13. get_transcript renders sentiment + entities sections in text content
+ *   14. summarize_transcript calls LLM Gateway with transcript_id + {{ transcript }} tag
+ *   15. summarize_transcript with style=custom but no custom_prompt → validation error, no gateway call
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -372,6 +374,39 @@ async function run() {
     const text = result.content?.[0]?.text ?? "";
     assert("13. sentiment section present", text.includes("--- sentiment") && text.includes("POSITIVE"), text);
     assert("13. entities section present", text.includes("--- entities") && text.includes("organization: Acme"), text);
+  });
+
+  // 14. summarize_transcript calls LLM Gateway with transcript_id + {{ transcript }} tag
+  await withClientServer(async (client) => {
+    resetMock([jsonResponse(200, { choices: [{ message: { content: "- point one\n- point two" } }] })]);
+    const result = await callTool(client, "summarize_transcript", { transcript_id: "txn-ai" }, "k");
+    assert("14. posts to LLM Gateway host", (calls[0]?.url ?? "").includes("llm-gateway"), calls[0]?.url);
+    const body = JSON.parse(calls[0]?.body ?? "{}");
+    assert("14. sends transcript_id", body.transcript_id === "txn-ai", JSON.stringify(body));
+    assert(
+      "14. prompt includes {{ transcript }} tag",
+      typeof body.messages?.[0]?.content === "string" && body.messages[0].content.includes("{{ transcript }}"),
+      JSON.stringify(body)
+    );
+    const text = result.content?.[0]?.text ?? "";
+    assert("14. returns summary content", text.includes("point one"), text);
+  });
+
+  // 15. summarize_transcript with style=custom but no custom_prompt → error, no gateway call
+  await withClientServer(async (client) => {
+    resetMock([]);
+    const result = await callTool(
+      client,
+      "summarize_transcript",
+      { transcript_id: "txn-ai", style: "custom" },
+      "k"
+    );
+    const text = (result.content?.[0]?.text ?? "").toLowerCase();
+    assert(
+      "15. style=custom without custom_prompt errors before calling the gateway",
+      result.isError === true && text.includes("custom_prompt") && calls.length === 0,
+      `isError=${result.isError} text=${text} calls=${calls.length}`
+    );
   });
 
   globalThis.fetch = originalFetch;

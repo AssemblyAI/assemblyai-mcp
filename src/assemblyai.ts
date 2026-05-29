@@ -96,18 +96,19 @@ export async function getTranscript(
   );
 }
 
-async function requestWithRetry<T>(
+export async function requestWithRetry<T>(
   apiKey: string,
   method: "GET" | "POST",
   path: string,
   body?: unknown,
-  retries = 3
+  retries = 3,
+  baseUrl: string = DEFAULT_BASE_URL
 ): Promise<T> {
   let lastError: unknown;
   for (let attempt = 0; attempt < retries; attempt++) {
     let response: Response;
     try {
-      response = await fetch(`${DEFAULT_BASE_URL}${path}`, {
+      response = await fetch(`${baseUrl}${path}`, {
         method,
         headers: {
           // No `Bearer ` prefix — AssemblyAI expects the raw key.
