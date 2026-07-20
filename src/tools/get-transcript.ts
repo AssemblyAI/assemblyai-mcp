@@ -83,6 +83,7 @@ interface ShapedTranscript {
   transcript_id: string;
   status: TranscriptRecord["status"];
   text?: string;
+  speech_model_used?: string;
   audio_duration?: number;
   speakers?: Array<{ speaker: string; text: string; start: number; end: number }>;
   summary?: string;
@@ -97,6 +98,7 @@ function shape(record: TranscriptRecord): ShapedTranscript {
     status: record.status,
   };
   if (record.text !== undefined) out.text = record.text;
+  if (record.speech_model_used !== undefined) out.speech_model_used = record.speech_model_used;
   if (record.audio_duration !== undefined) out.audio_duration = record.audio_duration;
   if (record.utterances && record.utterances.length > 0) out.speakers = record.utterances;
   if (record.summary !== undefined) out.summary = record.summary;
@@ -123,7 +125,7 @@ function formatTranscript(s: ShapedTranscript): string {
   }
 
   const lines: string[] = [];
-  lines.push(`status=completed transcript_id=${s.transcript_id}${s.audio_duration !== undefined ? ` audio_duration=${s.audio_duration}s` : ""}`);
+  lines.push(`status=completed transcript_id=${s.transcript_id}${s.speech_model_used ? ` speech_model_used=${s.speech_model_used}` : ""}${s.audio_duration !== undefined ? ` audio_duration=${s.audio_duration}s` : ""}`);
 
   if (s.text) {
     lines.push("");

@@ -7,12 +7,12 @@
  *   2. Bearer prefix is stripped (regression guard for the Databricks auth bridge)
  *   3. submit_transcript URL validation rejects file://
  *   4. AssemblyAI 401 surfaces as friendly error
- *   5. get_transcript happy path (status=completed)
+ *   5. get_transcript happy path (status=completed, incl. speech_model_used)
  *   5b. get_transcript with speaker utterances — appears in text content with timestamps
  *   6. get_transcript while processing returns status without error
  *   7. 5xx retry-then-succeed
  *   8. 4xx no retry
- *   9. submit_transcript sentiment_analysis flag + required speech_models
+ *   9. submit_transcript sentiment_analysis flag + pinned speech_models
  *   10. submit_transcript entity_detection flag
  *   11. submit_transcript redact_pii defaults (policies + sub)
  *   12. summarization flag is inert — no deprecated params reach AssemblyAI
@@ -166,6 +166,12 @@ async function run() {
       calls[0]?.headers["authorization"] === "raw-key-no-prefix",
       `got: ${calls[0]?.headers["authorization"]}`
     );
+    const body1 = JSON.parse(calls[0]?.body ?? "{}");
+    assert(
+      "1. every submission pins speech_models to universal-3-5-pro + universal-2",
+      JSON.stringify(body1.speech_models) === JSON.stringify(["universal-3-5-pro", "universal-2"]),
+      JSON.stringify(body1)
+    );
   });
 
   // 3. URL validation rejects file:// (must be before any fetch attempt)
@@ -204,6 +210,7 @@ async function run() {
         id: "txn-9",
         status: "completed",
         text: "hello world",
+        speech_model_used: "universal-3-5-pro",
         audio_duration: 5,
       }),
     ]);
@@ -216,10 +223,19 @@ async function run() {
       "5. get_transcript completed returns text",
       result.structuredContent?.text === "hello world"
     );
+    assert(
+      "5. get_transcript surfaces speech_model_used in structuredContent",
+      result.structuredContent?.speech_model_used === "universal-3-5-pro"
+    );
     const text5 = result.content?.[0]?.text ?? "";
     assert(
       "5. get_transcript text payload includes full transcript text",
       text5.includes("hello world"),
+      `payload: ${text5}`
+    );
+    assert(
+      "5. get_transcript text payload includes speech_model_used",
+      text5.includes("speech_model_used=universal-3-5-pro"),
       `payload: ${text5}`
     );
   });
@@ -289,7 +305,7 @@ async function run() {
     );
   });
 
-  // 9. submit_transcript sentiment_analysis → payload flag + required speech_models
+  // 9. submit_transcript sentiment_analysis → payload flag + pinned speech_models
   await withClientServer(async (client) => {
     resetMock([jsonResponse(200, { id: "txn-s", status: "queued" })]);
     await callTool(
@@ -301,8 +317,8 @@ async function run() {
     const body = JSON.parse(calls[0]?.body ?? "{}");
     assert("9. sentiment_analysis flag set in payload", body.sentiment_analysis === true, JSON.stringify(body));
     assert(
-      "9. speech_models set for sentiment",
-      Array.isArray(body.speech_models) && body.speech_models.includes("universal-3-pro"),
+      "9. speech_models pinned to universal-3-5-pro + universal-2",
+      JSON.stringify(body.speech_models) === JSON.stringify(["universal-3-5-pro", "universal-2"]),
       JSON.stringify(body)
     );
   });

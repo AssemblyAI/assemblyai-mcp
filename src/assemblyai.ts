@@ -45,6 +45,8 @@ export interface TranscriptRecord {
   id: string;
   status: "queued" | "processing" | "completed" | "error";
   text?: string;
+  /** Which model actually transcribed the audio (e.g. universal-2 after a language fallback). */
+  speech_model_used?: string;
   audio_duration?: number;
   utterances?: Array<{
     speaker: string;
@@ -69,13 +71,15 @@ export async function submitTranscript(
   apiKey: string,
   options: TranscriptSubmitOptions
 ): Promise<TranscriptRecord> {
-  const payload: Record<string, unknown> = { audio_url: options.audio_url };
+  const payload: Record<string, unknown> = {
+    audio_url: options.audio_url,
+    // The v2 API only accepts universal-3-5-pro and universal-2 (universal-3-pro
+    // was retired). Pin the priority list on every request so model selection
+    // doesn't drift with API-side defaults.
+    speech_models: ["universal-3-5-pro", "universal-2"],
+  };
   if (options.speaker_labels) payload.speaker_labels = true;
-  if (options.sentiment_analysis) {
-    payload.sentiment_analysis = true;
-    // Sentiment Analysis requires the universal speech models.
-    payload.speech_models = ["universal-3-pro", "universal-2"];
-  }
+  if (options.sentiment_analysis) payload.sentiment_analysis = true;
   if (options.entity_detection) payload.entity_detection = true;
   if (options.redact_pii) {
     payload.redact_pii = true;
