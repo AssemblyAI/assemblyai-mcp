@@ -10,6 +10,15 @@
 const DEFAULT_BASE_URL =
   process.env.ASSEMBLYAI_BASE_URL ?? "https://api.assemblyai.com";
 
+/** PII categories redacted when redact_pii is enabled but no policies are given. */
+export const DEFAULT_REDACT_PII_POLICIES = [
+  "person_name",
+  "phone_number",
+  "email_address",
+  "us_social_security_number",
+  "credit_card_number",
+];
+
 export class AssemblyAIError extends Error {
   status: number;
   transcriptId: string | undefined;
@@ -25,13 +34,19 @@ export class AssemblyAIError extends Error {
 export interface TranscriptSubmitOptions {
   audio_url: string;
   speaker_labels?: boolean;
-  summarization?: boolean;
+  sentiment_analysis?: boolean;
+  entity_detection?: boolean;
+  redact_pii?: boolean;
+  redact_pii_policies?: string[];
+  redact_pii_sub?: "entity_name" | "hash";
 }
 
 export interface TranscriptRecord {
   id: string;
   status: "queued" | "processing" | "completed" | "error";
   text?: string;
+  /** Which model actually transcribed the audio (e.g. universal-2 after a language fallback). */
+  speech_model_used?: string;
   audio_duration?: number;
   utterances?: Array<{
     speaker: string;
@@ -41,21 +56,37 @@ export interface TranscriptRecord {
   }>;
   summary?: string;
   error?: string;
+  sentiment_analysis_results?: Array<{
+    text: string;
+    sentiment: string;
+    confidence: number;
+    start: number;
+    end: number;
+    speaker: string | null;
+  }>;
+  entities?: Array<{ text: string; entity_type: string; start: number; end: number }>;
 }
 
 export async function submitTranscript(
   apiKey: string,
   options: TranscriptSubmitOptions
 ): Promise<TranscriptRecord> {
-  const payload: Record<string, unknown> = { audio_url: options.audio_url };
+  const payload: Record<string, unknown> = {
+    audio_url: options.audio_url,
+    // The v2 API only accepts universal-3-5-pro and universal-2 (universal-3-pro
+    // was retired). Pin the priority list on every request so model selection
+    // doesn't drift with API-side defaults.
+    speech_models: ["universal-3-5-pro", "universal-2"],
+  };
   if (options.speaker_labels) payload.speaker_labels = true;
-  if (options.summarization) {
-    payload.summarization = true;
-    payload.summary_model = "informative";
-    payload.summary_type = "bullets";
+  if (options.sentiment_analysis) payload.sentiment_analysis = true;
+  if (options.entity_detection) payload.entity_detection = true;
+  if (options.redact_pii) {
+    payload.redact_pii = true;
+    payload.redact_pii_policies = options.redact_pii_policies ?? DEFAULT_REDACT_PII_POLICIES;
+    payload.redact_pii_sub = options.redact_pii_sub ?? "entity_name";
   }
-  const data = await requestWithRetry<TranscriptRecord>(apiKey, "POST", "/v2/transcript", payload);
-  return data;
+  return requestWithRetry<TranscriptRecord>(apiKey, "POST", "/v2/transcript", payload);
 }
 
 export async function getTranscript(
@@ -69,18 +100,19 @@ export async function getTranscript(
   );
 }
 
-async function requestWithRetry<T>(
+export async function requestWithRetry<T>(
   apiKey: string,
   method: "GET" | "POST",
   path: string,
   body?: unknown,
-  retries = 3
+  retries = 3,
+  baseUrl: string = DEFAULT_BASE_URL
 ): Promise<T> {
   let lastError: unknown;
   for (let attempt = 0; attempt < retries; attempt++) {
     let response: Response;
     try {
-      response = await fetch(`${DEFAULT_BASE_URL}${path}`, {
+      response = await fetch(`${baseUrl}${path}`, {
         method,
         headers: {
           // No `Bearer ` prefix — AssemblyAI expects the raw key.

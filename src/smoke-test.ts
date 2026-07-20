@@ -7,10 +7,18 @@
  *   2. Bearer prefix is stripped (regression guard for the Databricks auth bridge)
  *   3. submit_transcript URL validation rejects file://
  *   4. AssemblyAI 401 surfaces as friendly error
- *   5. get_transcript happy path (status=completed)
+ *   5. get_transcript happy path (status=completed, incl. speech_model_used)
+ *   5b. get_transcript with speaker utterances — appears in text content with timestamps
  *   6. get_transcript while processing returns status without error
  *   7. 5xx retry-then-succeed
  *   8. 4xx no retry
+ *   9. submit_transcript sentiment_analysis flag + pinned speech_models
+ *   10. submit_transcript entity_detection flag
+ *   11. submit_transcript redact_pii defaults (policies + sub)
+ *   12. summarization flag is inert — no deprecated params reach AssemblyAI
+ *   13. get_transcript renders sentiment + entities sections in text content
+ *   14. summarize_transcript calls LLM Gateway with transcript_id + {{ transcript }} tag
+ *   15. summarize_transcript with style=custom but no custom_prompt → validation error, no gateway call
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -158,6 +166,12 @@ async function run() {
       calls[0]?.headers["authorization"] === "raw-key-no-prefix",
       `got: ${calls[0]?.headers["authorization"]}`
     );
+    const body1 = JSON.parse(calls[0]?.body ?? "{}");
+    assert(
+      "1. every submission pins speech_models to universal-3-5-pro + universal-2",
+      JSON.stringify(body1.speech_models) === JSON.stringify(["universal-3-5-pro", "universal-2"]),
+      JSON.stringify(body1)
+    );
   });
 
   // 3. URL validation rejects file:// (must be before any fetch attempt)
@@ -196,6 +210,7 @@ async function run() {
         id: "txn-9",
         status: "completed",
         text: "hello world",
+        speech_model_used: "universal-3-5-pro",
         audio_duration: 5,
       }),
     ]);
@@ -208,10 +223,19 @@ async function run() {
       "5. get_transcript completed returns text",
       result.structuredContent?.text === "hello world"
     );
+    assert(
+      "5. get_transcript surfaces speech_model_used in structuredContent",
+      result.structuredContent?.speech_model_used === "universal-3-5-pro"
+    );
     const text5 = result.content?.[0]?.text ?? "";
     assert(
       "5. get_transcript text payload includes full transcript text",
       text5.includes("hello world"),
+      `payload: ${text5}`
+    );
+    assert(
+      "5. get_transcript text payload includes speech_model_used",
+      text5.includes("speech_model_used=universal-3-5-pro"),
       `payload: ${text5}`
     );
   });
@@ -278,6 +302,126 @@ async function run() {
       "8. 4xx surfaces error",
       result.isError === true && (text.includes("not found") || text.includes("404")),
       `isError=${result.isError} text=${text}`
+    );
+  });
+
+  // 9. submit_transcript sentiment_analysis → payload flag + pinned speech_models
+  await withClientServer(async (client) => {
+    resetMock([jsonResponse(200, { id: "txn-s", status: "queued" })]);
+    await callTool(
+      client,
+      "submit_transcript",
+      { audio_url: "https://example.com/x.mp3", sentiment_analysis: true },
+      "k"
+    );
+    const body = JSON.parse(calls[0]?.body ?? "{}");
+    assert("9. sentiment_analysis flag set in payload", body.sentiment_analysis === true, JSON.stringify(body));
+    assert(
+      "9. speech_models pinned to universal-3-5-pro + universal-2",
+      JSON.stringify(body.speech_models) === JSON.stringify(["universal-3-5-pro", "universal-2"]),
+      JSON.stringify(body)
+    );
+  });
+
+  // 10. submit_transcript entity_detection → payload flag
+  await withClientServer(async (client) => {
+    resetMock([jsonResponse(200, { id: "txn-e", status: "queued" })]);
+    await callTool(
+      client,
+      "submit_transcript",
+      { audio_url: "https://example.com/x.mp3", entity_detection: true },
+      "k"
+    );
+    const body = JSON.parse(calls[0]?.body ?? "{}");
+    assert("10. entity_detection flag set in payload", body.entity_detection === true, JSON.stringify(body));
+  });
+
+  // 11. submit_transcript redact_pii → flag + default policies + default sub
+  await withClientServer(async (client) => {
+    resetMock([jsonResponse(200, { id: "txn-r", status: "queued" })]);
+    await callTool(
+      client,
+      "submit_transcript",
+      { audio_url: "https://example.com/x.mp3", redact_pii: true },
+      "k"
+    );
+    const body = JSON.parse(calls[0]?.body ?? "{}");
+    assert("11. redact_pii flag set", body.redact_pii === true, JSON.stringify(body));
+    assert(
+      "11. default redact_pii_policies applied",
+      Array.isArray(body.redact_pii_policies) && body.redact_pii_policies.includes("person_name"),
+      JSON.stringify(body)
+    );
+    assert("11. default redact_pii_sub = entity_name", body.redact_pii_sub === "entity_name", JSON.stringify(body));
+  });
+
+  // 12. summarization flag is inert — no deprecated params reach AssemblyAI
+  await withClientServer(async (client) => {
+    resetMock([jsonResponse(200, { id: "txn-sum", status: "queued" })]);
+    await callTool(
+      client,
+      "submit_transcript",
+      { audio_url: "https://example.com/x.mp3", summarization: true },
+      "k"
+    );
+    const body = JSON.parse(calls[0]?.body ?? "{}");
+    assert(
+      "12. no deprecated summarization params",
+      body.summarization === undefined && body.summary_model === undefined && body.summary_type === undefined,
+      JSON.stringify(body)
+    );
+  });
+
+  // 13. get_transcript renders sentiment + entities sections in the text content
+  await withClientServer(async (client) => {
+    resetMock([
+      jsonResponse(200, {
+        id: "txn-ai",
+        status: "completed",
+        text: "Acme is great.",
+        audio_duration: 3,
+        sentiment_analysis_results: [
+          { text: "Acme is great.", sentiment: "POSITIVE", confidence: 0.97, start: 0, end: 1500, speaker: "A" },
+        ],
+        entities: [{ text: "Acme", entity_type: "organization", start: 0, end: 400 }],
+      }),
+    ]);
+    const result = await callTool(client, "get_transcript", { transcript_id: "txn-ai" }, "k");
+    const text = result.content?.[0]?.text ?? "";
+    assert("13. sentiment section present", text.includes("--- sentiment") && text.includes("POSITIVE"), text);
+    assert("13. entities section present", text.includes("--- entities") && text.includes("organization: Acme"), text);
+  });
+
+  // 14. summarize_transcript calls LLM Gateway with transcript_id + {{ transcript }} tag
+  await withClientServer(async (client) => {
+    resetMock([jsonResponse(200, { choices: [{ message: { content: "- point one\n- point two" } }] })]);
+    const result = await callTool(client, "summarize_transcript", { transcript_id: "txn-ai" }, "k");
+    assert("14. posts to LLM Gateway host", (calls[0]?.url ?? "").includes("llm-gateway"), calls[0]?.url);
+    const body = JSON.parse(calls[0]?.body ?? "{}");
+    assert("14. sends transcript_id", body.transcript_id === "txn-ai", JSON.stringify(body));
+    assert(
+      "14. prompt includes {{ transcript }} tag",
+      typeof body.messages?.[0]?.content === "string" && body.messages[0].content.includes("{{ transcript }}"),
+      JSON.stringify(body)
+    );
+    const text = result.content?.[0]?.text ?? "";
+    assert("14. returns summary content", text.includes("point one"), text);
+  });
+
+  // 15. summarize_transcript with style=custom but no custom_prompt → error, no gateway call
+  await withClientServer(async (client) => {
+    resetMock([]);
+    const result = await callTool(
+      client,
+      "summarize_transcript",
+      { transcript_id: "txn-ai", style: "custom" },
+      "k"
+    );
+    const text = (result.content?.[0]?.text ?? "").toLowerCase();
+    assert(
+      "15. style=custom without custom_prompt errors before calling the gateway",
+      result.isError === true && text.includes("custom_prompt") && calls.length === 0,
+      `isError=${result.isError} text=${text} calls=${calls.length}`
     );
   });
 

@@ -112,7 +112,7 @@ submit_response = requests.post(
     headers={"Authorization": api_key, "Content-Type": "application/json"},
     json={
         "audio_url": upload_url,
-        "speech_models": ["universal-3-pro", "universal-2"],
+        "speech_models": ["universal-3-5-pro", "universal-2"],
         "speaker_labels": True,
     },
     timeout=30,

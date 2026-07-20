@@ -8,12 +8,18 @@ operational alignment.
 
 ## Tools
 
-- **`submit_transcript(audio_url, speaker_labels?, summarization?)`** —
+- **`submit_transcript(audio_url, speaker_labels?, sentiment_analysis?, entity_detection?, redact_pii?, redact_pii_policies?, redact_pii_sub?)`** —
   submits a public URL to AssemblyAI and returns `{ transcript_id, status }`
-  immediately. Does **not** block on polling.
-- **`get_transcript(transcript_id)`** — single fetch of the current state.
-  The agent polls this in a loop (~every 3s) until `status` is `completed`
-  or `error`.
+  immediately. Optional flags enable speaker diarization, sentiment analysis
+  (English only), entity detection, and PII redaction of the transcript text.
+- **`get_transcript(transcript_id)`** — single fetch of the current state. The
+  agent polls this (~every 3s) until `status` is `completed` or `error`. When
+  enabled, the response text includes `--- sentiment ---` and `--- entities ---`
+  sections alongside `--- text ---` and `--- utterances ---`.
+- **`summarize_transcript(transcript_id, style?, custom_prompt?)`** — generates a
+  summary of a completed transcript via AssemblyAI's LLM Gateway. Call after
+  `get_transcript` shows `completed`. `style` is one of `bullets` (default),
+  `paragraph`, `headline`, `action_items`, or `custom` (with `custom_prompt`).
 
 ## Auth: pass-through Bearer
 
@@ -23,6 +29,26 @@ connection. AssemblyAI's REST API expects the raw key (no `Bearer ` prefix).
 every tool callback via `extra.authInfo.token`. The tool calls AssemblyAI
 with `Authorization: <key>` (no prefix). No keys are written to disk or
 shared between requests.
+
+## Extending the tool surface (additive-only contract)
+
+Databricks discovers MCP tools at runtime (`list_tools`); the Unity Catalog
+connection stores only URL + auth, not a tool-schema snapshot. So new tools and
+new **optional** parameters appear automatically and need **no connection
+re-test**. To keep that guarantee, all changes here are additive:
+
+1. **Tool names are permanent** — only add tools, never rename or remove.
+2. **New inputs are always optional**, with defaults that preserve current behavior.
+3. **`get_transcript` text output only *gains* labeled sections** — existing
+   sections (`--- text ---`, `--- utterances ---`, `--- sentiment ---`,
+   `--- entities ---`) are never renamed or reshaped, because Databricks AI
+   Playground reads `content[].text`. (A legacy `--- summary ---` section is
+   still rendered if present, but summaries now come from the
+   `summarize_transcript` tool, not `get_transcript`.)
+4. **`structuredContent` is additive only** — new fields, never removed/renamed.
+5. **Avoid deprecated AssemblyAI transcript params** (`auto_chapters`,
+   `summarization`, `summary_model`, `summary_type`); use LLM Gateway instead.
+   Mirror AssemblyAI's official MCP tool shapes where they exist.
 
 ## Local dev
 
@@ -63,6 +89,22 @@ curl -i -X POST http://localhost:3000/mcp \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"curl","version":"1"}}}'
 ```
+
+### Live end-to-end test (real AssemblyAI, real transcription)
+
+```bash
+ASSEMBLYAI_API_KEY=... npm run test:live                       # against localhost:3001
+ASSEMBLYAI_API_KEY=... MCP_URL=https://<host>/mcp npm run test:live
+```
+
+Drives the running server with the MCP SDK client over Streamable HTTP:
+tool discovery, all `submit_transcript` feature flags, `speech_model_used`
+assertion, `summarize_transcript`, and graceful failure on a bad audio URL.
+Costs a few cents of transcription credit per run.
+
+For the same test **through Databricks** (workspace auth + UC connection
+credential injection — the path AI Playground uses), run
+`notebooks/mcp-live-test.py` as a notebook or scheduled job.
 
 ## Connecting from Databricks
 
