@@ -90,6 +90,22 @@ curl -i -X POST http://localhost:3000/mcp \
   -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"curl","version":"1"}}}'
 ```
 
+### Live end-to-end test (real AssemblyAI, real transcription)
+
+```bash
+ASSEMBLYAI_API_KEY=... npm run test:live                       # against localhost:3001
+ASSEMBLYAI_API_KEY=... MCP_URL=https://<host>/mcp npm run test:live
+```
+
+Drives the running server with the MCP SDK client over Streamable HTTP:
+tool discovery, all `submit_transcript` feature flags, `speech_model_used`
+assertion, `summarize_transcript`, and graceful failure on a bad audio URL.
+Costs a few cents of transcription credit per run.
+
+For the same test **through Databricks** (workspace auth + UC connection
+credential injection — the path AI Playground uses), run
+`notebooks/mcp-live-test.py` as a notebook or scheduled job.
+
 ## Connecting from Databricks
 
 Same flow as the Python version, with `/mcp` as the base path:

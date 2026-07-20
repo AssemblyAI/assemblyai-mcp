@@ -11,6 +11,7 @@
     "dev": "next dev",
     "start": "next start",
     "test": "tsx src/smoke-test.ts",
+    "test:live": "tsx src/live-test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
