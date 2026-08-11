@@ -33,12 +33,63 @@ export class AssemblyAIError extends Error {
 
 export interface TranscriptSubmitOptions {
   audio_url: string;
+  // Established flags (behavior unchanged — sent only when true; redact_pii
+  // applies the server's default policies/sub).
   speaker_labels?: boolean;
   sentiment_analysis?: boolean;
   entity_detection?: boolean;
   redact_pii?: boolean;
   redact_pii_policies?: string[];
   redact_pii_sub?: "entity_name" | "hash";
+  // Prompting (Universal-3.5 Pro)
+  prompt?: string;
+  keyterms_prompt?: string[];
+  // Language
+  language_code?: string;
+  language_codes?: string[];
+  language_detection?: boolean;
+  language_detection_options?: {
+    expected_languages?: string[];
+    fallback_language?: string;
+    code_switching?: boolean;
+    code_switching_confidence_threshold?: number;
+    localization?: string[];
+  };
+  language_confidence_threshold?: number;
+  // Models
+  speech_models?: Array<"universal-3-5-pro" | "universal-2">;
+  temperature?: number;
+  // Diarization
+  speaker_options?: { min_speakers_expected?: number; max_speakers_expected?: number };
+  // Guardrails
+  filter_profanity?: boolean;
+  speech_threshold?: number;
+  content_safety?: boolean;
+  content_safety_confidence?: number;
+  redact_pii_audio?: boolean;
+  redact_pii_audio_quality?: "mp3" | "wav";
+  redact_pii_audio_options?: {
+    override_audio_redaction_method?: "silence";
+    return_redacted_no_speech_audio?: boolean;
+  };
+  redact_pii_return_unredacted?: boolean;
+  redact_static_entities?: Record<string, string[]>;
+  // Speech Understanding (inline)
+  speech_understanding?: { request: Record<string, unknown> };
+  // Other STT
+  multichannel?: boolean;
+  disfluencies?: boolean;
+  custom_spelling?: Array<{ from: string[]; to: string }>;
+  audio_start_from?: number;
+  audio_end_at?: number;
+  domain?: string;
+  remove_audio_tags?: "all" | "speaker";
+  iab_categories?: boolean;
+  auto_highlights?: boolean;
+  // Webhooks (pass-through parity; agent flows should poll instead)
+  webhook_url?: string;
+  webhook_auth_header_name?: string;
+  webhook_auth_header_value?: string;
 }
 
 export interface TranscriptRecord {
@@ -67,16 +118,55 @@ export interface TranscriptRecord {
   entities?: Array<{ text: string; entity_type: string; start: number; end: number }>;
 }
 
+/**
+ * Params copied verbatim into the request body when defined. Additive-only:
+ * append new public API params here; never add internal-only params (see the
+ * 2026-08-11 design spec "Out of scope").
+ */
+const PASSTHROUGH_KEYS = [
+  "prompt",
+  "keyterms_prompt",
+  "language_code",
+  "language_codes",
+  "language_detection",
+  "language_detection_options",
+  "language_confidence_threshold",
+  "temperature",
+  "speaker_options",
+  "filter_profanity",
+  "speech_threshold",
+  "content_safety",
+  "content_safety_confidence",
+  "redact_pii_audio",
+  "redact_pii_audio_quality",
+  "redact_pii_audio_options",
+  "redact_pii_return_unredacted",
+  "redact_static_entities",
+  "speech_understanding",
+  "multichannel",
+  "disfluencies",
+  "custom_spelling",
+  "audio_start_from",
+  "audio_end_at",
+  "domain",
+  "remove_audio_tags",
+  "iab_categories",
+  "auto_highlights",
+  "webhook_url",
+  "webhook_auth_header_name",
+  "webhook_auth_header_value",
+] as const satisfies readonly (keyof TranscriptSubmitOptions)[];
+
 export async function submitTranscript(
   apiKey: string,
   options: TranscriptSubmitOptions
 ): Promise<TranscriptRecord> {
   const payload: Record<string, unknown> = {
     audio_url: options.audio_url,
-    // The v2 API only accepts universal-3-5-pro and universal-2 (universal-3-pro
-    // was retired). Pin the priority list on every request so model selection
-    // doesn't drift with API-side defaults.
-    speech_models: ["universal-3-5-pro", "universal-2"],
+    // The v2 API only accepts universal-3-5-pro and universal-2. Pin the
+    // priority list unless the caller overrides, so model selection doesn't
+    // drift with API-side defaults.
+    speech_models: options.speech_models ?? ["universal-3-5-pro", "universal-2"],
   };
   if (options.speaker_labels) payload.speaker_labels = true;
   if (options.sentiment_analysis) payload.sentiment_analysis = true;
@@ -85,6 +175,10 @@ export async function submitTranscript(
     payload.redact_pii = true;
     payload.redact_pii_policies = options.redact_pii_policies ?? DEFAULT_REDACT_PII_POLICIES;
     payload.redact_pii_sub = options.redact_pii_sub ?? "entity_name";
+  }
+  for (const key of PASSTHROUGH_KEYS) {
+    const value = options[key];
+    if (value !== undefined) payload[key] = value;
   }
   return requestWithRetry<TranscriptRecord>(apiKey, "POST", "/v2/transcript", payload);
 }

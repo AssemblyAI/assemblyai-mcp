@@ -19,6 +19,7 @@
  *   13. get_transcript renders sentiment + entities sections in text content
  *   14. summarize_transcript calls LLM Gateway with transcript_id + {{ transcript }} tag
  *   15. summarize_transcript with style=custom but no custom_prompt → validation error, no gateway call
+ *   16.–18. scalar/boolean pass-through params
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -422,6 +423,115 @@ async function run() {
       "15. style=custom without custom_prompt errors before calling the gateway",
       result.isError === true && text.includes("custom_prompt") && calls.length === 0,
       `isError=${result.isError} text=${text} calls=${calls.length}`
+    );
+  });
+
+  // 16. submit_transcript scalar/boolean params pass through with API names
+  await withClientServer(async (client) => {
+    resetMock([jsonResponse(200, { id: "txn-p1", status: "queued" })]);
+    await callTool(
+      client,
+      "submit_transcript",
+      {
+        audio_url: "https://example.com/x.mp3",
+        prompt: "Cardiology consultation.",
+        keyterms_prompt: ["AssemblyAI", "Databricks"],
+        language_code: "en_us",
+        language_codes: ["en", "es"],
+        language_detection: true,
+        language_confidence_threshold: 0.6,
+        temperature: 0.2,
+        filter_profanity: true,
+        speech_threshold: 0.5,
+        content_safety: true,
+        content_safety_confidence: 60,
+        redact_pii_return_unredacted: true,
+        multichannel: true,
+        disfluencies: true,
+        audio_start_from: 1000,
+        audio_end_at: 9000,
+        domain: "medical-v1",
+        remove_audio_tags: "all",
+        iab_categories: true,
+        auto_highlights: true,
+        webhook_url: "https://example.com/hook",
+        webhook_auth_header_name: "X-Auth",
+        webhook_auth_header_value: "secret",
+      },
+      "k"
+    );
+    const body = JSON.parse(calls[0]?.body ?? "{}");
+    assert("16. prompt passes through", body.prompt === "Cardiology consultation.", JSON.stringify(body));
+    assert(
+      "16. keyterms_prompt passes through",
+      JSON.stringify(body.keyterms_prompt) === JSON.stringify(["AssemblyAI", "Databricks"]),
+      JSON.stringify(body)
+    );
+    assert(
+      "16. language params pass through",
+      body.language_code === "en_us" &&
+        JSON.stringify(body.language_codes) === JSON.stringify(["en", "es"]) &&
+        body.language_detection === true &&
+        body.language_confidence_threshold === 0.6,
+      JSON.stringify(body)
+    );
+    assert(
+      "16. guardrail scalars pass through",
+      body.filter_profanity === true &&
+        body.speech_threshold === 0.5 &&
+        body.content_safety === true &&
+        body.content_safety_confidence === 60 &&
+        body.redact_pii_return_unredacted === true,
+      JSON.stringify(body)
+    );
+    assert(
+      "16. other STT params pass through",
+      body.multichannel === true &&
+        body.disfluencies === true &&
+        body.audio_start_from === 1000 &&
+        body.audio_end_at === 9000 &&
+        body.domain === "medical-v1" &&
+        body.remove_audio_tags === "all" &&
+        body.iab_categories === true &&
+        body.auto_highlights === true &&
+        body.temperature === 0.2,
+      JSON.stringify(body)
+    );
+    assert(
+      "16. webhook params pass through",
+      body.webhook_url === "https://example.com/hook" &&
+        body.webhook_auth_header_name === "X-Auth" &&
+        body.webhook_auth_header_value === "secret",
+      JSON.stringify(body)
+    );
+  });
+
+  // 17. omitted params are NOT sent — bare submit payload is exactly audio_url + speech_models
+  await withClientServer(async (client) => {
+    resetMock([jsonResponse(200, { id: "txn-p2", status: "queued" })]);
+    await callTool(client, "submit_transcript", { audio_url: "https://example.com/x.mp3" }, "k");
+    const body = JSON.parse(calls[0]?.body ?? "{}");
+    assert(
+      "17. bare submit sends only audio_url + speech_models",
+      JSON.stringify(Object.keys(body).sort()) === JSON.stringify(["audio_url", "speech_models"]),
+      JSON.stringify(body)
+    );
+  });
+
+  // 18. speech_models is overridable but defaults to the pinned list
+  await withClientServer(async (client) => {
+    resetMock([jsonResponse(200, { id: "txn-p3", status: "queued" })]);
+    await callTool(
+      client,
+      "submit_transcript",
+      { audio_url: "https://example.com/x.mp3", speech_models: ["universal-2"] },
+      "k"
+    );
+    const body = JSON.parse(calls[0]?.body ?? "{}");
+    assert(
+      "18. explicit speech_models overrides the pin",
+      JSON.stringify(body.speech_models) === JSON.stringify(["universal-2"]),
+      JSON.stringify(body)
     );
   });
 
