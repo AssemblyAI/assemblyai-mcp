@@ -823,6 +823,29 @@ async function run() {
       result.isError !== true && text.includes("redacted audio not ready yet"),
       `isError=${result.isError} text=${text}`
     );
+    assert(
+      "25. structuredContent has no redacted_audio_url when fetch fails (400)",
+      result.structuredContent?.redacted_audio_url === undefined,
+      JSON.stringify(result.structuredContent)
+    );
+  });
+  await withClientServer(async (client) => {
+    resetMock([
+      jsonResponse(200, { id: "txn-rc", status: "completed", text: "hi", audio_duration: 3, redact_pii_audio: true }),
+      jsonResponse(200, { status: "redacted_audio_processing" }),
+    ]);
+    const result = await callTool(client, "get_transcript", { transcript_id: "txn-rc" }, "k");
+    const text = result.content?.[0]?.text ?? "";
+    assert(
+      "25. 200 without redacted_audio_url still degrades gracefully",
+      result.isError !== true && text.includes("redacted audio not ready yet"),
+      `isError=${result.isError} text=${text}`
+    );
+    assert(
+      "25. structuredContent has no redacted_audio_url when 200 without URL",
+      result.structuredContent?.redacted_audio_url === undefined,
+      JSON.stringify(result.structuredContent)
+    );
   });
 
   globalThis.fetch = originalFetch;
