@@ -7,6 +7,13 @@
  * `extra.authInfo.token` and never lives in module state.
  */
 
+import type {
+  SpeechUnderstandingResponse,
+  ContentSafetyLabels,
+  IabCategoriesResult,
+  AutoHighlightsResult,
+} from "./transcript-sections";
+
 const DEFAULT_BASE_URL =
   process.env.ASSEMBLYAI_BASE_URL ?? "https://api.assemblyai.com";
 
@@ -116,6 +123,15 @@ export interface TranscriptRecord {
     speaker: string | null;
   }>;
   entities?: Array<{ text: string; entity_type: string; start: number; end: number }>;
+  translated_texts?: Record<string, string>;
+  speech_understanding?: { request?: unknown; response?: SpeechUnderstandingResponse };
+  content_safety_labels?: ContentSafetyLabels;
+  iab_categories_result?: IabCategoriesResult;
+  auto_highlights_result?: AutoHighlightsResult;
+  unredacted_text?: string;
+  /** Echo of the request param — signals a redacted audio file exists. */
+  redact_pii_audio?: boolean;
+  metadata?: { domain_used?: string | null; warnings?: Array<{ message: string }> };
 }
 
 /**

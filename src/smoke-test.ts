@@ -23,6 +23,9 @@
  *   19. nested objects pass through unchanged (language_detection_options, speaker_options, etc.)
  *   20. speech_understanding.request nests correctly with translation, summarization, action_items
  *   21. speech_understanding without request wrapper rejected before API call
+ *   22. get_transcript renders translation / speaker_identification / custom_formatting
+ *   23. get_transcript renders su_summary + action_items
+ *   24. get_transcript renders content_safety / topics / highlights / unredacted / warnings
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -642,6 +645,142 @@ async function run() {
       "21. missing request wrapper rejected before calling AssemblyAI",
       rejected && calls.length === 0,
       `rejected=${rejected} calls=${calls.length}`
+    );
+  });
+
+  // 22. get_transcript renders translation / speaker_identification / custom_formatting
+  await withClientServer(async (client) => {
+    resetMock([
+      jsonResponse(200, {
+        id: "txn-su1",
+        status: "completed",
+        text: "hello",
+        audio_duration: 5,
+        translated_texts: { es: "hola mundo", de: "hallo welt" },
+        speech_understanding: {
+          response: {
+            translation: { status: "success" },
+            speaker_identification: { status: "success", mapping: { A: "Michel Martin" } },
+            custom_formatting: { status: "success", formatted_text: "Call me at (555)123-4567" },
+          },
+        },
+      }),
+    ]);
+    const result = await callTool(client, "get_transcript", { transcript_id: "txn-su1" }, "k");
+    const text = result.content?.[0]?.text ?? "";
+    assert(
+      "22. translation sections per language",
+      text.includes("--- translation:es ---") && text.includes("hola mundo") && text.includes("--- translation:de ---"),
+      text
+    );
+    assert(
+      "22. speaker_identification section",
+      text.includes("--- speaker_identification") && text.includes("A → Michel Martin"),
+      text
+    );
+    assert(
+      "22. custom_formatting section",
+      text.includes("--- custom_formatting") && text.includes("(555)123-4567"),
+      text
+    );
+    assert(
+      "22. structuredContent carries translated_texts + speech_understanding",
+      (result.structuredContent?.translated_texts as Record<string, string>)?.es === "hola mundo" &&
+        result.structuredContent?.speech_understanding !== undefined,
+      JSON.stringify(result.structuredContent)
+    );
+  });
+
+  // 23. get_transcript renders su_summary + action_items
+  await withClientServer(async (client) => {
+    resetMock([
+      jsonResponse(200, {
+        id: "txn-su2",
+        status: "completed",
+        text: "hello",
+        audio_duration: 40,
+        speech_understanding: {
+          response: {
+            summarization: {
+              status: "success",
+              summary_type: "paragraph",
+              summary: [{ start: 240, end: 37100, text: "Wildfire smoke discussion.", headline: "Wildfire Smoke" }],
+            },
+            action_items: {
+              status: "success",
+              items: [{ action_item: "Check air quality daily.", quote: "check the air quality", timestamp: 9520 }],
+            },
+          },
+        },
+      }),
+    ]);
+    const result = await callTool(client, "get_transcript", { transcript_id: "txn-su2" }, "k");
+    const text = result.content?.[0]?.text ?? "";
+    assert(
+      "23. su_summary section with headline + timestamps",
+      text.includes("--- su_summary") && text.includes("Wildfire Smoke") && text.includes("0:00–0:37"),
+      text
+    );
+    assert(
+      "23. action_items section with quote + timestamp",
+      text.includes("--- action_items ---") && text.includes("Check air quality daily.") && text.includes("0:09"),
+      text
+    );
+  });
+
+  // 24. get_transcript renders content_safety / topics / highlights / unredacted / warnings
+  await withClientServer(async (client) => {
+    resetMock([
+      jsonResponse(200, {
+        id: "txn-g1",
+        status: "completed",
+        text: "[PERSON_NAME] reported the fire.",
+        audio_duration: 30,
+        content_safety_labels: {
+          summary: { disasters: 0.9 },
+          severity_score_summary: { disasters: { low: 0.56, medium: 0.44, high: 0 } },
+        },
+        iab_categories_result: { summary: { "NewsAndPolitics>Weather": 0.99 } },
+        auto_highlights_result: { results: [{ count: 3, rank: 0.08, text: "air quality" }] },
+        unredacted_text: "Jane Doe reported the fire.",
+        metadata: { domain_used: null, warnings: [{ message: "'ur' is not supported in universal-3-5-pro" }] },
+      }),
+    ]);
+    const result = await callTool(client, "get_transcript", { transcript_id: "txn-g1" }, "k");
+    const text = result.content?.[0]?.text ?? "";
+    assert(
+      "24. content_safety section with severity",
+      text.includes("--- content_safety") && text.includes("disasters: 0.90") && text.includes("medium=0.44"),
+      text
+    );
+    assert(
+      "24. topics section",
+      text.includes("--- topics") && text.includes("NewsAndPolitics>Weather: 0.99"),
+      text
+    );
+    assert(
+      "24. highlights section",
+      text.includes("--- highlights") && text.includes('3× "air quality"'),
+      text
+    );
+    assert(
+      "24. unredacted_text section",
+      text.includes("--- unredacted_text") && text.includes("Jane Doe reported the fire."),
+      text
+    );
+    assert(
+      "24. warnings section",
+      text.includes("--- warnings") && text.includes("'ur' is not supported"),
+      text
+    );
+    assert(
+      "24. structuredContent gains guardrail fields",
+      result.structuredContent?.content_safety_labels !== undefined &&
+        result.structuredContent?.iab_categories_result !== undefined &&
+        result.structuredContent?.auto_highlights_result !== undefined &&
+        result.structuredContent?.unredacted_text === "Jane Doe reported the fire." &&
+        result.structuredContent?.metadata !== undefined,
+      JSON.stringify(result.structuredContent)
     );
   });
 

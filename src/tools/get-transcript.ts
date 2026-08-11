@@ -3,6 +3,20 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import { getTranscript, AssemblyAIError, type TranscriptRecord } from "../assemblyai";
 import { log, logError, keyHash } from "../log";
+import {
+  formatMs,
+  renderTranslations,
+  renderSpeechUnderstanding,
+  renderContentSafety,
+  renderTopics,
+  renderHighlights,
+  renderUnredactedText,
+  renderWarnings,
+  type SpeechUnderstandingResponse,
+  type ContentSafetyLabels,
+  type IabCategoriesResult,
+  type AutoHighlightsResult,
+} from "../transcript-sections";
 
 export function registerGetTranscript(server: McpServer): void {
   server.registerTool(
@@ -90,6 +104,13 @@ interface ShapedTranscript {
   error?: string;
   sentiment?: Array<{ text: string; sentiment: string; confidence: number; start: number; end: number; speaker: string | null }>;
   entities?: Array<{ text: string; entity_type: string; start: number; end: number }>;
+  translated_texts?: Record<string, string>;
+  speech_understanding?: { request?: unknown; response?: SpeechUnderstandingResponse };
+  content_safety_labels?: ContentSafetyLabels;
+  iab_categories_result?: IabCategoriesResult;
+  auto_highlights_result?: AutoHighlightsResult;
+  unredacted_text?: string;
+  metadata?: { domain_used?: string | null; warnings?: Array<{ message: string }> };
 }
 
 function shape(record: TranscriptRecord): ShapedTranscript {
@@ -106,6 +127,13 @@ function shape(record: TranscriptRecord): ShapedTranscript {
   if (record.sentiment_analysis_results && record.sentiment_analysis_results.length > 0)
     out.sentiment = record.sentiment_analysis_results;
   if (record.entities && record.entities.length > 0) out.entities = record.entities;
+  if (record.translated_texts !== undefined) out.translated_texts = record.translated_texts;
+  if (record.speech_understanding !== undefined) out.speech_understanding = record.speech_understanding;
+  if (record.content_safety_labels !== undefined) out.content_safety_labels = record.content_safety_labels;
+  if (record.iab_categories_result !== undefined) out.iab_categories_result = record.iab_categories_result;
+  if (record.auto_highlights_result !== undefined) out.auto_highlights_result = record.auto_highlights_result;
+  if (record.unredacted_text !== undefined) out.unredacted_text = record.unredacted_text;
+  if (record.metadata !== undefined) out.metadata = record.metadata;
   return out;
 }
 
@@ -164,12 +192,27 @@ function formatTranscript(s: ShapedTranscript): string {
     lines.push(s.summary);
   }
 
-  return lines.join("\n");
-}
+  if (s.translated_texts && Object.keys(s.translated_texts).length > 0) {
+    lines.push(...renderTranslations(s.translated_texts));
+  }
+  if (s.speech_understanding?.response) {
+    lines.push(...renderSpeechUnderstanding(s.speech_understanding.response));
+  }
+  if (s.content_safety_labels?.summary && Object.keys(s.content_safety_labels.summary).length > 0) {
+    lines.push(...renderContentSafety(s.content_safety_labels));
+  }
+  if (s.iab_categories_result?.summary && Object.keys(s.iab_categories_result.summary).length > 0) {
+    lines.push(...renderTopics(s.iab_categories_result));
+  }
+  if (s.auto_highlights_result?.results && s.auto_highlights_result.results.length > 0) {
+    lines.push(...renderHighlights(s.auto_highlights_result));
+  }
+  if (s.unredacted_text) {
+    lines.push(...renderUnredactedText(s.unredacted_text));
+  }
+  if (s.metadata?.warnings && s.metadata.warnings.length > 0) {
+    lines.push(...renderWarnings(s.metadata.warnings));
+  }
 
-function formatMs(ms: number): string {
-  const totalSec = Math.floor(ms / 1000);
-  const m = Math.floor(totalSec / 60);
-  const s = totalSec % 60;
-  return `${m}:${s.toString().padStart(2, "0")}`;
+  return lines.join("\n");
 }
