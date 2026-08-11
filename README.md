@@ -8,18 +8,39 @@ operational alignment.
 
 ## Tools
 
-- **`submit_transcript(audio_url, speaker_labels?, sentiment_analysis?, entity_detection?, redact_pii?, redact_pii_policies?, redact_pii_sub?)`** —
-  submits a public URL to AssemblyAI and returns `{ transcript_id, status }`
-  immediately. Optional flags enable speaker diarization, sentiment analysis
-  (English only), entity detection, and PII redaction of the transcript text.
+- **`submit_transcript(audio_url, ...)`** — submits a public URL to
+  AssemblyAI and returns `{ transcript_id, status }` immediately. Accepts
+  the full public async transcription param surface: speaker diarization,
+  sentiment analysis (English only), entity detection, PII redaction,
+  prompting (`prompt`, `keyterms_prompt`), language options (`language_code`,
+  `language_codes`, `language_detection`, `language_detection_options`),
+  guardrails (`filter_profanity`, `speech_threshold`, `content_safety`,
+  `redact_pii_audio`, `redact_static_entities`, ...), diarization options
+  (`speaker_options`), inline Speech Understanding (`speech_understanding`,
+  for translation/speaker ID/formatting/summarization/action items run
+  during transcription), and webhooks (`webhook_url`, ...). See
+  AssemblyAI's [submit-transcript endpoint
+  docs](https://www.assemblyai.com/docs/api-reference/transcripts/submit)
+  for the full parameter reference.
 - **`get_transcript(transcript_id)`** — single fetch of the current state. The
   agent polls this (~every 3s) until `status` is `completed` or `error`. When
   enabled, the response text includes `--- sentiment ---` and `--- entities ---`
-  sections alongside `--- text ---` and `--- utterances ---`.
+  sections alongside `--- text ---` and `--- utterances ---`, plus any
+  Speech Understanding / guardrail sections requested at submit time.
 - **`summarize_transcript(transcript_id, style?, custom_prompt?)`** — generates a
   summary of a completed transcript via AssemblyAI's LLM Gateway. Call after
   `get_transcript` shows `completed`. `style` is one of `bullets` (default),
   `paragraph`, `headline`, `action_items`, or `custom` (with `custom_prompt`).
+- **`understand_transcript(transcript_id, speech_understanding)`** — runs
+  Speech Understanding features on an already-completed transcript,
+  post-hoc, without re-submitting the audio: translation, speaker
+  identification, custom formatting, chaptered summarization, and action
+  items, via AssemblyAI's LLM Gateway `/v1/understanding` endpoint. Prefer
+  passing `speech_understanding` to `submit_transcript` instead when the
+  need is known before transcription.
+- **`delete_transcript(transcript_id)`** — permanently and irreversibly
+  deletes a transcript and its associated data from AssemblyAI. Only call
+  when the user explicitly asks for deletion.
 
 ## Auth: pass-through Bearer
 
@@ -44,7 +65,12 @@ re-test**. To keep that guarantee, all changes here are additive:
    `--- entities ---`) are never renamed or reshaped, because Databricks AI
    Playground reads `content[].text`. (A legacy `--- summary ---` section is
    still rendered if present, but summaries now come from the
-   `summarize_transcript` tool, not `get_transcript`.)
+   `summarize_transcript` tool, not `get_transcript`.) The same protection
+   covers the newer sections added for Speech Understanding and guardrails:
+   `--- translation:<lang> ---`, `--- speaker_identification ---`,
+   `--- custom_formatting ---`, `--- su_summary ---`, `--- action_items ---`,
+   `--- content_safety ---`, `--- topics ---`, `--- highlights ---`,
+   `--- unredacted_text ---`, `--- redacted_audio ---`, and `--- warnings ---`.
 4. **`structuredContent` is additive only** — new fields, never removed/renamed.
 5. **Avoid deprecated AssemblyAI transcript params** (`auto_chapters`,
    `summarization`, `summary_model`, `summary_type`); use LLM Gateway instead.
@@ -99,8 +125,12 @@ ASSEMBLYAI_API_KEY=... MCP_URL=https://<host>/mcp npm run test:live
 
 Drives the running server with the MCP SDK client over Streamable HTTP:
 tool discovery, all `submit_transcript` feature flags, `speech_model_used`
-assertion, `summarize_transcript`, and graceful failure on a bad audio URL.
-Costs a few cents of transcription credit per run.
+assertion, `summarize_transcript`, inline Speech Understanding (translation +
+chaptered summary) and guardrails (content safety) submitted alongside the
+other scenarios, post-hoc Speech Understanding via `understand_transcript`,
+graceful failure on a bad audio URL, and teardown via `delete_transcript` for
+every transcript the run created. Costs a few cents of transcription credit
+per run.
 
 For the same test **through Databricks** (workspace auth + UC connection
 credential injection — the path AI Playground uses), run
@@ -142,10 +172,17 @@ mcp-server/
 │   ├── server.ts                            # registerTools factory
 │   ├── log.ts                               # JSON logging helpers + key hashing
 │   ├── assemblyai.ts                        # fetch wrapper (submit, get, retry)
+│   ├── llm-gateway.ts                       # LLM Gateway client (summarize, understand)
+│   ├── transcript-sections.ts               # get_transcript section renderers
+│   ├── speech-understanding-schema.ts       # shared speech_understanding zod schema
 │   ├── tools/
 │   │   ├── submit-transcript.ts
-│   │   └── get-transcript.ts
-│   └── smoke-test.ts                        # InMemoryTransport, mocked fetch
+│   │   ├── get-transcript.ts
+│   │   ├── summarize-transcript.ts
+│   │   ├── understand-transcript.ts
+│   │   └── delete-transcript.ts
+│   ├── smoke-test.ts                        # InMemoryTransport, mocked fetch
+│   └── live-test.ts                         # real API, Streamable HTTP client
 ├── package.json
 ├── tsconfig.json
 ├── next.config.js
