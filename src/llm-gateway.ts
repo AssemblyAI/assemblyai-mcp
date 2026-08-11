@@ -8,6 +8,7 @@
  * never has to round-trip through this server.
  */
 import { requestWithRetry } from "./assemblyai";
+import type { SpeechUnderstandingResponse } from "./transcript-sections";
 
 const DEFAULT_LLM_GATEWAY_BASE_URL =
   process.env.ASSEMBLYAI_LLM_GATEWAY_BASE_URL ?? "https://llm-gateway.assemblyai.com";
@@ -48,4 +49,31 @@ export async function summarizeViaLlmGateway(
     throw new Error("LLM Gateway returned no summary content.");
   }
   return content;
+}
+
+export interface UnderstandOptions {
+  transcript_id: string;
+  speech_understanding: { request: Record<string, unknown> };
+}
+
+export interface UnderstandingResponse {
+  request_id?: string;
+  translated_texts?: Record<string, string>;
+  utterances?: Array<{ speaker: string; text: string; start: number; end: number }>;
+  speech_understanding?: { response?: SpeechUnderstandingResponse };
+}
+
+/** Post-hoc Speech Understanding on a completed transcript. */
+export async function understandTranscript(
+  apiKey: string,
+  options: UnderstandOptions
+): Promise<UnderstandingResponse> {
+  return requestWithRetry<UnderstandingResponse>(
+    apiKey,
+    "POST",
+    "/v1/understanding",
+    { transcript_id: options.transcript_id, speech_understanding: options.speech_understanding },
+    3,
+    DEFAULT_LLM_GATEWAY_BASE_URL
+  );
 }

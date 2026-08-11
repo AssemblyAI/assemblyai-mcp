@@ -23,7 +23,10 @@ export function registerSummarizeTranscript(server: McpServer): void {
       description:
         "Generate a summary of a COMPLETED transcript using AssemblyAI's LLM Gateway. " +
         "First submit_transcript, then poll get_transcript until status=completed, then call this " +
-        "with the transcript_id. Choose a `style` or pass a `custom_prompt` for a tailored summary.",
+        "with the transcript_id. Choose a `style` or pass a `custom_prompt` for a tailored summary." +
+        " For a CHAPTERED summary with timestamps/headlines, or decision-aware action items, use the " +
+        "`understand_transcript` tool (summarization / action_items features) instead — this tool is " +
+        "the freeform/custom-prompt option.",
       inputSchema: {
         transcript_id: z
           .string()

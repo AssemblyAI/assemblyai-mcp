@@ -27,6 +27,9 @@
  *   23. get_transcript renders su_summary + action_items
  *   24. get_transcript renders content_safety / topics / highlights / unredacted / warnings
  *   25. get_transcript fetches redacted audio URL when flag present; degrades gracefully when not ready
+ *   26. understand_transcript posts to the Gateway /v1/understanding and renders results
+ *   27. understand_transcript 404 → friendly message
+ *   28. understand_transcript 429 → rate-limit message; summarize_transcript description points here
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -845,6 +848,99 @@ async function run() {
       "25. structuredContent has no redacted_audio_url when 200 without URL",
       result.structuredContent?.redacted_audio_url === undefined,
       JSON.stringify(result.structuredContent)
+    );
+  });
+
+  // 26. understand_transcript posts to the Gateway /v1/understanding and renders results
+  await withClientServer(async (client) => {
+    resetMock([
+      jsonResponse(200, {
+        request_id: "req-1",
+        translated_texts: { es: "hola" },
+        speech_understanding: {
+          response: {
+            translation: { status: "success" },
+            action_items: {
+              status: "success",
+              items: [{ action_item: "Send the report.", quote: "send the report", timestamp: 4000 }],
+            },
+          },
+        },
+      }),
+    ]);
+    const result = await callTool(
+      client,
+      "understand_transcript",
+      {
+        transcript_id: "txn-u1",
+        speech_understanding: { request: { translation: { target_languages: ["es"] }, action_items: {} } },
+      },
+      "k"
+    );
+    assert(
+      "26. posts to LLM Gateway /v1/understanding",
+      (calls[0]?.url ?? "").includes("llm-gateway") && (calls[0]?.url ?? "").endsWith("/v1/understanding"),
+      calls[0]?.url
+    );
+    const body = JSON.parse(calls[0]?.body ?? "{}");
+    assert(
+      "26. sends transcript_id + speech_understanding.request",
+      body.transcript_id === "txn-u1" &&
+        JSON.stringify(body.speech_understanding?.request?.translation) ===
+          JSON.stringify({ target_languages: ["es"] }),
+      JSON.stringify(body)
+    );
+    const text = result.content?.[0]?.text ?? "";
+    assert(
+      "26. renders translation + action_items sections",
+      text.includes("--- translation:es ---") && text.includes("hola") && text.includes("Send the report."),
+      text
+    );
+    assert(
+      "26. structuredContent carries the raw response",
+      (result.structuredContent?.translated_texts as Record<string, string>)?.es === "hola",
+      JSON.stringify(result.structuredContent)
+    );
+  });
+
+  // 27. understand_transcript 404 → friendly message
+  await withClientServer(async (client) => {
+    resetMock([jsonResponse(404, { error: "transcript not found" })]);
+    const result = await callTool(
+      client,
+      "understand_transcript",
+      { transcript_id: "missing", speech_understanding: { request: { action_items: {} } } },
+      "k"
+    );
+    const text = (result.content?.[0]?.text ?? "").toLowerCase();
+    assert(
+      "27. 404 → not found / deleted message",
+      result.isError === true && text.includes("not found or deleted"),
+      `isError=${result.isError} text=${text}`
+    );
+  });
+
+  // 28. understand_transcript 429 → rate-limit message; summarize description points here
+  await withClientServer(async (client) => {
+    resetMock([jsonResponse(429, { error: "rate limit exceeded" })]);
+    const result = await callTool(
+      client,
+      "understand_transcript",
+      { transcript_id: "txn-u1", speech_understanding: { request: { action_items: {} } } },
+      "k"
+    );
+    const text = (result.content?.[0]?.text ?? "").toLowerCase();
+    assert(
+      "28. 429 → rate limit message with retry hint",
+      result.isError === true && text.includes("rate limit") && text.includes("retry"),
+      `isError=${result.isError} text=${text}`
+    );
+    const tools = await client.listTools();
+    const summarize = tools.tools.find((t) => t.name === "summarize_transcript");
+    assert(
+      "28. summarize_transcript description mentions understand_transcript",
+      (summarize?.description ?? "").includes("understand_transcript"),
+      summarize?.description
     );
   });
 
