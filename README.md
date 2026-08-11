@@ -129,8 +129,8 @@ assertion, `summarize_transcript`, inline Speech Understanding (translation +
 chaptered summary) and guardrails (content safety) submitted alongside the
 other scenarios, post-hoc Speech Understanding via `understand_transcript`,
 graceful failure on a bad audio URL, and teardown via `delete_transcript` for
-every transcript the run created. Costs a few cents of transcription credit
-per run.
+the transcripts it successfully creates (the deliberate bad-URL scenario is
+excluded). Costs a few cents of transcription credit per run.
 
 For the same test **through Databricks** (workspace auth + UC connection
 credential injection — the path AI Playground uses), run

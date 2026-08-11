@@ -118,7 +118,7 @@ export function renderTopics(result: IabCategoriesResult): string[] {
 
 export function renderHighlights(result: AutoHighlightsResult): string[] {
   const lines = ["", "--- highlights (key phrases; count = occurrences) ---"];
-  const results = [...(result.results ?? [])].sort((a, b) => a.rank - b.rank);
+  const results = [...(result.results ?? [])].sort((a, b) => b.rank - a.rank);
   for (const r of results) lines.push(`${r.count}× "${r.text}"`);
   return lines;
 }

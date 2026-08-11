@@ -43,7 +43,7 @@ export function registerUnderstandTranscript(server: McpServer): void {
       try {
         const response = await understandTranscript(apiKey, {
           transcript_id: args.transcript_id,
-          speech_understanding: args.speech_understanding as { request: Record<string, unknown> },
+          speech_understanding: args.speech_understanding,
         });
         log({
           event: "tool_call",

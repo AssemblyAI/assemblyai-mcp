@@ -62,7 +62,7 @@ export function registerGetTranscript(server: McpServer): void {
               tool: "get_transcript",
               keyHash: keyHash(apiKey),
               transcript_id: args.transcript_id,
-              status: "warn",
+              status: "error",
             });
           }
         }

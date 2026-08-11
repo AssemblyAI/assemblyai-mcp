@@ -748,7 +748,7 @@ async function run() {
           severity_score_summary: { disasters: { low: 0.56, medium: 0.44, high: 0 } },
         },
         iab_categories_result: { summary: { "NewsAndPolitics>Weather": 0.99 } },
-        auto_highlights_result: { results: [{ count: 3, rank: 0.08, text: "air quality" }] },
+        auto_highlights_result: { results: [{ count: 1, rank: 0.12, text: "wildfire smoke" }, { count: 3, rank: 0.08, text: "air quality" }] },
         unredacted_text: "Jane Doe reported the fire.",
         metadata: { domain_used: null, warnings: [{ message: "'ur' is not supported in universal-3-5-pro" }] },
       }),
@@ -768,6 +768,11 @@ async function run() {
     assert(
       "24. highlights section",
       text.includes("--- highlights") && text.includes('3× "air quality"'),
+      text
+    );
+    assert(
+      "24. highlights render most-relevant first",
+      text.indexOf('1× "wildfire smoke"') >= 0 && text.indexOf('1× "wildfire smoke"') < text.indexOf('3× "air quality"'),
       text
     );
     assert(
