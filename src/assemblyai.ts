@@ -226,9 +226,20 @@ export async function getRedactedAudio(
   );
 }
 
+export async function deleteTranscript(
+  apiKey: string,
+  transcriptId: string
+): Promise<TranscriptRecord> {
+  return requestWithRetry<TranscriptRecord>(
+    apiKey,
+    "DELETE",
+    `/v2/transcript/${encodeURIComponent(transcriptId)}`
+  );
+}
+
 export async function requestWithRetry<T>(
   apiKey: string,
-  method: "GET" | "POST",
+  method: "GET" | "POST" | "DELETE",
   path: string,
   body?: unknown,
   retries = 3,

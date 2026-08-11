@@ -31,6 +31,8 @@
  *   27. understand_transcript 404 → friendly message
  *   27b. understand_transcript 401 → friendly bad-key error
  *   28. understand_transcript 429 → rate-limit message; summarize_transcript description points here
+ *   29. delete_transcript DELETEs to /v2/transcript/{id} and confirms with transcript_id + deleted: true
+ *   30. delete_transcript 404 → already deleted or not found message
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -959,6 +961,35 @@ async function run() {
       "28. summarize_transcript description mentions understand_transcript",
       (summarize?.description ?? "").includes("understand_transcript"),
       summarize?.description
+    );
+  });
+
+  // 29. delete_transcript issues DELETE and confirms
+  await withClientServer(async (client) => {
+    resetMock([jsonResponse(200, { id: "txn-del", status: "completed" })]);
+    const result = await callTool(client, "delete_transcript", { transcript_id: "txn-del" }, "k");
+    assert(
+      "29. DELETE to /v2/transcript/{id}",
+      calls[0]?.method === "DELETE" && (calls[0]?.url ?? "").endsWith("/v2/transcript/txn-del"),
+      `${calls[0]?.method} ${calls[0]?.url}`
+    );
+    assert(
+      "29. returns deleted confirmation",
+      result.isError !== true && result.structuredContent?.deleted === true &&
+        result.structuredContent?.transcript_id === "txn-del",
+      JSON.stringify(result.structuredContent)
+    );
+  });
+
+  // 30. delete_transcript 404 → already deleted / not found
+  await withClientServer(async (client) => {
+    resetMock([jsonResponse(404, { error: "not found" })]);
+    const result = await callTool(client, "delete_transcript", { transcript_id: "gone" }, "k");
+    const text = (result.content?.[0]?.text ?? "").toLowerCase();
+    assert(
+      "30. 404 → already deleted or not found message",
+      result.isError === true && text.includes("already deleted or not found"),
+      `isError=${result.isError} text=${text}`
     );
   });
 
