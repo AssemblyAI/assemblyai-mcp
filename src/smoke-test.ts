@@ -29,6 +29,7 @@
  *   25. get_transcript fetches redacted audio URL when flag present; degrades gracefully when not ready
  *   26. understand_transcript posts to the Gateway /v1/understanding and renders results
  *   27. understand_transcript 404 → friendly message
+ *   27b. understand_transcript 401 → friendly bad-key error
  *   28. understand_transcript 429 → rate-limit message; summarize_transcript description points here
  */
 
@@ -916,6 +917,23 @@ async function run() {
     assert(
       "27. 404 → not found / deleted message",
       result.isError === true && text.includes("not found or deleted"),
+      `isError=${result.isError} text=${text}`
+    );
+  });
+
+  // 27b. understand_transcript 401 → friendly bad-key error
+  await withClientServer(async (client) => {
+    resetMock([jsonResponse(401, { error: "Invalid API key" })]);
+    const result = await callTool(
+      client,
+      "understand_transcript",
+      { transcript_id: "txn-u1", speech_understanding: { request: { action_items: {} } } },
+      "bad-key"
+    );
+    const text = result.content?.[0]?.text ?? "";
+    assert(
+      "27b. 401 → friendly bad-key error",
+      result.isError === true && text.includes("AssemblyAI rejected the API key"),
       `isError=${result.isError} text=${text}`
     );
   });
