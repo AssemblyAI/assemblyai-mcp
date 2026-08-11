@@ -20,6 +20,9 @@
  *   14. summarize_transcript calls LLM Gateway with transcript_id + {{ transcript }} tag
  *   15. summarize_transcript with style=custom but no custom_prompt → validation error, no gateway call
  *   16.–18. scalar/boolean pass-through params
+ *   19. nested objects pass through unchanged (language_detection_options, speaker_options, etc.)
+ *   20. speech_understanding.request nests correctly with translation, summarization, action_items
+ *   21. speech_understanding without request wrapper rejected before API call
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -532,6 +535,113 @@ async function run() {
       "18. explicit speech_models overrides the pin",
       JSON.stringify(body.speech_models) === JSON.stringify(["universal-2"]),
       JSON.stringify(body)
+    );
+  });
+
+  // 19. nested objects pass through unchanged
+  await withClientServer(async (client) => {
+    resetMock([jsonResponse(200, { id: "txn-n1", status: "queued" })]);
+    await callTool(
+      client,
+      "submit_transcript",
+      {
+        audio_url: "https://example.com/x.mp3",
+        language_detection: true,
+        language_detection_options: {
+          expected_languages: ["en", "de"],
+          fallback_language: "en",
+          localization: ["en_uk"],
+        },
+        speaker_labels: true,
+        speaker_options: { min_speakers_expected: 2, max_speakers_expected: 4 },
+        redact_pii: true,
+        redact_pii_audio: true,
+        redact_pii_audio_options: { override_audio_redaction_method: "silence" },
+        redact_static_entities: { INTERNAL_TOOL: ["Bearclaw"] },
+        custom_spelling: [{ from: ["gothe"], to: "Goethe" }],
+      },
+      "k"
+    );
+    const body = JSON.parse(calls[0]?.body ?? "{}");
+    assert(
+      "19. language_detection_options passes through",
+      JSON.stringify(body.language_detection_options) ===
+        JSON.stringify({ expected_languages: ["en", "de"], fallback_language: "en", localization: ["en_uk"] }),
+      JSON.stringify(body)
+    );
+    assert(
+      "19. speaker_options passes through",
+      JSON.stringify(body.speaker_options) === JSON.stringify({ min_speakers_expected: 2, max_speakers_expected: 4 }),
+      JSON.stringify(body)
+    );
+    assert(
+      "19. redact_pii_audio_options + static entities pass through",
+      body.redact_pii_audio === true &&
+        body.redact_pii_audio_options?.override_audio_redaction_method === "silence" &&
+        JSON.stringify(body.redact_static_entities) === JSON.stringify({ INTERNAL_TOOL: ["Bearclaw"] }),
+      JSON.stringify(body)
+    );
+    assert(
+      "19. custom_spelling passes through",
+      JSON.stringify(body.custom_spelling) === JSON.stringify([{ from: ["gothe"], to: "Goethe" }]),
+      JSON.stringify(body)
+    );
+  });
+
+  // 20. inline speech_understanding passes through with the request wrapper
+  await withClientServer(async (client) => {
+    resetMock([jsonResponse(200, { id: "txn-su", status: "queued" })]);
+    await callTool(
+      client,
+      "submit_transcript",
+      {
+        audio_url: "https://example.com/x.mp3",
+        speaker_labels: true,
+        speech_understanding: {
+          request: {
+            translation: { target_languages: ["es"], formal: true },
+            summarization: { summary_type: "bullets" },
+            action_items: {},
+          },
+        },
+      },
+      "k"
+    );
+    const body = JSON.parse(calls[0]?.body ?? "{}");
+    assert(
+      "20. speech_understanding.request nests correctly",
+      JSON.stringify(body.speech_understanding?.request?.translation) ===
+        JSON.stringify({ target_languages: ["es"], formal: true }) &&
+        body.speech_understanding?.request?.summarization?.summary_type === "bullets" &&
+        JSON.stringify(body.speech_understanding?.request?.action_items) === "{}",
+      JSON.stringify(body)
+    );
+  });
+
+  // 21. speech_understanding without the request wrapper → schema error, no API call.
+  // NOTE: zod violations are rejected at the MCP protocol layer (InvalidParams),
+  // so client.callTool THROWS here rather than returning isError — catch both shapes.
+  await withClientServer(async (client) => {
+    resetMock([]);
+    let rejected = false;
+    try {
+      const result = await callTool(
+        client,
+        "submit_transcript",
+        {
+          audio_url: "https://example.com/x.mp3",
+          speech_understanding: { translation: { target_languages: ["es"] } },
+        },
+        "k"
+      );
+      rejected = result.isError === true;
+    } catch {
+      rejected = true;
+    }
+    assert(
+      "21. missing request wrapper rejected before calling AssemblyAI",
+      rejected && calls.length === 0,
+      `rejected=${rejected} calls=${calls.length}`
     );
   });
 

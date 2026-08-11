@@ -3,6 +3,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import { submitTranscript, AssemblyAIError } from "../assemblyai";
 import { log, logError, keyHash } from "../log";
+import { speechUnderstandingSchema } from "../speech-understanding-schema";
 
 const ALLOWED_SCHEMES = new Set(["http:", "https:"]);
 
@@ -242,6 +243,62 @@ export function registerSubmitTranscript(server: McpServer): void {
           .string()
           .optional()
           .describe("Custom auth header value to send on the webhook request."),
+        language_detection_options: z
+          .looseObject({
+            expected_languages: z.array(z.string()).optional().describe("Restrict detection to these codes."),
+            fallback_language: z.string().optional().describe("Fallback code if detection fails."),
+            code_switching: z.boolean().optional().describe("Detect language switches (universal-2 only)."),
+            code_switching_confidence_threshold: z.number().min(0).max(1).optional(),
+            localization: z
+              .array(z.string())
+              .optional()
+              .describe("Regional English spelling: only 'en_au' and 'en_uk' accepted."),
+          })
+          .optional()
+          .describe("Options refining language_detection."),
+        speaker_options: z
+          .looseObject({
+            min_speakers_expected: z.number().int().min(1).optional(),
+            max_speakers_expected: z.number().int().min(1).optional(),
+          })
+          .optional()
+          .describe("Diarization hints; use with speaker_labels=true."),
+        redact_pii_audio_options: z
+          .looseObject({
+            override_audio_redaction_method: z
+              .enum(["silence"])
+              .optional()
+              .describe("Replace PII with silence instead of the default beep."),
+            return_redacted_no_speech_audio: z
+              .boolean()
+              .optional()
+              .describe("Also redact non-speech segments."),
+          })
+          .optional()
+          .describe("Options for the redacted audio file (with redact_pii_audio=true)."),
+        redact_static_entities: z
+          .record(z.string(), z.array(z.string()))
+          .optional()
+          .describe(
+            "Literal find-and-replace redaction on top of PII policies: label → exact terms, " +
+              "e.g. {\"INTERNAL_TOOL\": [\"Bearclaw\"]}. Requires redact_pii=true."
+          ),
+        custom_spelling: z
+          .array(
+            z.object({
+              from: z.array(z.string()).min(1).describe("Variants to replace (case-insensitive)."),
+              to: z.string().describe("Replacement — single word, case-sensitive."),
+            })
+          )
+          .optional()
+          .describe("Spelling corrections applied to the transcript."),
+        speech_understanding: speechUnderstandingSchema
+          .optional()
+          .describe(
+            "Run Speech Understanding features (translation, speaker_identification, custom_formatting, " +
+              "summarization, action_items) inline with transcription — results appear in get_transcript. " +
+              "For an ALREADY-COMPLETED transcript use the understand_transcript tool instead of re-submitting."
+          ),
       },
     },
     async (args, extra) => {
