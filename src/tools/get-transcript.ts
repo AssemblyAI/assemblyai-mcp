@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
-import { getTranscript, AssemblyAIError, type TranscriptRecord } from "../assemblyai";
+import { getTranscript, getRedactedAudio, AssemblyAIError, type TranscriptRecord } from "../assemblyai";
 import { log, logError, keyHash } from "../log";
 import {
   formatMs,
@@ -11,6 +11,7 @@ import {
   renderTopics,
   renderHighlights,
   renderUnredactedText,
+  renderRedactedAudio,
   renderWarnings,
   type SpeechUnderstandingResponse,
   type ContentSafetyLabels,
@@ -46,7 +47,27 @@ export function registerGetTranscript(server: McpServer): void {
 
       try {
         const record = await getTranscript(apiKey, args.transcript_id);
-        const shaped = shape(record);
+        let redactedAudioUrl: string | undefined;
+        let redactedAudioPending = false;
+        if (record.status === "completed" && record.redact_pii_audio === true) {
+          try {
+            const audio = await getRedactedAudio(apiKey, args.transcript_id);
+            redactedAudioUrl = audio.redacted_audio_url;
+            redactedAudioPending = redactedAudioUrl === undefined;
+          } catch {
+            redactedAudioPending = true;
+            log({
+              event: "redacted_audio_unavailable",
+              level: "warn",
+              tool: "get_transcript",
+              keyHash: keyHash(apiKey),
+              transcript_id: args.transcript_id,
+              status: "warn",
+            });
+          }
+        }
+        const shaped = shape(record, redactedAudioUrl);
+        if (redactedAudioPending) shaped.redacted_audio_pending = true;
         log({
           event: "tool_call",
           tool: "get_transcript",
@@ -110,10 +131,12 @@ interface ShapedTranscript {
   iab_categories_result?: IabCategoriesResult;
   auto_highlights_result?: AutoHighlightsResult;
   unredacted_text?: string;
+  redacted_audio_url?: string;
+  redacted_audio_pending?: boolean;
   metadata?: { domain_used?: string | null; warnings?: Array<{ message: string }> };
 }
 
-function shape(record: TranscriptRecord): ShapedTranscript {
+function shape(record: TranscriptRecord, redactedAudioUrl?: string): ShapedTranscript {
   const out: ShapedTranscript = {
     transcript_id: record.id,
     status: record.status,
@@ -133,6 +156,7 @@ function shape(record: TranscriptRecord): ShapedTranscript {
   if (record.iab_categories_result !== undefined) out.iab_categories_result = record.iab_categories_result;
   if (record.auto_highlights_result !== undefined) out.auto_highlights_result = record.auto_highlights_result;
   if (record.unredacted_text !== undefined) out.unredacted_text = record.unredacted_text;
+  if (redactedAudioUrl !== undefined) out.redacted_audio_url = redactedAudioUrl;
   if (record.metadata !== undefined) out.metadata = record.metadata;
   return out;
 }
@@ -212,6 +236,11 @@ function formatTranscript(s: ShapedTranscript): string {
   }
   if (s.metadata?.warnings && s.metadata.warnings.length > 0) {
     lines.push(...renderWarnings(s.metadata.warnings));
+  }
+  if (s.redacted_audio_url) {
+    lines.push(...renderRedactedAudio(s.redacted_audio_url));
+  } else if (s.redacted_audio_pending) {
+    lines.push("", "(redacted audio not ready yet — call get_transcript again shortly)");
   }
 
   return lines.join("\n");

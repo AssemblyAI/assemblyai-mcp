@@ -210,6 +210,22 @@ export async function getTranscript(
   );
 }
 
+export interface RedactedAudioResponse {
+  status: string;
+  redacted_audio_url?: string;
+}
+
+export async function getRedactedAudio(
+  apiKey: string,
+  transcriptId: string
+): Promise<RedactedAudioResponse> {
+  return requestWithRetry<RedactedAudioResponse>(
+    apiKey,
+    "GET",
+    `/v2/transcript/${encodeURIComponent(transcriptId)}/redacted-audio`
+  );
+}
+
 export async function requestWithRetry<T>(
   apiKey: string,
   method: "GET" | "POST",

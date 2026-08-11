@@ -26,6 +26,7 @@
  *   22. get_transcript renders translation / speaker_identification / custom_formatting
  *   23. get_transcript renders su_summary + action_items
  *   24. get_transcript renders content_safety / topics / highlights / unredacted / warnings
+ *   25. get_transcript fetches redacted audio URL when flag present; degrades gracefully when not ready
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -781,6 +782,46 @@ async function run() {
         result.structuredContent?.unredacted_text === "Jane Doe reported the fire." &&
         result.structuredContent?.metadata !== undefined,
       JSON.stringify(result.structuredContent)
+    );
+  });
+
+  // 25. redacted audio: second fetch when redact_pii_audio, graceful when not ready
+  await withClientServer(async (client) => {
+    resetMock([
+      jsonResponse(200, { id: "txn-ra", status: "completed", text: "hi", audio_duration: 3, redact_pii_audio: true }),
+      jsonResponse(200, { status: "redacted_audio_ready", redacted_audio_url: "https://cdn.example/redacted.mp3" }),
+    ]);
+    const result = await callTool(client, "get_transcript", { transcript_id: "txn-ra" }, "k");
+    const text = result.content?.[0]?.text ?? "";
+    assert(
+      "25. fetches /redacted-audio when flag present",
+      calls.length === 2 && (calls[1]?.url ?? "").endsWith("/v2/transcript/txn-ra/redacted-audio"),
+      calls.map((c) => c.url).join(", ")
+    );
+    assert(
+      "25. redacted_audio section with URL + expiry note",
+      text.includes("--- redacted_audio ---") &&
+        text.includes("https://cdn.example/redacted.mp3") &&
+        text.includes("24 hours"),
+      text
+    );
+    assert(
+      "25. structuredContent carries redacted_audio_url",
+      result.structuredContent?.redacted_audio_url === "https://cdn.example/redacted.mp3",
+      JSON.stringify(result.structuredContent)
+    );
+  });
+  await withClientServer(async (client) => {
+    resetMock([
+      jsonResponse(200, { id: "txn-rb", status: "completed", text: "hi", audio_duration: 3, redact_pii_audio: true }),
+      jsonResponse(400, { error: "Redacted audio is not ready yet" }),
+    ]);
+    const result = await callTool(client, "get_transcript", { transcript_id: "txn-rb" }, "k");
+    const text = result.content?.[0]?.text ?? "";
+    assert(
+      "25. not-ready redacted audio degrades gracefully (tool still succeeds)",
+      result.isError !== true && text.includes("redacted audio not ready yet"),
+      `isError=${result.isError} text=${text}`
     );
   });
 
