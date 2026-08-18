@@ -9,7 +9,7 @@ filtering) — served over **Streamable HTTP** and authenticated per-request
 with the caller's own AssemblyAI API key.
 
 Works with any MCP client that can send a Bearer header: Claude Code,
-Claude.ai, Cursor, MCP Inspector, Databricks AI Playground, and others.
+Claude.ai, Cursor, MCP Inspector, and others.
 Built with Next.js 16 + `mcp-handler` + the official
 `@modelcontextprotocol/sdk`; deploys as a Vercel serverless function.
 
@@ -93,7 +93,7 @@ for parameter semantics.
 ### `get_transcript` output
 
 Everything renders into `content[].text` as labeled sections, because
-text-only MCP clients (e.g. Databricks AI Playground) read only that:
+some MCP clients surface only that to the model:
 `--- text ---` and `--- utterances ---` always; sentiment, entities,
 translations (whole-transcript and per-utterance), speaker identification,
 custom formatting, chaptered summary, action items, content safety, topics,
@@ -104,8 +104,8 @@ warnings when requested/present. Raw fields are mirrored in
 ## Auth: pass-through Bearer
 
 MCP clients send the API key as `Authorization: Bearer <key>` (most client
-configs and platforms — including Databricks HTTP connections — prepend
-`Bearer ` automatically). AssemblyAI's REST API expects the raw key, so
+configs prepend `Bearer ` automatically). AssemblyAI's REST API expects the
+raw key, so
 `withMcpAuth` extracts the token, strips the prefix, and threads it into
 every tool callback via `extra.authInfo.token`. No keys are written to disk
 or shared between requests — each request runs on the key it arrived with.
@@ -115,9 +115,8 @@ or shared between requests — each request runs on the key it arrived with.
 MCP clients discover tools at runtime (`list_tools`); client configs store
 only URL + auth, not a tool-schema snapshot. So new tools and new
 **optional** parameters appear automatically — no client reconfiguration,
-and for platforms with a connection-test step (e.g. a Databricks Unity
-Catalog connection) **no re-test**. To keep that guarantee, all changes
-here are additive:
+and for platforms with a connection-test step, **no re-test**. To keep that
+guarantee, all changes here are additive:
 
 1. **Tool names are permanent** — only add tools, never rename or remove.
 2. **New inputs are always optional**, with defaults that preserve current behavior.
@@ -196,37 +195,6 @@ block, so the suite tears down every transcript it successfully creates
 even when the run fails midway. Costs a few cents of transcription credit
 per run.
 
-## Databricks
-
-The server registers as a Unity Catalog HTTP connection and is used from AI
-Playground or agents:
-
-1. Tunnel (for local testing): `ngrok http 3000` → grab the
-   `https://…ngrok-free.dev` URL.
-2. Databricks workspace UI → Catalog → Connections → **Create connection**.
-3. Connection type: **HTTP**, name `assemblyai_mcp`.
-4. Host: hostname (no scheme, no path). Port: `443`. Base path: `/mcp`.
-5. Authentication type: **Bearer token**. Paste your AssemblyAI API key.
-6. Check **Is mcp connection** → **Test connection** → **Create**.
-7. AI Playground → add MCP tool → prompt `transcribe this audio file: <url>`.
-
-For the live e2e test **through Databricks** (workspace auth + UC connection
-credential injection — the path AI Playground uses), run
-`notebooks/mcp-live-test.py` as a notebook or scheduled job.
-
-### Sample notebooks (audio in Unity Catalog Volumes)
-
-Two Databricks notebooks in `notebooks/` demonstrate transcribing audio that
-lives in a Unity Catalog Volume (not on a public URL):
-
-| Notebook | Bridge to a usable `audio_url` | When to use |
-|---|---|---|
-| **`transcribe-uc-volume-direct-upload.py`** (default) | Streams bytes to AssemblyAI's `POST /v2/upload`, returns a private `upload_url` scoped to your AssemblyAI account. | Default for most users. No S3 bucket required, no presigning, works for any file size AssemblyAI accepts. |
-| `transcribe-uc-volume.py` | Copies bytes from UC Volume to an S3 bucket you own, generates a short-lived presigned URL. | Compliance / data-residency cases where audio must stay in your own cloud account until AssemblyAI fetches it. |
-
-Both notebooks then hand the resulting URL to the MCP tools
-(`submit_transcript` → `get_transcript`) the same way AI Playground does.
-
 ## Project layout
 
 ```
@@ -274,9 +242,9 @@ at `https://<host>/mcp` with `maxDuration: 60` per the handler config.
 
 ## Reference: prior Python implementation
 
-The Python `FastMCP`-based implementation that passed the original
-Databricks connection test is preserved in the **first commit** of this
-repo (`git log --reverse --oneline | head -1`). It serves as the source of
+The Python `FastMCP`-based implementation that preceded this TypeScript
+port is preserved in the **first commit** of this repo
+(`git log --reverse --oneline | head -1`). It serves as the source of
 truth for the design (auth bridge, error handling, response shapes); this
 TypeScript port carries the design forward onto a serverless-friendly
 platform.

@@ -1,6 +1,6 @@
 /**
  * Shared renderers for the labeled text sections emitted by get_transcript
- * and understand_transcript. Databricks AI Playground reads only
+ * and understand_transcript. some MCP clients read only
  * content[].text, so every feature result must render as plain text here.
  * Section headers are contract (README "Extending the tool surface"): once
  * shipped, never rename or reshape a section — only add new ones.

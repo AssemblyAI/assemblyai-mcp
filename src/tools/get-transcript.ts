@@ -44,7 +44,7 @@ export function registerGetTranscript(server: McpServer): void {
       if (!apiKey) {
         throw new Error(
           "No AssemblyAI API key in request context. Configure your AssemblyAI API key " +
-            "as the Bearer token in the Databricks HTTP connection."
+            "as the Bearer token in your MCP client connection."
         );
       }
 
@@ -164,7 +164,7 @@ function shape(record: TranscriptRecord, redactedAudioUrl?: string): ShapedTrans
 
 /**
  * Format the transcript into the `content[].text` payload. Some MCP clients
- * (Databricks AI Playground at the time of writing) only surface this text
+ * (text-only clients) only surface this text
  * to the underlying model and ignore `structuredContent`. So everything the
  * agent might need — full text, per-speaker utterances with timestamps,
  * sentiment, entities, and summary — must appear here as plain text.
