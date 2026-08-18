@@ -67,10 +67,11 @@ re-test**. To keep that guarantee, all changes here are additive:
    still rendered if present, but summaries now come from the
    `summarize_transcript` tool, not `get_transcript`.) The same protection
    covers the newer sections added for Speech Understanding and guardrails:
-   `--- translation:<lang> ---`, `--- speaker_identification ---`,
-   `--- custom_formatting ---`, `--- su_summary ---`, `--- action_items ---`,
-   `--- content_safety ---`, `--- topics ---`, `--- highlights ---`,
-   `--- unredacted_text ---`, `--- redacted_audio ---`, and `--- warnings ---`.
+   `--- translation:<lang> ---`, `--- translated_utterances ---`,
+   `--- speaker_identification ---`, `--- custom_formatting ---`,
+   `--- su_summary ---`, `--- action_items ---`, `--- content_safety ---`,
+   `--- topics ---`, `--- highlights ---`, `--- unredacted_text ---`,
+   `--- redacted_audio ---`, and `--- warnings ---`.
 4. **`structuredContent` is additive only** — new fields, never removed/renamed.
 5. **Avoid deprecated AssemblyAI transcript params** (`auto_chapters`,
    `summarization`, `summary_model`, `summary_type`); use LLM Gateway instead.
@@ -128,9 +129,11 @@ tool discovery, all `submit_transcript` feature flags, `speech_model_used`
 assertion, `summarize_transcript`, inline Speech Understanding (translation +
 chaptered summary) and guardrails (content safety) submitted alongside the
 other scenarios, post-hoc Speech Understanding via `understand_transcript`,
-graceful failure on a bad audio URL, and teardown via `delete_transcript` for
-the transcripts it successfully creates (the deliberate bad-URL scenario is
-excluded). Costs a few cents of transcription credit per run.
+graceful failure on a bad audio URL, and teardown via `delete_transcript`.
+Every transcript id is recorded as soon as `submit_transcript` returns it and
+deleted from a `finally` block, so it tears down every transcript it
+successfully creates even when an assertion throws and the run fails midway.
+Costs a few cents of transcription credit per run.
 
 For the same test **through Databricks** (workspace auth + UC connection
 credential injection — the path AI Playground uses), run

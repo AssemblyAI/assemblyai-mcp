@@ -48,6 +48,9 @@ export interface TranscriptSubmitOptions {
   redact_pii?: boolean;
   redact_pii_policies?: string[];
   redact_pii_sub?: "entity_name" | "hash";
+  // Verbatim/formatting toggles — both default true server-side.
+  punctuate?: boolean;
+  format_text?: boolean;
   // Prompting (Universal-3.5 Pro)
   prompt?: string;
   keyterms_prompt?: string[];
@@ -111,6 +114,8 @@ export interface TranscriptRecord {
     text: string;
     start: number;
     end: number;
+    /** Present when translation.match_original_utterance was requested. */
+    translated_texts?: Record<string, string>;
   }>;
   summary?: string;
   error?: string;
@@ -131,6 +136,7 @@ export interface TranscriptRecord {
   unredacted_text?: string;
   /** Echo of the request param — signals a redacted audio file exists. */
   redact_pii_audio?: boolean;
+  // Not yet observed in a live response — verify via test:live before relying on it (see PR #1 review).
   metadata?: { domain_used?: string | null; warnings?: Array<{ message: string }> };
 }
 
@@ -168,6 +174,8 @@ const PASSTHROUGH_KEYS = [
   "remove_audio_tags",
   "iab_categories",
   "auto_highlights",
+  "punctuate",
+  "format_text",
   "webhook_url",
   "webhook_auth_header_name",
   "webhook_auth_header_value",
@@ -219,10 +227,16 @@ export async function getRedactedAudio(
   apiKey: string,
   transcriptId: string
 ): Promise<RedactedAudioResponse> {
+  // retries=1: this is polled repeatedly from get_transcript's hot path
+  // (every ~3s until the redacted audio is ready); retrying each poll would
+  // multiply request volume and latency for a call that's cheap to just
+  // re-issue on the caller's next poll anyway.
   return requestWithRetry<RedactedAudioResponse>(
     apiKey,
     "GET",
-    `/v2/transcript/${encodeURIComponent(transcriptId)}/redacted-audio`
+    `/v2/transcript/${encodeURIComponent(transcriptId)}/redacted-audio`,
+    undefined,
+    1
   );
 }
 
@@ -230,10 +244,16 @@ export async function deleteTranscript(
   apiKey: string,
   transcriptId: string
 ): Promise<TranscriptRecord> {
+  // retries=1: DELETE is not idempotent from the caller's point of view — a
+  // retry after a successful-but-slow-to-respond delete would 404 on the
+  // already-deleted transcript and mislabel a successful deletion as a
+  // failure.
   return requestWithRetry<TranscriptRecord>(
     apiKey,
     "DELETE",
-    `/v2/transcript/${encodeURIComponent(transcriptId)}`
+    `/v2/transcript/${encodeURIComponent(transcriptId)}`,
+    undefined,
+    1
   );
 }
 

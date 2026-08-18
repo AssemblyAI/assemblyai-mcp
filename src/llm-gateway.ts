@@ -59,7 +59,13 @@ export interface UnderstandOptions {
 export interface UnderstandingResponse {
   request_id?: string;
   translated_texts?: Record<string, string>;
-  utterances?: Array<{ speaker: string; text: string; start: number; end: number }>;
+  utterances?: Array<{
+    speaker: string;
+    text: string;
+    start: number;
+    end: number;
+    translated_texts?: Record<string, string>;
+  }>;
   speech_understanding?: { response?: SpeechUnderstandingResponse };
 }
 
@@ -68,12 +74,15 @@ export async function understandTranscript(
   apiKey: string,
   options: UnderstandOptions
 ): Promise<UnderstandingResponse> {
+  // retries=1: POST /v1/understanding is a billable, non-idempotent Speech
+  // Understanding run — retrying it on a transient 5xx would double-charge
+  // and could return two divergent results, unlike the read-only GETs.
   return requestWithRetry<UnderstandingResponse>(
     apiKey,
     "POST",
     "/v1/understanding",
     { transcript_id: options.transcript_id, speech_understanding: options.speech_understanding },
-    3,
+    1,
     DEFAULT_LLM_GATEWAY_BASE_URL
   );
 }

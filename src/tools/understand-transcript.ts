@@ -4,7 +4,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { AssemblyAIError } from "../assemblyai";
 import { understandTranscript } from "../llm-gateway";
 import { speechUnderstandingSchema } from "../speech-understanding-schema";
-import { renderTranslations, renderSpeechUnderstanding } from "../transcript-sections";
+import { renderTranslations, renderTranslatedUtterances, renderSpeechUnderstanding } from "../transcript-sections";
 import { log, logError, keyHash } from "../log";
 
 export function registerUnderstandTranscript(server: McpServer): void {
@@ -57,6 +57,12 @@ export function registerUnderstandTranscript(server: McpServer): void {
         const lines: string[] = [`transcript_id=${args.transcript_id}`];
         if (response.translated_texts && Object.keys(response.translated_texts).length > 0) {
           lines.push(...renderTranslations(response.translated_texts));
+        }
+        if (
+          response.utterances &&
+          response.utterances.some((u) => u.translated_texts && Object.keys(u.translated_texts).length > 0)
+        ) {
+          lines.push(...renderTranslatedUtterances(response.utterances));
         }
         if (response.speech_understanding?.response) {
           lines.push(...renderSpeechUnderstanding(response.speech_understanding.response));

@@ -6,6 +6,7 @@ import { log, logError, keyHash } from "../log";
 import {
   formatMs,
   renderTranslations,
+  renderTranslatedUtterances,
   renderSpeechUnderstanding,
   renderContentSafety,
   renderTopics,
@@ -17,6 +18,7 @@ import {
   type ContentSafetyLabels,
   type IabCategoriesResult,
   type AutoHighlightsResult,
+  type TranslatedUtterance,
 } from "../transcript-sections";
 
 export function registerGetTranscript(server: McpServer): void {
@@ -49,25 +51,39 @@ export function registerGetTranscript(server: McpServer): void {
         const record = await getTranscript(apiKey, args.transcript_id);
         let redactedAudioUrl: string | undefined;
         let redactedAudioPending = false;
+        let redactedAudioError: string | undefined;
         if (record.status === "completed" && record.redact_pii_audio === true) {
           try {
             const audio = await getRedactedAudio(apiKey, args.transcript_id);
             redactedAudioUrl = audio.redacted_audio_url;
             redactedAudioPending = redactedAudioUrl === undefined;
-          } catch {
-            redactedAudioPending = true;
-            log({
-              event: "redacted_audio_unavailable",
-              level: "warn",
-              tool: "get_transcript",
-              keyHash: keyHash(apiKey),
-              transcript_id: args.transcript_id,
-              status: "error",
-            });
+          } catch (err) {
+            // 400 (not ready yet) and "200 but no URL yet" both mean "keep
+            // polling" — the existing pending note. Anything else (401/403/
+            // 404/5xx/network, all surfaced as AssemblyAIError by
+            // requestWithRetry) means the audio is genuinely unavailable
+            // (e.g. the ~24h link expiry), which is a different message.
+            if (err instanceof AssemblyAIError && err.status === 400) {
+              redactedAudioPending = true;
+            } else {
+              redactedAudioError = err instanceof AssemblyAIError ? `HTTP ${err.status}` : "unknown error";
+            }
+            logError(
+              {
+                event: "redacted_audio_unavailable",
+                level: "warn",
+                tool: "get_transcript",
+                keyHash: keyHash(apiKey),
+                transcript_id: args.transcript_id,
+                status: "error",
+              },
+              err
+            );
           }
         }
         const shaped = shape(record, redactedAudioUrl);
         if (redactedAudioPending) shaped.redacted_audio_pending = true;
+        if (redactedAudioError) shaped.redacted_audio_error = redactedAudioError;
         log({
           event: "tool_call",
           tool: "get_transcript",
@@ -120,7 +136,7 @@ interface ShapedTranscript {
   text?: string;
   speech_model_used?: string;
   audio_duration?: number;
-  speakers?: Array<{ speaker: string; text: string; start: number; end: number }>;
+  speakers?: TranslatedUtterance[];
   summary?: string;
   error?: string;
   sentiment?: Array<{ text: string; sentiment: string; confidence: number; start: number; end: number; speaker: string | null }>;
@@ -133,6 +149,7 @@ interface ShapedTranscript {
   unredacted_text?: string;
   redacted_audio_url?: string;
   redacted_audio_pending?: boolean;
+  redacted_audio_error?: string;
   metadata?: { domain_used?: string | null; warnings?: Array<{ message: string }> };
 }
 
@@ -144,20 +161,22 @@ function shape(record: TranscriptRecord, redactedAudioUrl?: string): ShapedTrans
   if (record.text !== undefined) out.text = record.text;
   if (record.speech_model_used !== undefined) out.speech_model_used = record.speech_model_used;
   if (record.audio_duration !== undefined) out.audio_duration = record.audio_duration;
-  if (record.utterances && record.utterances.length > 0) out.speakers = record.utterances;
+  // != null (not !== undefined): an explicit `null` from the API means
+  // "no data", same as the field being absent — don't leak it downstream.
+  if (record.utterances != null && record.utterances.length > 0) out.speakers = record.utterances;
   if (record.summary !== undefined) out.summary = record.summary;
   if (record.error !== undefined) out.error = record.error;
   if (record.sentiment_analysis_results && record.sentiment_analysis_results.length > 0)
     out.sentiment = record.sentiment_analysis_results;
   if (record.entities && record.entities.length > 0) out.entities = record.entities;
-  if (record.translated_texts !== undefined) out.translated_texts = record.translated_texts;
-  if (record.speech_understanding !== undefined) out.speech_understanding = record.speech_understanding;
-  if (record.content_safety_labels !== undefined) out.content_safety_labels = record.content_safety_labels;
-  if (record.iab_categories_result !== undefined) out.iab_categories_result = record.iab_categories_result;
-  if (record.auto_highlights_result !== undefined) out.auto_highlights_result = record.auto_highlights_result;
-  if (record.unredacted_text !== undefined) out.unredacted_text = record.unredacted_text;
+  if (record.translated_texts != null) out.translated_texts = record.translated_texts;
+  if (record.speech_understanding != null) out.speech_understanding = record.speech_understanding;
+  if (record.content_safety_labels != null) out.content_safety_labels = record.content_safety_labels;
+  if (record.iab_categories_result != null) out.iab_categories_result = record.iab_categories_result;
+  if (record.auto_highlights_result != null) out.auto_highlights_result = record.auto_highlights_result;
+  if (record.unredacted_text != null) out.unredacted_text = record.unredacted_text;
   if (redactedAudioUrl !== undefined) out.redacted_audio_url = redactedAudioUrl;
-  if (record.metadata !== undefined) out.metadata = record.metadata;
+  if (record.metadata != null) out.metadata = record.metadata;
   return out;
 }
 
@@ -219,6 +238,9 @@ function formatTranscript(s: ShapedTranscript): string {
   if (s.translated_texts && Object.keys(s.translated_texts).length > 0) {
     lines.push(...renderTranslations(s.translated_texts));
   }
+  if (s.speakers && s.speakers.some((u) => u.translated_texts && Object.keys(u.translated_texts).length > 0)) {
+    lines.push(...renderTranslatedUtterances(s.speakers));
+  }
   if (s.speech_understanding?.response) {
     lines.push(...renderSpeechUnderstanding(s.speech_understanding.response));
   }
@@ -239,6 +261,11 @@ function formatTranscript(s: ShapedTranscript): string {
   }
   if (s.redacted_audio_url) {
     lines.push(...renderRedactedAudio(s.redacted_audio_url));
+  } else if (s.redacted_audio_error) {
+    lines.push(
+      "",
+      `(redacted audio unavailable (${s.redacted_audio_error}) — the link may have expired ~24h after transcription)`
+    );
   } else if (s.redacted_audio_pending) {
     lines.push("", "(redacted audio not ready yet — call get_transcript again shortly)");
   }

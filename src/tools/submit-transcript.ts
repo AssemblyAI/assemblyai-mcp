@@ -96,6 +96,14 @@ export function registerSubmitTranscript(server: McpServer): void {
             "DEPRECATED / no effect. Summaries are now produced by the `summarize_transcript` tool " +
               "after the transcript completes. Retained for compatibility only."
           ),
+        punctuate: z
+          .boolean()
+          .optional()
+          .describe("Default true. Set false for raw, unpunctuated/unformatted verbatim text."),
+        format_text: z
+          .boolean()
+          .optional()
+          .describe("Default true. Set false for raw, unpunctuated/unformatted verbatim text."),
         prompt: z
           .string()
           .optional()
@@ -133,10 +141,12 @@ export function registerSubmitTranscript(server: McpServer): void {
           .describe("Fail transcription if detected-language confidence is below this (0–1)."),
         speech_models: z
           .array(z.enum(["universal-3-5-pro", "universal-2"]))
+          .min(1)
           .optional()
           .describe(
             "Priority-ordered model list; first supported model runs, falls back to next. " +
-              "Default ['universal-3-5-pro','universal-2'] is right for almost all cases."
+              "Default ['universal-3-5-pro','universal-2'] is right for almost all cases. " +
+              "Must not be empty — omit the field entirely to use the default."
           ),
         temperature: z
           .number()
@@ -325,6 +335,11 @@ export function registerSubmitTranscript(server: McpServer): void {
       }
 
       try {
+        if (!args.redact_pii && (args.redact_pii_policies || args.redact_pii_sub)) {
+          throw new Error(
+            "redact_pii_policies/redact_pii_sub require redact_pii: true. Set redact_pii to enable redaction."
+          );
+        }
         const { audio_url, summarization: _ignored, ...rest } = args;
         const record = await submitTranscript(apiKey, { audio_url, ...rest });
         log({

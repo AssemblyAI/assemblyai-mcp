@@ -4,11 +4,14 @@ import { z } from "zod";
  * The speech_understanding object accepted by POST /v2/transcript (inline) and
  * POST /v1/understanding (post-hoc) — identical shape, per the 2026-08-11
  * design spec. Typed for the five known features but open to unknown keys
- * (z.looseObject): the public API treats this as a loose dict and the LLM
- * Gateway is the validator of record, so new API features flow through
- * without a server change.
+ * inside `request` (z.looseObject): the public API treats the request body
+ * as a loose dict and the LLM Gateway is the validator of record, so new API
+ * features flow through without a server change. The outer envelope, though,
+ * is a fixed shape — exactly `{ request }` — so it's a z.strictObject: a
+ * feature key placed at the top level by mistake (outside `request`) is a
+ * caller bug worth catching, not silently ignoring.
  */
-export const speechUnderstandingSchema = z.looseObject({
+export const speechUnderstandingSchema = z.strictObject({
   request: z
     .looseObject({
       translation: z
