@@ -1,8 +1,9 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
-import { deleteTranscript, AssemblyAIError } from "../assemblyai";
-import { log, logError, keyHash } from "../log";
+import { deleteTranscript } from "../assemblyai";
+import { log, keyHash } from "../log";
+import { handleToolError } from "../tool-errors";
 
 export function registerDeleteTranscript(server: McpServer): void {
   server.registerTool(
@@ -47,50 +48,14 @@ export function registerDeleteTranscript(server: McpServer): void {
           structuredContent: { transcript_id: args.transcript_id, deleted: true },
         };
       } catch (err) {
-        if (err instanceof AssemblyAIError && err.status === 401) {
-          logError(
-            {
-              event: "assemblyai_rejected_key",
-              tool: "delete_transcript",
-              keyHash: keyHash(apiKey),
-              latencyMs: Date.now() - start,
-              status: "error",
-            },
-            err
-          );
-          throw new Error(
-            "AssemblyAI rejected the API key (401). " +
-              "Check the Bearer token configured in the Databricks HTTP connection."
-          );
-        }
-        if (err instanceof AssemblyAIError && err.status === 404) {
-          logError(
-            {
-              event: "delete_error",
-              tool: "delete_transcript",
-              keyHash: keyHash(apiKey),
-              transcript_id: args.transcript_id,
-              latencyMs: Date.now() - start,
-              status: "error",
-            },
-            err
-          );
-          throw new Error(
-            `Transcript ${args.transcript_id} is already deleted or not found for this API key (404).`
-          );
-        }
-        logError(
-          {
-            event: "delete_error",
-            tool: "delete_transcript",
-            keyHash: keyHash(apiKey),
-            transcript_id: args.transcript_id,
-            latencyMs: Date.now() - start,
-            status: "error",
-          },
-          err
-        );
-        throw err;
+        handleToolError(err, {
+          tool: "delete_transcript",
+          apiKey,
+          start,
+          transcriptId: args.transcript_id,
+          notFoundMessage: `Transcript ${args.transcript_id} is already deleted or not found for this API key (404).`,
+          errorEvent: "delete_error",
+        });
       }
     }
   );

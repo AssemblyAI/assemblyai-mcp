@@ -1,9 +1,10 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
-import { submitTranscript, AssemblyAIError } from "../assemblyai";
-import { log, logError, keyHash } from "../log";
+import { submitTranscript } from "../assemblyai";
+import { log, keyHash } from "../log";
 import { speechUnderstandingSchema } from "../speech-understanding-schema";
+import { handleToolError } from "../tool-errors";
 
 const ALLOWED_SCHEMES = new Set(["http:", "https:"]);
 
@@ -365,33 +366,12 @@ export function registerSubmitTranscript(server: McpServer): void {
           },
         };
       } catch (err) {
-        if (err instanceof AssemblyAIError && err.status === 401) {
-          logError(
-            {
-              event: "assemblyai_rejected_key",
-              tool: "submit_transcript",
-              keyHash: keyHash(apiKey),
-              latencyMs: Date.now() - start,
-              status: "error",
-            },
-            err
-          );
-          throw new Error(
-            "AssemblyAI rejected the API key (401). " +
-              "Check the Bearer token configured in the Databricks HTTP connection."
-          );
-        }
-        logError(
-          {
-            event: "tool_error",
-            tool: "submit_transcript",
-            keyHash: keyHash(apiKey),
-            latencyMs: Date.now() - start,
-            status: "error",
-          },
-          err
-        );
-        throw err;
+        handleToolError(err, {
+          tool: "submit_transcript",
+          apiKey,
+          start,
+          errorEvent: "tool_error",
+        });
       }
     }
   );

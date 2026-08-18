@@ -3,6 +3,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import { getTranscript, getRedactedAudio, AssemblyAIError, type TranscriptRecord } from "../assemblyai";
 import { log, logError, keyHash } from "../log";
+import { handleToolError } from "../tool-errors";
 import {
   formatMs,
   renderTranslations,
@@ -98,33 +99,14 @@ export function registerGetTranscript(server: McpServer): void {
           structuredContent: shaped as unknown as Record<string, unknown>,
         };
       } catch (err) {
-        if (err instanceof AssemblyAIError && err.status === 401) {
-          logError(
-            {
-              event: "assemblyai_rejected_key",
-              tool: "get_transcript",
-              keyHash: keyHash(apiKey),
-              latencyMs: Date.now() - start,
-              status: "error",
-            },
-            err
-          );
-          throw new Error(
-            "AssemblyAI rejected the API key (401). " +
-              "Check the Bearer token configured in the Databricks HTTP connection."
-          );
-        }
-        logError(
-          {
-            event: "tool_error",
-            tool: "get_transcript",
-            keyHash: keyHash(apiKey),
-            latencyMs: Date.now() - start,
-            status: "error",
-          },
-          err
-        );
-        throw err;
+        // No notFoundMessage: a 404 here stays the raw AssemblyAIError, unchanged from before.
+        handleToolError(err, {
+          tool: "get_transcript",
+          apiKey,
+          start,
+          transcriptId: args.transcript_id,
+          errorEvent: "tool_error",
+        });
       }
     }
   );

@@ -1,11 +1,11 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
-import { AssemblyAIError } from "../assemblyai";
 import { understandTranscript } from "../llm-gateway";
 import { speechUnderstandingSchema } from "../speech-understanding-schema";
 import { renderTranslations, renderTranslatedUtterances, renderSpeechUnderstanding } from "../transcript-sections";
-import { log, logError, keyHash } from "../log";
+import { log, keyHash } from "../log";
+import { handleToolError } from "../tool-errors";
 
 export function registerUnderstandTranscript(server: McpServer): void {
   server.registerTool(
@@ -81,68 +81,16 @@ export function registerUnderstandTranscript(server: McpServer): void {
           },
         };
       } catch (err) {
-        if (err instanceof AssemblyAIError && err.status === 401) {
-          logError(
-            {
-              event: "assemblyai_rejected_key",
-              tool: "understand_transcript",
-              keyHash: keyHash(apiKey),
-              latencyMs: Date.now() - start,
-              status: "error",
-            },
-            err
-          );
-          throw new Error(
-            "AssemblyAI rejected the API key (401). " +
-              "Check the Bearer token configured in the Databricks HTTP connection."
-          );
-        }
-        if (err instanceof AssemblyAIError && err.status === 404) {
-          logError(
-            {
-              event: "understanding_error",
-              tool: "understand_transcript",
-              keyHash: keyHash(apiKey),
-              transcript_id: args.transcript_id,
-              latencyMs: Date.now() - start,
-              status: "error",
-            },
-            err
-          );
-          throw new Error(
-            `Transcript ${args.transcript_id} not found or deleted for this API key (404). ` +
-              "Make sure it completed and belongs to the same key."
-          );
-        }
-        if (err instanceof AssemblyAIError && err.status === 429) {
-          logError(
-            {
-              event: "understanding_error",
-              tool: "understand_transcript",
-              keyHash: keyHash(apiKey),
-              transcript_id: args.transcript_id,
-              latencyMs: Date.now() - start,
-              status: "error",
-            },
-            err
-          );
-          throw new Error(
-            "Speech Understanding rate limit reached (30 requests/min on paid accounts, 2/min free). " +
-              "Retry shortly."
-          );
-        }
-        logError(
-          {
-            event: "understanding_error",
-            tool: "understand_transcript",
-            keyHash: keyHash(apiKey),
-            transcript_id: args.transcript_id,
-            latencyMs: Date.now() - start,
-            status: "error",
-          },
-          err
-        );
-        throw err;
+        handleToolError(err, {
+          tool: "understand_transcript",
+          apiKey,
+          start,
+          transcriptId: args.transcript_id,
+          notFoundMessage: `Transcript ${args.transcript_id} not found or deleted for this API key (404). Make sure it completed and belongs to the same key.`,
+          rateLimitMessage:
+            "Speech Understanding rate limit reached (30 requests/min on paid accounts, 2/min free). Retry shortly.",
+          errorEvent: "understanding_error",
+        });
       }
     }
   );

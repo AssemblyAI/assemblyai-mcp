@@ -44,6 +44,7 @@
  *   39. get_transcript renders translated_utterances for utterances carrying translated_texts
  *   40. get_transcript drops explicit API nulls (content_safety_labels, translated_texts) instead of passing them through
  *   41. renderContentSafety tolerates a non-numeric confidence value without throwing
+ *   42. summarize_transcript 429 → friendly rate-limit message (shared tool-error mapper)
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -1265,6 +1266,18 @@ async function run() {
       "41. content_safety renders without throwing when a confidence value is non-numeric",
       result.isError !== true && text.includes("disasters: null"),
       text
+    );
+  });
+
+  // 42. summarize_transcript 429 → friendly rate-limit message (shared tool-error mapper)
+  await withClientServer(async (client) => {
+    resetMock([jsonResponse(429, { error: "rate limit exceeded" })]);
+    const result = await callTool(client, "summarize_transcript", { transcript_id: "txn-ai" }, "k");
+    const text = (result.content?.[0]?.text ?? "").toLowerCase();
+    assert(
+      "42. summarize_transcript 429 → rate limit message with retry hint",
+      result.isError === true && text.includes("rate limit") && text.includes("retry"),
+      `isError=${result.isError} text=${text}`
     );
   });
 

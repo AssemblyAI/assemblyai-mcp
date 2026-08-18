@@ -141,45 +141,23 @@ export interface TranscriptRecord {
 }
 
 /**
- * Params copied verbatim into the request body when defined. Additive-only:
- * append new public API params here; never add internal-only params (see the
- * 2026-08-11 design spec "Out of scope").
+ * Options with special-cased handling above the generic copy loop in
+ * submitTranscript (defaults, combined flags, truthy-only sends). Every
+ * other TranscriptSubmitOptions key is copied verbatim into the request body
+ * whenever it's defined — so a new pass-through API param needs only a zod
+ * schema entry + an interface field here, never a third place to register
+ * it (that third list — PASSTHROUGH_KEYS — used to drift from the other two).
  */
-const PASSTHROUGH_KEYS = [
-  "prompt",
-  "keyterms_prompt",
-  "language_code",
-  "language_codes",
-  "language_detection",
-  "language_detection_options",
-  "language_confidence_threshold",
-  "temperature",
-  "speaker_options",
-  "filter_profanity",
-  "speech_threshold",
-  "content_safety",
-  "content_safety_confidence",
-  "redact_pii_audio",
-  "redact_pii_audio_quality",
-  "redact_pii_audio_options",
-  "redact_pii_return_unredacted",
-  "redact_static_entities",
-  "speech_understanding",
-  "multichannel",
-  "disfluencies",
-  "custom_spelling",
-  "audio_start_from",
-  "audio_end_at",
-  "domain",
-  "remove_audio_tags",
-  "iab_categories",
-  "auto_highlights",
-  "punctuate",
-  "format_text",
-  "webhook_url",
-  "webhook_auth_header_name",
-  "webhook_auth_header_value",
-] as const satisfies readonly (keyof TranscriptSubmitOptions)[];
+const HANDLED_KEYS = new Set<keyof TranscriptSubmitOptions>([
+  "audio_url",
+  "speech_models",
+  "speaker_labels",
+  "sentiment_analysis",
+  "entity_detection",
+  "redact_pii",
+  "redact_pii_policies",
+  "redact_pii_sub",
+]);
 
 export async function submitTranscript(
   apiKey: string,
@@ -200,8 +178,8 @@ export async function submitTranscript(
     payload.redact_pii_policies = options.redact_pii_policies ?? DEFAULT_REDACT_PII_POLICIES;
     payload.redact_pii_sub = options.redact_pii_sub ?? "entity_name";
   }
-  for (const key of PASSTHROUGH_KEYS) {
-    const value = options[key];
+  for (const [key, value] of Object.entries(options)) {
+    if (HANDLED_KEYS.has(key as keyof TranscriptSubmitOptions)) continue;
     if (value !== undefined) payload[key] = value;
   }
   return requestWithRetry<TranscriptRecord>(apiKey, "POST", "/v2/transcript", payload);
