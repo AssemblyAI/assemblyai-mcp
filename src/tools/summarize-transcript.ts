@@ -1,9 +1,9 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
-import { AssemblyAIError } from "../assemblyai";
 import { summarizeViaLlmGateway, LLM_GATEWAY_MODEL } from "../llm-gateway";
-import { log, logError, keyHash } from "../log";
+import { log, keyHash } from "../log";
+import { handleToolError } from "../tool-errors";
 
 const STYLE_PROMPTS: Record<string, string> = {
   bullets:
@@ -23,7 +23,10 @@ export function registerSummarizeTranscript(server: McpServer): void {
       description:
         "Generate a summary of a COMPLETED transcript using AssemblyAI's LLM Gateway. " +
         "First submit_transcript, then poll get_transcript until status=completed, then call this " +
-        "with the transcript_id. Choose a `style` or pass a `custom_prompt` for a tailored summary.",
+        "with the transcript_id. Choose a `style` or pass a `custom_prompt` for a tailored summary." +
+        " For a CHAPTERED summary with timestamps/headlines, or decision-aware action items, use the " +
+        "`understand_transcript` tool (summarization / action_items features) instead — this tool is " +
+        "the freeform/custom-prompt option.",
       inputSchema: {
         transcript_id: z
           .string()
@@ -84,51 +87,17 @@ export function registerSummarizeTranscript(server: McpServer): void {
           },
         };
       } catch (err) {
-        if (err instanceof AssemblyAIError && err.status === 401) {
-          logError(
-            {
-              event: "assemblyai_rejected_key",
-              tool: "summarize_transcript",
-              keyHash: keyHash(apiKey),
-              latencyMs: Date.now() - start,
-              status: "error",
-            },
-            err
-          );
-          throw new Error(
-            "AssemblyAI rejected the API key (401). " +
-              "Check the Bearer token configured in the Databricks HTTP connection."
-          );
-        }
-        if (err instanceof AssemblyAIError && err.status === 404) {
-          logError(
-            {
-              event: "llm_gateway_error",
-              tool: "summarize_transcript",
-              keyHash: keyHash(apiKey),
-              transcript_id: args.transcript_id,
-              latencyMs: Date.now() - start,
-              status: "error",
-            },
-            err
-          );
-          throw new Error(
-            `LLM Gateway could not find transcript ${args.transcript_id} (404). ` +
-              "Make sure it has completed and belongs to this API key."
-          );
-        }
-        logError(
-          {
-            event: "llm_gateway_error",
-            tool: "summarize_transcript",
-            keyHash: keyHash(apiKey),
-            transcript_id: args.transcript_id,
-            latencyMs: Date.now() - start,
-            status: "error",
-          },
-          err
-        );
-        throw err;
+        handleToolError(err, {
+          tool: "summarize_transcript",
+          apiKey,
+          start,
+          transcriptId: args.transcript_id,
+          notFoundMessage: `LLM Gateway could not find transcript ${args.transcript_id} (404). Make sure it has completed and belongs to this API key.`,
+          // Same wording as understand_transcript — both hit the same rate-limited Gateway.
+          rateLimitMessage:
+            "Speech Understanding rate limit reached (30 requests/min on paid accounts, 2/min free). Retry shortly.",
+          errorEvent: "llm_gateway_error",
+        });
       }
     }
   );

@@ -19,6 +19,32 @@
  *   13. get_transcript renders sentiment + entities sections in text content
  *   14. summarize_transcript calls LLM Gateway with transcript_id + {{ transcript }} tag
  *   15. summarize_transcript with style=custom but no custom_prompt → validation error, no gateway call
+ *   16.–18. scalar/boolean pass-through params
+ *   19. nested objects pass through unchanged (language_detection_options, speaker_options, etc.)
+ *   20. speech_understanding.request nests correctly with translation, summarization, action_items
+ *   21. speech_understanding without request wrapper rejected before API call
+ *   22. get_transcript renders translation / speaker_identification / custom_formatting
+ *   23. get_transcript renders su_summary + action_items
+ *   24. get_transcript renders content_safety / topics / highlights / unredacted / warnings
+ *   25. get_transcript fetches redacted audio URL when flag present; degrades gracefully when not ready
+ *   26. understand_transcript posts to the Gateway /v1/understanding and renders results
+ *   27. understand_transcript 404 → friendly message
+ *   27b. understand_transcript 401 → friendly bad-key error
+ *   28. understand_transcript 429 → rate-limit message; summarize_transcript description points here
+ *   29. delete_transcript DELETEs to /v2/transcript/{id} and confirms with transcript_id + deleted: true
+ *   30. delete_transcript 404 → already deleted or not found message
+ *   31. renderSpeechUnderstanding: mapping-only custom_formatting, failed-feature marker, empty action_items note
+ *   32. submit_transcript rejects redact_pii_policies/redact_pii_sub without redact_pii, no fetch
+ *   33. understand_transcript's /v1/understanding is not retried on 5xx (billable, non-idempotent)
+ *   34. submit_transcript punctuate:false/format_text:false pass through explicitly
+ *   35. submit_transcript rejects speech_models: [] before calling AssemblyAI
+ *   36. delete_transcript's DELETE is not retried on 5xx
+ *   37. get_transcript redacted-audio 5xx renders an "unavailable" note (not "pending") + redacted_audio_error
+ *   38. submit_transcript rejects a speech_understanding feature key placed outside the request wrapper
+ *   39. get_transcript renders translated_utterances for utterances carrying translated_texts
+ *   40. get_transcript drops explicit API nulls (content_safety_labels, translated_texts) instead of passing them through
+ *   41. renderContentSafety tolerates a non-numeric confidence value without throwing
+ *   42. summarize_transcript 429 → friendly rate-limit message (shared tool-error mapper)
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -422,6 +448,836 @@ async function run() {
       "15. style=custom without custom_prompt errors before calling the gateway",
       result.isError === true && text.includes("custom_prompt") && calls.length === 0,
       `isError=${result.isError} text=${text} calls=${calls.length}`
+    );
+  });
+
+  // 16. submit_transcript scalar/boolean params pass through with API names
+  await withClientServer(async (client) => {
+    resetMock([jsonResponse(200, { id: "txn-p1", status: "queued" })]);
+    await callTool(
+      client,
+      "submit_transcript",
+      {
+        audio_url: "https://example.com/x.mp3",
+        prompt: "Cardiology consultation.",
+        keyterms_prompt: ["AssemblyAI", "Databricks"],
+        language_code: "en_us",
+        language_codes: ["en", "es"],
+        language_detection: true,
+        language_confidence_threshold: 0.6,
+        temperature: 0.2,
+        filter_profanity: true,
+        speech_threshold: 0.5,
+        content_safety: true,
+        content_safety_confidence: 60,
+        redact_pii_return_unredacted: true,
+        multichannel: true,
+        disfluencies: true,
+        audio_start_from: 1000,
+        audio_end_at: 9000,
+        domain: "medical-v1",
+        remove_audio_tags: "all",
+        iab_categories: true,
+        auto_highlights: true,
+        webhook_url: "https://example.com/hook",
+        webhook_auth_header_name: "X-Auth",
+        webhook_auth_header_value: "secret",
+      },
+      "k"
+    );
+    const body = JSON.parse(calls[0]?.body ?? "{}");
+    assert("16. prompt passes through", body.prompt === "Cardiology consultation.", JSON.stringify(body));
+    assert(
+      "16. keyterms_prompt passes through",
+      JSON.stringify(body.keyterms_prompt) === JSON.stringify(["AssemblyAI", "Databricks"]),
+      JSON.stringify(body)
+    );
+    assert(
+      "16. language params pass through",
+      body.language_code === "en_us" &&
+        JSON.stringify(body.language_codes) === JSON.stringify(["en", "es"]) &&
+        body.language_detection === true &&
+        body.language_confidence_threshold === 0.6,
+      JSON.stringify(body)
+    );
+    assert(
+      "16. guardrail scalars pass through",
+      body.filter_profanity === true &&
+        body.speech_threshold === 0.5 &&
+        body.content_safety === true &&
+        body.content_safety_confidence === 60 &&
+        body.redact_pii_return_unredacted === true,
+      JSON.stringify(body)
+    );
+    assert(
+      "16. other STT params pass through",
+      body.multichannel === true &&
+        body.disfluencies === true &&
+        body.audio_start_from === 1000 &&
+        body.audio_end_at === 9000 &&
+        body.domain === "medical-v1" &&
+        body.remove_audio_tags === "all" &&
+        body.iab_categories === true &&
+        body.auto_highlights === true &&
+        body.temperature === 0.2,
+      JSON.stringify(body)
+    );
+    assert(
+      "16. webhook params pass through",
+      body.webhook_url === "https://example.com/hook" &&
+        body.webhook_auth_header_name === "X-Auth" &&
+        body.webhook_auth_header_value === "secret",
+      JSON.stringify(body)
+    );
+  });
+
+  // 17. omitted params are NOT sent — bare submit payload is exactly audio_url + speech_models
+  await withClientServer(async (client) => {
+    resetMock([jsonResponse(200, { id: "txn-p2", status: "queued" })]);
+    await callTool(client, "submit_transcript", { audio_url: "https://example.com/x.mp3" }, "k");
+    const body = JSON.parse(calls[0]?.body ?? "{}");
+    assert(
+      "17. bare submit sends only audio_url + speech_models",
+      JSON.stringify(Object.keys(body).sort()) === JSON.stringify(["audio_url", "speech_models"]),
+      JSON.stringify(body)
+    );
+  });
+
+  // 18. speech_models is overridable but defaults to the pinned list
+  await withClientServer(async (client) => {
+    resetMock([jsonResponse(200, { id: "txn-p3", status: "queued" })]);
+    await callTool(
+      client,
+      "submit_transcript",
+      { audio_url: "https://example.com/x.mp3", speech_models: ["universal-2"] },
+      "k"
+    );
+    const body = JSON.parse(calls[0]?.body ?? "{}");
+    assert(
+      "18. explicit speech_models overrides the pin",
+      JSON.stringify(body.speech_models) === JSON.stringify(["universal-2"]),
+      JSON.stringify(body)
+    );
+  });
+
+  // 19. nested objects pass through unchanged
+  await withClientServer(async (client) => {
+    resetMock([jsonResponse(200, { id: "txn-n1", status: "queued" })]);
+    await callTool(
+      client,
+      "submit_transcript",
+      {
+        audio_url: "https://example.com/x.mp3",
+        language_detection: true,
+        language_detection_options: {
+          expected_languages: ["en", "de"],
+          fallback_language: "en",
+          localization: ["en_uk"],
+        },
+        speaker_labels: true,
+        speaker_options: { min_speakers_expected: 2, max_speakers_expected: 4 },
+        redact_pii: true,
+        redact_pii_audio: true,
+        redact_pii_audio_options: { override_audio_redaction_method: "silence" },
+        redact_static_entities: { INTERNAL_TOOL: ["Bearclaw"] },
+        custom_spelling: [{ from: ["gothe"], to: "Goethe" }],
+      },
+      "k"
+    );
+    const body = JSON.parse(calls[0]?.body ?? "{}");
+    assert(
+      "19. language_detection_options passes through",
+      JSON.stringify(body.language_detection_options) ===
+        JSON.stringify({ expected_languages: ["en", "de"], fallback_language: "en", localization: ["en_uk"] }),
+      JSON.stringify(body)
+    );
+    assert(
+      "19. speaker_options passes through",
+      JSON.stringify(body.speaker_options) === JSON.stringify({ min_speakers_expected: 2, max_speakers_expected: 4 }),
+      JSON.stringify(body)
+    );
+    assert(
+      "19. redact_pii_audio_options + static entities pass through",
+      body.redact_pii_audio === true &&
+        body.redact_pii_audio_options?.override_audio_redaction_method === "silence" &&
+        JSON.stringify(body.redact_static_entities) === JSON.stringify({ INTERNAL_TOOL: ["Bearclaw"] }),
+      JSON.stringify(body)
+    );
+    assert(
+      "19. custom_spelling passes through",
+      JSON.stringify(body.custom_spelling) === JSON.stringify([{ from: ["gothe"], to: "Goethe" }]),
+      JSON.stringify(body)
+    );
+  });
+
+  // 20. inline speech_understanding passes through with the request wrapper
+  await withClientServer(async (client) => {
+    resetMock([jsonResponse(200, { id: "txn-su", status: "queued" })]);
+    await callTool(
+      client,
+      "submit_transcript",
+      {
+        audio_url: "https://example.com/x.mp3",
+        speaker_labels: true,
+        speech_understanding: {
+          request: {
+            translation: { target_languages: ["es"], formal: true },
+            summarization: { summary_type: "bullets" },
+            action_items: {},
+          },
+        },
+      },
+      "k"
+    );
+    const body = JSON.parse(calls[0]?.body ?? "{}");
+    assert(
+      "20. speech_understanding.request nests correctly",
+      JSON.stringify(body.speech_understanding?.request?.translation) ===
+        JSON.stringify({ target_languages: ["es"], formal: true }) &&
+        body.speech_understanding?.request?.summarization?.summary_type === "bullets" &&
+        JSON.stringify(body.speech_understanding?.request?.action_items) === "{}",
+      JSON.stringify(body)
+    );
+  });
+
+  // 21. speech_understanding without the request wrapper → schema error, no API call.
+  // NOTE: zod violations are rejected at the MCP protocol layer (InvalidParams),
+  // so client.callTool THROWS here rather than returning isError — catch both shapes.
+  await withClientServer(async (client) => {
+    resetMock([]);
+    let rejected = false;
+    try {
+      const result = await callTool(
+        client,
+        "submit_transcript",
+        {
+          audio_url: "https://example.com/x.mp3",
+          speech_understanding: { translation: { target_languages: ["es"] } },
+        },
+        "k"
+      );
+      rejected = result.isError === true;
+    } catch {
+      rejected = true;
+    }
+    assert(
+      "21. missing request wrapper rejected before calling AssemblyAI",
+      rejected && calls.length === 0,
+      `rejected=${rejected} calls=${calls.length}`
+    );
+  });
+
+  // 22. get_transcript renders translation / speaker_identification / custom_formatting
+  await withClientServer(async (client) => {
+    resetMock([
+      jsonResponse(200, {
+        id: "txn-su1",
+        status: "completed",
+        text: "hello",
+        audio_duration: 5,
+        translated_texts: { es: "hola mundo", de: "hallo welt" },
+        speech_understanding: {
+          response: {
+            translation: { status: "success" },
+            speaker_identification: { status: "success", mapping: { A: "Michel Martin" } },
+            custom_formatting: { status: "success", formatted_text: "Call me at (555)123-4567" },
+          },
+        },
+      }),
+    ]);
+    const result = await callTool(client, "get_transcript", { transcript_id: "txn-su1" }, "k");
+    const text = result.content?.[0]?.text ?? "";
+    assert(
+      "22. translation sections per language",
+      text.includes("--- translation:es ---") && text.includes("hola mundo") && text.includes("--- translation:de ---"),
+      text
+    );
+    assert(
+      "22. speaker_identification section",
+      text.includes("--- speaker_identification") && text.includes("A → Michel Martin"),
+      text
+    );
+    assert(
+      "22. custom_formatting section",
+      text.includes("--- custom_formatting") && text.includes("(555)123-4567"),
+      text
+    );
+    assert(
+      "22. structuredContent carries translated_texts + speech_understanding",
+      (result.structuredContent?.translated_texts as Record<string, string>)?.es === "hola mundo" &&
+        result.structuredContent?.speech_understanding !== undefined,
+      JSON.stringify(result.structuredContent)
+    );
+  });
+
+  // 23. get_transcript renders su_summary + action_items
+  await withClientServer(async (client) => {
+    resetMock([
+      jsonResponse(200, {
+        id: "txn-su2",
+        status: "completed",
+        text: "hello",
+        audio_duration: 40,
+        speech_understanding: {
+          response: {
+            summarization: {
+              status: "success",
+              summary_type: "paragraph",
+              summary: [{ start: 240, end: 37100, text: "Wildfire smoke discussion.", headline: "Wildfire Smoke" }],
+            },
+            action_items: {
+              status: "success",
+              items: [{ action_item: "Check air quality daily.", quote: "check the air quality", timestamp: 9520 }],
+            },
+          },
+        },
+      }),
+    ]);
+    const result = await callTool(client, "get_transcript", { transcript_id: "txn-su2" }, "k");
+    const text = result.content?.[0]?.text ?? "";
+    assert(
+      "23. su_summary section with headline + timestamps",
+      text.includes("--- su_summary") && text.includes("Wildfire Smoke") && text.includes("0:00–0:37"),
+      text
+    );
+    assert(
+      "23. action_items section with quote + timestamp",
+      text.includes("--- action_items ---") && text.includes("Check air quality daily.") && text.includes("0:09"),
+      text
+    );
+  });
+
+  // 24. get_transcript renders content_safety / topics / highlights / unredacted / warnings
+  await withClientServer(async (client) => {
+    resetMock([
+      jsonResponse(200, {
+        id: "txn-g1",
+        status: "completed",
+        text: "[PERSON_NAME] reported the fire.",
+        audio_duration: 30,
+        content_safety_labels: {
+          summary: { disasters: 0.9 },
+          severity_score_summary: { disasters: { low: 0.56, medium: 0.44, high: 0 } },
+        },
+        iab_categories_result: { summary: { "NewsAndPolitics>Weather": 0.99 } },
+        auto_highlights_result: { results: [{ count: 1, rank: 0.12, text: "wildfire smoke" }, { count: 3, rank: 0.08, text: "air quality" }] },
+        unredacted_text: "Jane Doe reported the fire.",
+        metadata: { domain_used: null, warnings: [{ message: "'ur' is not supported in universal-3-5-pro" }] },
+      }),
+    ]);
+    const result = await callTool(client, "get_transcript", { transcript_id: "txn-g1" }, "k");
+    const text = result.content?.[0]?.text ?? "";
+    assert(
+      "24. content_safety section with severity",
+      text.includes("--- content_safety") && text.includes("disasters: 0.90") && text.includes("medium=0.44"),
+      text
+    );
+    assert(
+      "24. topics section",
+      text.includes("--- topics") && text.includes("NewsAndPolitics>Weather: 0.99"),
+      text
+    );
+    assert(
+      "24. highlights section",
+      text.includes("--- highlights") && text.includes('3× "air quality"'),
+      text
+    );
+    assert(
+      "24. highlights render most-relevant first",
+      text.indexOf('1× "wildfire smoke"') >= 0 && text.indexOf('1× "wildfire smoke"') < text.indexOf('3× "air quality"'),
+      text
+    );
+    assert(
+      "24. unredacted_text section",
+      text.includes("--- unredacted_text") && text.includes("Jane Doe reported the fire."),
+      text
+    );
+    assert(
+      "24. warnings section",
+      text.includes("--- warnings") && text.includes("'ur' is not supported"),
+      text
+    );
+    assert(
+      "24. structuredContent gains guardrail fields",
+      result.structuredContent?.content_safety_labels !== undefined &&
+        result.structuredContent?.iab_categories_result !== undefined &&
+        result.structuredContent?.auto_highlights_result !== undefined &&
+        result.structuredContent?.unredacted_text === "Jane Doe reported the fire." &&
+        result.structuredContent?.metadata !== undefined,
+      JSON.stringify(result.structuredContent)
+    );
+  });
+
+  // 25. redacted audio: second fetch when redact_pii_audio, graceful when not ready
+  await withClientServer(async (client) => {
+    resetMock([
+      jsonResponse(200, { id: "txn-ra", status: "completed", text: "hi", audio_duration: 3, redact_pii_audio: true }),
+      jsonResponse(200, { status: "redacted_audio_ready", redacted_audio_url: "https://cdn.example/redacted.mp3" }),
+    ]);
+    const result = await callTool(client, "get_transcript", { transcript_id: "txn-ra" }, "k");
+    const text = result.content?.[0]?.text ?? "";
+    assert(
+      "25. fetches /redacted-audio when flag present",
+      calls.length === 2 && (calls[1]?.url ?? "").endsWith("/v2/transcript/txn-ra/redacted-audio"),
+      calls.map((c) => c.url).join(", ")
+    );
+    assert(
+      "25. redacted_audio section with URL + expiry note",
+      text.includes("--- redacted_audio ---") &&
+        text.includes("https://cdn.example/redacted.mp3") &&
+        text.includes("24 hours"),
+      text
+    );
+    assert(
+      "25. structuredContent carries redacted_audio_url",
+      result.structuredContent?.redacted_audio_url === "https://cdn.example/redacted.mp3",
+      JSON.stringify(result.structuredContent)
+    );
+  });
+  await withClientServer(async (client) => {
+    resetMock([
+      jsonResponse(200, { id: "txn-rb", status: "completed", text: "hi", audio_duration: 3, redact_pii_audio: true }),
+      jsonResponse(400, { error: "Redacted audio is not ready yet" }),
+    ]);
+    const result = await callTool(client, "get_transcript", { transcript_id: "txn-rb" }, "k");
+    const text = result.content?.[0]?.text ?? "";
+    assert(
+      "25. not-ready redacted audio degrades gracefully (tool still succeeds)",
+      result.isError !== true && text.includes("redacted audio not ready yet"),
+      `isError=${result.isError} text=${text}`
+    );
+    assert(
+      "25. structuredContent has no redacted_audio_url when fetch fails (400)",
+      result.structuredContent?.redacted_audio_url === undefined,
+      JSON.stringify(result.structuredContent)
+    );
+  });
+  await withClientServer(async (client) => {
+    resetMock([
+      jsonResponse(200, { id: "txn-rc", status: "completed", text: "hi", audio_duration: 3, redact_pii_audio: true }),
+      jsonResponse(200, { status: "redacted_audio_processing" }),
+    ]);
+    const result = await callTool(client, "get_transcript", { transcript_id: "txn-rc" }, "k");
+    const text = result.content?.[0]?.text ?? "";
+    assert(
+      "25. 200 without redacted_audio_url still degrades gracefully",
+      result.isError !== true && text.includes("redacted audio not ready yet"),
+      `isError=${result.isError} text=${text}`
+    );
+    assert(
+      "25. structuredContent has no redacted_audio_url when 200 without URL",
+      result.structuredContent?.redacted_audio_url === undefined,
+      JSON.stringify(result.structuredContent)
+    );
+  });
+
+  // 26. understand_transcript posts to the Gateway /v1/understanding and renders results
+  await withClientServer(async (client) => {
+    resetMock([
+      jsonResponse(200, {
+        request_id: "req-1",
+        translated_texts: { es: "hola" },
+        speech_understanding: {
+          response: {
+            translation: { status: "success" },
+            action_items: {
+              status: "success",
+              items: [{ action_item: "Send the report.", quote: "send the report", timestamp: 4000 }],
+            },
+          },
+        },
+      }),
+    ]);
+    const result = await callTool(
+      client,
+      "understand_transcript",
+      {
+        transcript_id: "txn-u1",
+        speech_understanding: { request: { translation: { target_languages: ["es"] }, action_items: {} } },
+      },
+      "k"
+    );
+    assert(
+      "26. posts to LLM Gateway /v1/understanding",
+      (calls[0]?.url ?? "").includes("llm-gateway") && (calls[0]?.url ?? "").endsWith("/v1/understanding"),
+      calls[0]?.url
+    );
+    const body = JSON.parse(calls[0]?.body ?? "{}");
+    assert(
+      "26. sends transcript_id + speech_understanding.request",
+      body.transcript_id === "txn-u1" &&
+        JSON.stringify(body.speech_understanding?.request?.translation) ===
+          JSON.stringify({ target_languages: ["es"] }),
+      JSON.stringify(body)
+    );
+    const text = result.content?.[0]?.text ?? "";
+    assert(
+      "26. renders translation + action_items sections",
+      text.includes("--- translation:es ---") && text.includes("hola") && text.includes("Send the report."),
+      text
+    );
+    assert(
+      "26. structuredContent carries the raw response",
+      (result.structuredContent?.translated_texts as Record<string, string>)?.es === "hola",
+      JSON.stringify(result.structuredContent)
+    );
+  });
+
+  // 27. understand_transcript 404 → friendly message
+  await withClientServer(async (client) => {
+    resetMock([jsonResponse(404, { error: "transcript not found" })]);
+    const result = await callTool(
+      client,
+      "understand_transcript",
+      { transcript_id: "missing", speech_understanding: { request: { action_items: {} } } },
+      "k"
+    );
+    const text = (result.content?.[0]?.text ?? "").toLowerCase();
+    assert(
+      "27. 404 → not found / deleted message",
+      result.isError === true && text.includes("not found or deleted"),
+      `isError=${result.isError} text=${text}`
+    );
+  });
+
+  // 27b. understand_transcript 401 → friendly bad-key error
+  await withClientServer(async (client) => {
+    resetMock([jsonResponse(401, { error: "Invalid API key" })]);
+    const result = await callTool(
+      client,
+      "understand_transcript",
+      { transcript_id: "txn-u1", speech_understanding: { request: { action_items: {} } } },
+      "bad-key"
+    );
+    const text = result.content?.[0]?.text ?? "";
+    assert(
+      "27b. 401 → friendly bad-key error",
+      result.isError === true && text.includes("AssemblyAI rejected the API key"),
+      `isError=${result.isError} text=${text}`
+    );
+  });
+
+  // 28. understand_transcript 429 → rate-limit message; summarize description points here
+  await withClientServer(async (client) => {
+    resetMock([jsonResponse(429, { error: "rate limit exceeded" })]);
+    const result = await callTool(
+      client,
+      "understand_transcript",
+      { transcript_id: "txn-u1", speech_understanding: { request: { action_items: {} } } },
+      "k"
+    );
+    const text = (result.content?.[0]?.text ?? "").toLowerCase();
+    assert(
+      "28. 429 → rate limit message with retry hint",
+      result.isError === true && text.includes("rate limit") && text.includes("retry"),
+      `isError=${result.isError} text=${text}`
+    );
+    const tools = await client.listTools();
+    const summarize = tools.tools.find((t) => t.name === "summarize_transcript");
+    assert(
+      "28. summarize_transcript description mentions understand_transcript",
+      (summarize?.description ?? "").includes("understand_transcript"),
+      summarize?.description
+    );
+  });
+
+  // 29. delete_transcript issues DELETE and confirms
+  await withClientServer(async (client) => {
+    resetMock([jsonResponse(200, { id: "txn-del", status: "completed" })]);
+    const result = await callTool(client, "delete_transcript", { transcript_id: "txn-del" }, "k");
+    assert(
+      "29. DELETE to /v2/transcript/{id}",
+      calls[0]?.method === "DELETE" && (calls[0]?.url ?? "").endsWith("/v2/transcript/txn-del"),
+      `${calls[0]?.method} ${calls[0]?.url}`
+    );
+    assert(
+      "29. returns deleted confirmation",
+      result.isError !== true && result.structuredContent?.deleted === true &&
+        result.structuredContent?.transcript_id === "txn-del",
+      JSON.stringify(result.structuredContent)
+    );
+  });
+
+  // 30. delete_transcript 404 → already deleted / not found
+  await withClientServer(async (client) => {
+    resetMock([jsonResponse(404, { error: "not found" })]);
+    const result = await callTool(client, "delete_transcript", { transcript_id: "gone" }, "k");
+    const text = (result.content?.[0]?.text ?? "").toLowerCase();
+    assert(
+      "30. 404 → already deleted or not found message",
+      result.isError === true && text.includes("already deleted or not found"),
+      `isError=${result.isError} text=${text}`
+    );
+  });
+
+  // 31. renderSpeechUnderstanding: mapping-only custom_formatting, failed-feature marker, empty action_items note
+  await withClientServer(async (client) => {
+    resetMock([
+      jsonResponse(200, {
+        id: "txn-su3",
+        status: "completed",
+        text: "hello",
+        audio_duration: 10,
+        speech_understanding: {
+          response: {
+            custom_formatting: { status: "success", mapping: { "555 123 4567": "(555) 123-4567" } },
+          },
+        },
+      }),
+    ]);
+    const result = await callTool(client, "get_transcript", { transcript_id: "txn-su3" }, "k");
+    const text = result.content?.[0]?.text ?? "";
+    assert(
+      "31a. mapping-only custom_formatting renders original → formatted lines",
+      text.includes("--- custom_formatting") && text.includes("555 123 4567 → (555) 123-4567"),
+      text
+    );
+  });
+  await withClientServer(async (client) => {
+    resetMock([
+      jsonResponse(200, {
+        id: "txn-su4",
+        status: "completed",
+        text: "hello",
+        audio_duration: 10,
+        speech_understanding: { response: { speaker_identification: { status: "error" } } },
+      }),
+    ]);
+    const result = await callTool(client, "get_transcript", { transcript_id: "txn-su4" }, "k");
+    const text = result.content?.[0]?.text ?? "";
+    assert(
+      "31b. failed feature renders a visible (feature: status) marker",
+      text.includes("(speaker_identification: error)"),
+      text
+    );
+  });
+  await withClientServer(async (client) => {
+    resetMock([
+      jsonResponse(200, {
+        id: "txn-su5",
+        status: "completed",
+        text: "hello",
+        audio_duration: 10,
+        speech_understanding: { response: { action_items: { status: "success", items: [] } } },
+      }),
+    ]);
+    const result = await callTool(client, "get_transcript", { transcript_id: "txn-su5" }, "k");
+    const text = result.content?.[0]?.text ?? "";
+    assert(
+      "31c. empty action_items.items renders header + (none found)",
+      text.includes("--- action_items ---") && text.includes("(none found)"),
+      text
+    );
+  });
+
+  // 32. submit_transcript rejects redact_pii_policies/redact_pii_sub without redact_pii, no fetch
+  await withClientServer(async (client) => {
+    resetMock([]);
+    const result = await callTool(
+      client,
+      "submit_transcript",
+      { audio_url: "https://example.com/x.mp3", redact_pii_policies: ["person_name"] },
+      "k"
+    );
+    const text = (result.content?.[0]?.text ?? "").toLowerCase();
+    assert(
+      "32. redact_pii_policies without redact_pii rejected before calling AssemblyAI",
+      result.isError === true && text.includes("redact_pii: true") && calls.length === 0,
+      `isError=${result.isError} text=${text} calls=${calls.length}`
+    );
+  });
+
+  // 33. understand_transcript's /v1/understanding is not retried on 5xx (billable, non-idempotent)
+  await withClientServer(async (client) => {
+    resetMock([jsonResponse(500, { error: "server error" })]);
+    const result = await callTool(
+      client,
+      "understand_transcript",
+      { transcript_id: "txn-u1", speech_understanding: { request: { action_items: {} } } },
+      "k"
+    );
+    assert(
+      "33. billable /v1/understanding is not retried on 5xx (exactly 1 call)",
+      calls.length === 1 && result.isError === true,
+      `calls=${calls.length} isError=${result.isError}`
+    );
+  });
+
+  // 34. submit_transcript punctuate:false/format_text:false pass through explicitly
+  await withClientServer(async (client) => {
+    resetMock([jsonResponse(200, { id: "txn-pf", status: "queued" })]);
+    await callTool(
+      client,
+      "submit_transcript",
+      { audio_url: "https://example.com/x.mp3", punctuate: false, format_text: false },
+      "k"
+    );
+    const body = JSON.parse(calls[0]?.body ?? "{}");
+    assert(
+      "34. punctuate:false and format_text:false pass through explicitly",
+      body.punctuate === false && body.format_text === false,
+      JSON.stringify(body)
+    );
+  });
+
+  // 35. submit_transcript rejects speech_models: [] before calling AssemblyAI
+  await withClientServer(async (client) => {
+    resetMock([]);
+    let rejected = false;
+    try {
+      const result = await callTool(
+        client,
+        "submit_transcript",
+        { audio_url: "https://example.com/x.mp3", speech_models: [] },
+        "k"
+      );
+      rejected = result.isError === true;
+    } catch {
+      rejected = true;
+    }
+    assert(
+      "35. speech_models: [] rejected before calling AssemblyAI",
+      rejected && calls.length === 0,
+      `rejected=${rejected} calls=${calls.length}`
+    );
+  });
+
+  // 36. delete_transcript's DELETE is not retried on 5xx
+  await withClientServer(async (client) => {
+    resetMock([jsonResponse(500, { error: "server error" })]);
+    const result = await callTool(client, "delete_transcript", { transcript_id: "txn-del2" }, "k");
+    assert(
+      "36. delete_transcript's DELETE is not retried on 5xx (exactly 1 call)",
+      calls.length === 1 && result.isError === true,
+      `calls=${calls.length} isError=${result.isError}`
+    );
+  });
+
+  // 37. get_transcript redacted-audio 5xx renders an "unavailable" note (not "pending") + redacted_audio_error
+  await withClientServer(async (client) => {
+    resetMock([
+      jsonResponse(200, { id: "txn-rd", status: "completed", text: "hi", audio_duration: 3, redact_pii_audio: true }),
+      jsonResponse(502, { error: "bad gateway" }),
+    ]);
+    const result = await callTool(client, "get_transcript", { transcript_id: "txn-rd" }, "k");
+    const text = result.content?.[0]?.text ?? "";
+    assert(
+      "37. redacted audio 5xx renders an unavailable note (not pending) and the tool still succeeds",
+      result.isError !== true &&
+        text.includes("redacted audio unavailable (HTTP 502)") &&
+        result.structuredContent?.redacted_audio_error === "HTTP 502" &&
+        result.structuredContent?.redacted_audio_pending === undefined,
+      `isError=${result.isError} text=${text} structuredContent=${JSON.stringify(result.structuredContent)}`
+    );
+  });
+
+  // 38. submit_transcript rejects a speech_understanding feature key placed outside the request wrapper
+  await withClientServer(async (client) => {
+    resetMock([]);
+    let rejected = false;
+    try {
+      const result = await callTool(
+        client,
+        "submit_transcript",
+        {
+          audio_url: "https://example.com/x.mp3",
+          speech_understanding: {
+            request: { action_items: {} },
+            translation: { target_languages: ["es"] },
+          },
+        },
+        "k"
+      );
+      rejected = result.isError === true;
+    } catch {
+      rejected = true;
+    }
+    assert(
+      "38. misplaced feature key outside the request wrapper rejected (strict envelope)",
+      rejected && calls.length === 0,
+      `rejected=${rejected} calls=${calls.length}`
+    );
+  });
+
+  // 39. get_transcript renders translated_utterances for utterances carrying translated_texts
+  await withClientServer(async (client) => {
+    resetMock([
+      jsonResponse(200, {
+        id: "txn-tu",
+        status: "completed",
+        text: "hello",
+        audio_duration: 5,
+        utterances: [
+          { speaker: "A", text: "hello", start: 0, end: 1200, translated_texts: { es: "hola" } },
+          { speaker: "B", text: "hi", start: 1500, end: 2600 },
+        ],
+      }),
+    ]);
+    const result = await callTool(client, "get_transcript", { transcript_id: "txn-tu" }, "k");
+    const text = result.content?.[0]?.text ?? "";
+    assert(
+      "39. translated_utterances section renders per-utterance translation",
+      text.includes("--- translated_utterances") && text.includes("[A] 0:00–0:01 es: hola"),
+      text
+    );
+  });
+
+  // 40. get_transcript drops explicit API nulls instead of passing them through
+  await withClientServer(async (client) => {
+    resetMock([
+      jsonResponse(200, {
+        id: "txn-nulls",
+        status: "completed",
+        text: "hello",
+        audio_duration: 2,
+        content_safety_labels: null,
+        translated_texts: null,
+      }),
+    ]);
+    const result = await callTool(client, "get_transcript", { transcript_id: "txn-nulls" }, "k");
+    const text = result.content?.[0]?.text ?? "";
+    assert(
+      "40. explicit API nulls are dropped from structuredContent",
+      result.structuredContent?.content_safety_labels === undefined &&
+        result.structuredContent?.translated_texts === undefined,
+      JSON.stringify(result.structuredContent)
+    );
+    assert(
+      "40. no sections rendered for null fields",
+      !text.includes("--- content_safety") && !text.includes("--- translation:"),
+      text
+    );
+  });
+
+  // 41. renderContentSafety tolerates a non-numeric confidence value without throwing
+  await withClientServer(async (client) => {
+    resetMock([
+      jsonResponse(200, {
+        id: "txn-cs-null",
+        status: "completed",
+        text: "hi",
+        audio_duration: 3,
+        content_safety_labels: { summary: { disasters: null } },
+      }),
+    ]);
+    const result = await callTool(client, "get_transcript", { transcript_id: "txn-cs-null" }, "k");
+    const text = result.content?.[0]?.text ?? "";
+    assert(
+      "41. content_safety renders without throwing when a confidence value is non-numeric",
+      result.isError !== true && text.includes("disasters: null"),
+      text
+    );
+  });
+
+  // 42. summarize_transcript 429 → friendly rate-limit message (shared tool-error mapper)
+  await withClientServer(async (client) => {
+    resetMock([jsonResponse(429, { error: "rate limit exceeded" })]);
+    const result = await callTool(client, "summarize_transcript", { transcript_id: "txn-ai" }, "k");
+    const text = (result.content?.[0]?.text ?? "").toLowerCase();
+    assert(
+      "42. summarize_transcript 429 → rate limit message with retry hint",
+      result.isError === true && text.includes("rate limit") && text.includes("retry"),
+      `isError=${result.isError} text=${text}`
     );
   });
 

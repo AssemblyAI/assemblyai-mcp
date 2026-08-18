@@ -1,7 +1,7 @@
 {
-  "name": "assemblyai-databricks-mcp",
+  "name": "assemblyai-mcp",
   "version": "0.1.0",
-  "description": "MCP server wrapping AssemblyAI for the Databricks Marketplace",
+  "description": "MCP server wrapping AssemblyAI transcription, Speech Understanding, and Guardrails",
   "type": "module",
   "engines": {
     "node": "24.15.0"

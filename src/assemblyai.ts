@@ -7,6 +7,13 @@
  * `extra.authInfo.token` and never lives in module state.
  */
 
+import type {
+  SpeechUnderstandingResponse,
+  ContentSafetyLabels,
+  IabCategoriesResult,
+  AutoHighlightsResult,
+} from "./transcript-sections";
+
 const DEFAULT_BASE_URL =
   process.env.ASSEMBLYAI_BASE_URL ?? "https://api.assemblyai.com";
 
@@ -33,12 +40,66 @@ export class AssemblyAIError extends Error {
 
 export interface TranscriptSubmitOptions {
   audio_url: string;
+  // Established flags (behavior unchanged — sent only when true; redact_pii
+  // applies the server's default policies/sub).
   speaker_labels?: boolean;
   sentiment_analysis?: boolean;
   entity_detection?: boolean;
   redact_pii?: boolean;
   redact_pii_policies?: string[];
   redact_pii_sub?: "entity_name" | "hash";
+  // Verbatim/formatting toggles — both default true server-side.
+  punctuate?: boolean;
+  format_text?: boolean;
+  // Prompting (Universal-3.5 Pro)
+  prompt?: string;
+  keyterms_prompt?: string[];
+  // Language
+  language_code?: string;
+  language_codes?: string[];
+  language_detection?: boolean;
+  language_detection_options?: {
+    expected_languages?: string[];
+    fallback_language?: string;
+    code_switching?: boolean;
+    code_switching_confidence_threshold?: number;
+    localization?: string[];
+  };
+  language_confidence_threshold?: number;
+  // Models
+  speech_models?: Array<"universal-3-5-pro" | "universal-2">;
+  temperature?: number;
+  // Diarization
+  speaker_options?: { min_speakers_expected?: number; max_speakers_expected?: number };
+  // Guardrails
+  filter_profanity?: boolean;
+  speech_threshold?: number;
+  content_safety?: boolean;
+  content_safety_confidence?: number;
+  redact_pii_audio?: boolean;
+  redact_pii_audio_quality?: "mp3" | "wav";
+  redact_pii_audio_options?: {
+    override_audio_redaction_method?: "silence";
+    return_redacted_no_speech_audio?: boolean;
+  };
+  redact_pii_return_unredacted?: boolean;
+  redact_static_entities?: Record<string, string[]>;
+  // Speech Understanding (inline)
+  speech_understanding?: { request: Record<string, unknown> };
+  // Other STT
+  multichannel?: boolean;
+  disfluencies?: boolean;
+  custom_spelling?: Array<{ from: string[]; to: string }>;
+  audio_start_from?: number;
+  audio_end_at?: number;
+  domain?: string;
+  remove_audio_tags?: "all" | "speaker";
+  iab_categories?: boolean;
+  auto_highlights?: boolean;
+  // Webhooks (pass-through parity; agent flows should poll instead)
+  webhook_url?: string;
+  webhook_auth_header_name?: string;
+  webhook_auth_header_value?: string;
 }
 
 export interface TranscriptRecord {
@@ -53,6 +114,8 @@ export interface TranscriptRecord {
     text: string;
     start: number;
     end: number;
+    /** Present when translation.match_original_utterance was requested. */
+    translated_texts?: Record<string, string>;
   }>;
   summary?: string;
   error?: string;
@@ -65,7 +128,36 @@ export interface TranscriptRecord {
     speaker: string | null;
   }>;
   entities?: Array<{ text: string; entity_type: string; start: number; end: number }>;
+  translated_texts?: Record<string, string>;
+  speech_understanding?: { request?: unknown; response?: SpeechUnderstandingResponse };
+  content_safety_labels?: ContentSafetyLabels;
+  iab_categories_result?: IabCategoriesResult;
+  auto_highlights_result?: AutoHighlightsResult;
+  unredacted_text?: string;
+  /** Echo of the request param — signals a redacted audio file exists. */
+  redact_pii_audio?: boolean;
+  // Not yet observed in a live response — verify via test:live before relying on it (see PR #1 review).
+  metadata?: { domain_used?: string | null; warnings?: Array<{ message: string }> };
 }
+
+/**
+ * Options with special-cased handling above the generic copy loop in
+ * submitTranscript (defaults, combined flags, truthy-only sends). Every
+ * other TranscriptSubmitOptions key is copied verbatim into the request body
+ * whenever it's defined — so a new pass-through API param needs only a zod
+ * schema entry + an interface field here, never a third place to register
+ * it (that third list — PASSTHROUGH_KEYS — used to drift from the other two).
+ */
+const HANDLED_KEYS = new Set<keyof TranscriptSubmitOptions>([
+  "audio_url",
+  "speech_models",
+  "speaker_labels",
+  "sentiment_analysis",
+  "entity_detection",
+  "redact_pii",
+  "redact_pii_policies",
+  "redact_pii_sub",
+]);
 
 export async function submitTranscript(
   apiKey: string,
@@ -73,10 +165,10 @@ export async function submitTranscript(
 ): Promise<TranscriptRecord> {
   const payload: Record<string, unknown> = {
     audio_url: options.audio_url,
-    // The v2 API only accepts universal-3-5-pro and universal-2 (universal-3-pro
-    // was retired). Pin the priority list on every request so model selection
-    // doesn't drift with API-side defaults.
-    speech_models: ["universal-3-5-pro", "universal-2"],
+    // The v2 API only accepts universal-3-5-pro and universal-2. Pin the
+    // priority list unless the caller overrides, so model selection doesn't
+    // drift with API-side defaults.
+    speech_models: options.speech_models ?? ["universal-3-5-pro", "universal-2"],
   };
   if (options.speaker_labels) payload.speaker_labels = true;
   if (options.sentiment_analysis) payload.sentiment_analysis = true;
@@ -85,6 +177,10 @@ export async function submitTranscript(
     payload.redact_pii = true;
     payload.redact_pii_policies = options.redact_pii_policies ?? DEFAULT_REDACT_PII_POLICIES;
     payload.redact_pii_sub = options.redact_pii_sub ?? "entity_name";
+  }
+  for (const [key, value] of Object.entries(options)) {
+    if (HANDLED_KEYS.has(key as keyof TranscriptSubmitOptions)) continue;
+    if (value !== undefined) payload[key] = value;
   }
   return requestWithRetry<TranscriptRecord>(apiKey, "POST", "/v2/transcript", payload);
 }
@@ -100,9 +196,48 @@ export async function getTranscript(
   );
 }
 
+export interface RedactedAudioResponse {
+  status: string;
+  redacted_audio_url?: string;
+}
+
+export async function getRedactedAudio(
+  apiKey: string,
+  transcriptId: string
+): Promise<RedactedAudioResponse> {
+  // retries=1: this is polled repeatedly from get_transcript's hot path
+  // (every ~3s until the redacted audio is ready); retrying each poll would
+  // multiply request volume and latency for a call that's cheap to just
+  // re-issue on the caller's next poll anyway.
+  return requestWithRetry<RedactedAudioResponse>(
+    apiKey,
+    "GET",
+    `/v2/transcript/${encodeURIComponent(transcriptId)}/redacted-audio`,
+    undefined,
+    1
+  );
+}
+
+export async function deleteTranscript(
+  apiKey: string,
+  transcriptId: string
+): Promise<TranscriptRecord> {
+  // retries=1: DELETE is not idempotent from the caller's point of view — a
+  // retry after a successful-but-slow-to-respond delete would 404 on the
+  // already-deleted transcript and mislabel a successful deletion as a
+  // failure.
+  return requestWithRetry<TranscriptRecord>(
+    apiKey,
+    "DELETE",
+    `/v2/transcript/${encodeURIComponent(transcriptId)}`,
+    undefined,
+    1
+  );
+}
+
 export async function requestWithRetry<T>(
   apiKey: string,
-  method: "GET" | "POST",
+  method: "GET" | "POST" | "DELETE",
   path: string,
   body?: unknown,
   retries = 3,

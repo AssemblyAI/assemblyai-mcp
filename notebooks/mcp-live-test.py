@@ -7,8 +7,10 @@
 # MAGIC repeatable (run it after every server change, or schedule it as a job).
 # MAGIC
 # MAGIC It exercises: `initialize` → `tools/list` → `submit_transcript` (with
-# MAGIC feature flags) → `get_transcript` polling → `summarize_transcript`,
-# MAGIC and asserts the response contract (including `speech_model_used`).
+# MAGIC feature flags) → `get_transcript` polling → `summarize_transcript` →
+# MAGIC `understand_transcript` (post-hoc Speech Understanding via the LLM
+# MAGIC Gateway) → `delete_transcript` (cleans up the transcript it created), and
+# MAGIC asserts the response contract (including `speech_model_used`).
 # MAGIC
 # MAGIC **Two ways to point it at the server** (pick via widgets below):
 # MAGIC
@@ -131,8 +133,9 @@ check("initialize succeeds", "serverInfo" in init, json.dumps(init)[:200])
 tools = rpc("tools/list")
 tool_names = sorted(t["name"] for t in tools.get("tools", []))
 check(
-    "tools/list exposes the 3 tools",
-    tool_names == ["get_transcript", "submit_transcript", "summarize_transcript"],
+    "tools/list exposes the 5 tools",
+    tool_names
+    == ["delete_transcript", "get_transcript", "submit_transcript", "summarize_transcript", "understand_transcript"],
     ", ".join(tool_names),
 )
 
@@ -145,33 +148,55 @@ submitted, _, _ = call_tool(
 transcript_id = submitted.get("transcript_id")
 check("submit_transcript returns transcript_id", bool(transcript_id), json.dumps(submitted))
 
-deadline = time.time() + 300
-structured, text = {}, ""
-while time.time() < deadline:
-    structured, text, _ = call_tool("get_transcript", {"transcript_id": transcript_id})
-    if structured.get("status") in ("completed", "error"):
-        break
-    time.sleep(3)
+# Everything from here through the last check runs in a try/finally so the
+# transcript is torn down even if a check/call above raises mid-run — a
+# mid-run failure used to skip the delete_transcript call entirely.
+try:
+    deadline = time.time() + 300
+    structured, text = {}, ""
+    while time.time() < deadline:
+        structured, text, _ = call_tool("get_transcript", {"transcript_id": transcript_id})
+        if structured.get("status") in ("completed", "error"):
+            break
+        time.sleep(3)
 
-check("transcription completes", structured.get("status") == "completed", str(structured.get("status")))
-check(
-    "speech_model_used=universal-3-5-pro",
-    structured.get("speech_model_used") == "universal-3-5-pro",
-    str(structured.get("speech_model_used")),
-)
-# Section headers carry parentheticals ("--- utterances (per-speaker ...) ---"),
-# so match on the label prefix only.
-check("utterances section present", "--- utterances" in text)
-check("sentiment section present", "--- sentiment" in text)
+    check("transcription completes", structured.get("status") == "completed", str(structured.get("status")))
+    check(
+        "speech_model_used=universal-3-5-pro",
+        structured.get("speech_model_used") == "universal-3-5-pro",
+        str(structured.get("speech_model_used")),
+    )
+    # Section headers carry parentheticals ("--- utterances (per-speaker ...) ---"),
+    # so match on the label prefix only.
+    check("utterances section present", "--- utterances" in text)
+    check("sentiment section present", "--- sentiment" in text)
 
-summary_struct, summary_text, summary_raw = call_tool(
-    "summarize_transcript", {"transcript_id": transcript_id, "style": "bullets"}
-)
-check(
-    "summarize_transcript returns a summary",
-    not summary_raw.get("isError") and len(summary_text.strip()) > 0,
-    summary_text[:200],
-)
+    summary_struct, summary_text, summary_raw = call_tool(
+        "summarize_transcript", {"transcript_id": transcript_id, "style": "bullets"}
+    )
+    check(
+        "summarize_transcript returns a summary",
+        not summary_raw.get("isError") and len(summary_text.strip()) > 0,
+        summary_text[:200],
+    )
+
+    understood_struct, understood_text, understood_raw = call_tool(
+        "understand_transcript",
+        {"transcript_id": transcript_id, "speech_understanding": {"request": {"action_items": {}}}},
+    )
+    check(
+        "understand_transcript returns action_items",
+        not understood_raw.get("isError") and "--- action_items ---" in understood_text,
+        understood_text[:200],
+    )
+finally:
+    if transcript_id:
+        deleted_struct, _, deleted_raw = call_tool("delete_transcript", {"transcript_id": transcript_id})
+        check(
+            "delete_transcript cleans up the test transcript",
+            not deleted_raw.get("isError") and deleted_struct.get("deleted") is True,
+            json.dumps(deleted_struct),
+        )
 
 # COMMAND ----------
 
