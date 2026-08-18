@@ -181,7 +181,11 @@ async function run() {
     assert(
       "5. PII redaction replaces person names",
       textOf(pii.final).includes("[PERSON_NAME]"),
-      textOf(pii.final).slice(0, 300)
+      // Never print the transcript here: on failure it is exactly the text
+      // whose PII redaction did NOT happen. Report a content-free diagnostic.
+      `status=${pii.final.structuredContent?.status} PERSON_NAME markers: ${
+        (textOf(pii.final).match(/\[PERSON_NAME\]/g) ?? []).length
+      }, text length: ${textOf(pii.final).length}`
     );
 
     // 6. Summarize the plain transcript via LLM Gateway
