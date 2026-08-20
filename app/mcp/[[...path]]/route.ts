@@ -26,7 +26,7 @@ async function verifyToken(_req: Request, bearer?: string) {
   return {
     token: bearer.trim(),
     scopes: [],
-    clientId: "databricks",
+    clientId: "mcp-client",
   };
 }
 

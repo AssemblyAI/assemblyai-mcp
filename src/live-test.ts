@@ -11,8 +11,8 @@
  *   ASSEMBLYAI_API_KEY=... npm run test:live                 # against http://localhost:3001/mcp
  *   ASSEMBLYAI_API_KEY=... MCP_URL=https://<host>/mcp npm run test:live
  *
- * The key is sent as `Authorization: Bearer <key>` — exactly the shape
- * Databricks produces — so the auth bridge is tested too.
+ * The key is sent as `Authorization: Bearer <key>` — the shape MCP
+ * clients produce — so the auth bridge is tested too.
  */
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";

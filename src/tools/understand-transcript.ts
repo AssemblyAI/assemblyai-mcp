@@ -36,7 +36,7 @@ export function registerUnderstandTranscript(server: McpServer): void {
       if (!apiKey) {
         throw new Error(
           "No AssemblyAI API key in request context. Configure your AssemblyAI API key " +
-            "as the Bearer token in the Databricks HTTP connection."
+            "as the Bearer token in your MCP client connection."
         );
       }
 

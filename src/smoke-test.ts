@@ -4,7 +4,7 @@
  *
  * Coverage:
  *   1. submit_transcript happy path — POSTs to /v2/transcript
- *   2. Bearer prefix is stripped (regression guard for the Databricks auth bridge)
+ *   2. Bearer prefix is stripped (regression guard for the Bearer auth bridge)
  *   3. submit_transcript URL validation rejects file://
  *   4. AssemblyAI 401 surfaces as friendly error
  *   5. get_transcript happy path (status=completed, incl. speech_model_used)
@@ -460,7 +460,7 @@ async function run() {
       {
         audio_url: "https://example.com/x.mp3",
         prompt: "Cardiology consultation.",
-        keyterms_prompt: ["AssemblyAI", "Databricks"],
+        keyterms_prompt: ["AssemblyAI", "Universal-3"],
         language_code: "en_us",
         language_codes: ["en", "es"],
         language_detection: true,
@@ -489,7 +489,7 @@ async function run() {
     assert("16. prompt passes through", body.prompt === "Cardiology consultation.", JSON.stringify(body));
     assert(
       "16. keyterms_prompt passes through",
-      JSON.stringify(body.keyterms_prompt) === JSON.stringify(["AssemblyAI", "Databricks"]),
+      JSON.stringify(body.keyterms_prompt) === JSON.stringify(["AssemblyAI", "Universal-3"]),
       JSON.stringify(body)
     );
     assert(
