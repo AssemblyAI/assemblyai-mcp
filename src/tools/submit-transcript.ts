@@ -37,6 +37,13 @@ export function registerSubmitTranscript(server: McpServer): void {
         "transcript text. These features cannot be retro-fitted to a finished transcript — re-submit " +
         "with the flag set. For SUMMARIES do not set a flag here: after the transcript completes, " +
         "call the `summarize_transcript` tool.",
+      // Starts an async transcription job; AssemblyAI fetches the audio URL (external).
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: true,
+      },
       inputSchema: {
         audio_url: z
           .string()

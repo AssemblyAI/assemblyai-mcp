@@ -14,6 +14,13 @@ export function registerDeleteTranscript(server: McpServer): void {
         "PERMANENTLY delete a transcript and its associated data from AssemblyAI. Irreversible. " +
         "Only call this when the user explicitly asks for deletion (e.g. compliance cleanup after " +
         "processing) — never delete proactively.",
+      // Permanently deletes a transcript. Deleting twice has the same effect as once.
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
       inputSchema: {
         transcript_id: z.string().describe("The id of the transcript to permanently delete."),
       },

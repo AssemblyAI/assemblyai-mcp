@@ -32,6 +32,11 @@ export function registerGetTranscript(server: McpServer): void {
         "Returns the full transcript when `status` is `completed`, an error message when `status` is `error`, " +
         "or just the in-progress status (`queued` / `processing`) otherwise. " +
         "Poll this tool every ~3 seconds after `submit_transcript` until you see `completed` or `error`.",
+      // Reads a transcript's status and results.
+      annotations: {
+        readOnlyHint: true,
+        openWorldHint: false,
+      },
       inputSchema: {
         transcript_id: z
           .string()

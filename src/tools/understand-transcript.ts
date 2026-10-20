@@ -20,6 +20,11 @@ export function registerUnderstandTranscript(server: McpServer): void {
         "known before transcription, prefer passing speech_understanding to submit_transcript instead. " +
         "speaker_identification (and translation's match_original_utterance) only work if the " +
         "transcript was created with speaker_labels=true.",
+      // Runs Speech Understanding over a completed transcript; changes nothing.
+      annotations: {
+        readOnlyHint: true,
+        openWorldHint: false,
+      },
       inputSchema: {
         transcript_id: z
           .string()
