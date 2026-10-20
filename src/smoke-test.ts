@@ -45,6 +45,8 @@
  *   40. get_transcript drops explicit API nulls (content_safety_labels, translated_texts) instead of passing them through
  *   41. renderContentSafety tolerates a non-numeric confidence value without throwing
  *   42. summarize_transcript 429 → friendly rate-limit message (shared tool-error mapper)
+ *   43. every tool carries a title + readOnlyHint/destructiveHint; delete is destructive, reads are read-only
+ *   44. logError scrubs URLs and long tokens from error messages and stacks
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -52,6 +54,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
 import { registerTools } from "./server";
+import { logError } from "./log";
 
 interface FetchCall {
   url: string;
@@ -1280,6 +1283,57 @@ async function run() {
       `isError=${result.isError} text=${text}`
     );
   });
+
+  // 43. every tool has a title and read-only/destructive annotations (required by the
+  //     Anthropic and OpenAI directories); delete is destructive, reads are read-only
+  await withClientServer(async (client) => {
+    const { tools } = await client.listTools();
+    const byName = Object.fromEntries(tools.map((t) => [t.name, t]));
+    for (const t of tools) {
+      const a = t.annotations ?? {};
+      assert(
+        `43. ${t.name} has a title and readOnlyHint/destructiveHint`,
+        Boolean(t.title) && (typeof a.readOnlyHint === "boolean" || typeof a.destructiveHint === "boolean"),
+        JSON.stringify({ title: t.title, annotations: t.annotations })
+      );
+    }
+    assert(
+      "43. delete_transcript is marked destructive",
+      byName.delete_transcript?.annotations?.destructiveHint === true,
+      JSON.stringify(byName.delete_transcript?.annotations)
+    );
+    for (const name of ["get_transcript", "summarize_transcript", "understand_transcript"]) {
+      assert(
+        `43. ${name} is marked read-only`,
+        byName[name]?.annotations?.readOnlyHint === true,
+        JSON.stringify(byName[name]?.annotations)
+      );
+    }
+  });
+
+  // 44. logError scrubs URLs and long tokens from error messages and stacks
+  {
+    const lines: string[] = [];
+    const originalLog = console.log;
+    console.log = (line: string) => lines.push(line);
+    try {
+      logError(
+        { event: "scrub_check" },
+        new Error(
+          "HTTP 400: could not download https://bucket.example.com/call.mp3?sig=abc and " +
+            `token ${"FAKETOKEN" + "x".repeat(24)} was rejected`
+        )
+      );
+    } finally {
+      console.log = originalLog;
+    }
+    const out = lines.join("\n");
+    assert(
+      "44. logError removes URLs and long tokens, keeps the HTTP status",
+      !out.includes("bucket.example.com") && !out.includes("FAKETOKENxxxx") && out.includes("HTTP 400") && out.includes("[url]"),
+      out
+    );
+  }
 
   globalThis.fetch = originalFetch;
 

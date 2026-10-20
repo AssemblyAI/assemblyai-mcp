@@ -27,6 +27,11 @@ export function registerSummarizeTranscript(server: McpServer): void {
         " For a CHAPTERED summary with timestamps/headlines, or decision-aware action items, use the " +
         "`understand_transcript` tool (summarization / action_items features) instead — this tool is " +
         "the freeform/custom-prompt option.",
+      // Reads a completed transcript and returns an LLM summary; changes nothing.
+      annotations: {
+        readOnlyHint: true,
+        openWorldHint: false,
+      },
       inputSchema: {
         transcript_id: z
           .string()
