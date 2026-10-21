@@ -9,8 +9,9 @@
 export interface SuChapter {
   start: number;
   end: number;
-  text: string;
-  headline: string;
+  text?: string;
+  bullets?: string[];
+  headline?: string;
 }
 
 export interface SuActionItem {
@@ -95,7 +96,10 @@ export function renderCustomFormatting(formattedText: string): string[] {
 
 export function renderSuSummary(chapters: SuChapter[]): string[] {
   const lines = ["", "--- su_summary (chaptered summary; start–end are m:ss) ---"];
-  for (const c of chapters) lines.push(`[${formatMs(c.start)}–${formatMs(c.end)}] ${c.headline} — ${c.text}`);
+  for (const c of chapters) {
+    const summaryText = c.text ?? (c.bullets && c.bullets.length > 0 ? c.bullets.join("; ") : "");
+    lines.push(`[${formatMs(c.start)}–${formatMs(c.end)}] ${c.headline ?? ""} — ${summaryText}`.trimEnd());
+  }
   return lines;
 }
 
