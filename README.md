@@ -5,18 +5,29 @@ A remote [MCP](https://modelcontextprotocol.io) server for the
 five tools covering async speech-to-text, Speech Understanding (translation,
 speaker identification, custom formatting, chaptered summarization, action
 items), and Guardrails (PII redaction, content moderation, profanity
-filtering) — served over **Streamable HTTP** and authenticated per-request
-with the caller's own AssemblyAI API key.
+filtering) — served over **Streamable HTTP** and authenticated per-request,
+either by **signing in with AssemblyAI** (OAuth) or with the caller's own
+AssemblyAI API key.
 
-Works with any MCP client that can send a Bearer header: Claude Code,
-Claude.ai, Cursor, MCP Inspector, and others.
+Works with any MCP client that supports MCP authorization (Claude Code,
+Claude.ai, Cursor, MCP Inspector, and others) or can send a Bearer header.
 Built with Next.js 16 + `mcp-handler` + the official
 `@modelcontextprotocol/sdk`; deploys as a Vercel serverless function.
 
 ## Quickstart
 
-Point your MCP client at the server's `/mcp` endpoint with your AssemblyAI
-API key as the Bearer token.
+**Sign in with AssemblyAI:** add the server's `/mcp` endpoint with no
+headers. The client opens AssemblyAI's sign-in and consent page, and the
+server uses an API key it gets for that connection; nothing to copy or
+paste. (This works against AssemblyAI's hosted deployment; a self-hosted
+copy uses API keys, see [Auth](#auth).)
+
+```bash
+claude mcp add --transport http assemblyai https://<host>/mcp
+```
+
+**With an API key:** point your MCP client at the `/mcp` endpoint with your
+AssemblyAI API key as the Bearer token.
 
 **Claude Code**
 
@@ -101,14 +112,50 @@ highlights, unredacted text, the redacted-audio URL, and processing
 warnings when requested/present. Raw fields are mirrored in
 `structuredContent`.
 
-## Auth: pass-through Bearer
+## Auth
 
-MCP clients send the API key as `Authorization: Bearer <key>` (most client
-configs prepend `Bearer ` automatically). AssemblyAI's REST API expects the
-raw key, so
-`withMcpAuth` extracts the token, strips the prefix, and threads it into
-every tool callback via `extra.authInfo.token`. No keys are written to disk
-or shared between requests — each request runs on the key it arrived with.
+Every request carries a Bearer token, which is one of two things.
+
+**An OAuth access token (Sign in with AssemblyAI).** A request with no token
+gets a 401 whose `WWW-Authenticate` names
+`/.well-known/oauth-protected-resource`, which names AssemblyAI's
+authorization server. The client registers itself there, signs the member in
+through the consent page (scope `aai:api`), and sends the access token it
+gets back. AssemblyAI's API takes API keys, not access tokens, so
+`src/oauth.ts` exchanges the token for the API key of the member's
+connection to that client (`POST /api/v2/oauth/api-key`) before the request
+reaches `withMcpAuth`, and the request continues with that key. The exchange
+also proves which server is asking: the deployment's Vercel OIDC token goes
+in `X-AAI-Service-Token`, and AssemblyAI only accepts its own production
+deployment of this project, so a self-hosted copy can't exchange tokens and
+uses API keys instead. Keys are cached per access token for at most five
+minutes, so a connection revoked from the dashboard stops working within
+minutes. A refused token answers 401 (403 for a missing scope) and sends the
+client back to sign-in; an outage answers 503, which doesn't.
+
+**An AssemblyAI API key (pass-through).** MCP clients send the API key as
+`Authorization: Bearer <key>` (most client configs prepend `Bearer `
+automatically). AssemblyAI's REST API expects the raw key, so `withMcpAuth`
+extracts the token, strips the prefix, and threads it into every tool
+callback via `extra.authInfo.token`. No keys are written to disk or shared
+between requests — each request runs on the key it arrived with.
+
+### Configuration
+
+Every setting defaults to AssemblyAI's production endpoints, so a production
+deployment needs none. A deployment that signs in against another
+AssemblyAI environment sets all four together, since that environment's
+keys only work against its own API.
+
+| Variable | Default | What it is |
+| --- | --- | --- |
+| `ASSEMBLYAI_OAUTH_ISSUER` | `https://auth.assemblyai.com` | The authorization server advertised in the protected resource metadata |
+| `ASSEMBLYAI_OAUTH_EXCHANGE_ORIGIN` | `https://www.assemblyai.com` | Where access tokens are exchanged for API keys |
+| `ASSEMBLYAI_BASE_URL` | `https://api.assemblyai.com` | The AssemblyAI API |
+| `ASSEMBLYAI_LLM_GATEWAY_BASE_URL` | `https://llm-gateway.assemblyai.com` | The LLM Gateway |
+
+The service token needs no setting: Vercel provides it to the deployment
+(`VERCEL_OIDC_TOKEN`), and `@vercel/oidc` reads it.
 
 ## Extending the tool surface (additive-only contract)
 
@@ -143,12 +190,14 @@ Requires Node 24.x.
 
 ```bash
 npm install
-npm test                # in-process smoke (no network, mocked AssemblyAI)
+npm test                # in-process smoke + OAuth exchange tests (no network)
 npm run dev             # next dev on http://localhost:3000
 ```
 
-MCP endpoint: `http://localhost:3000/mcp`. OAuth metadata stub:
-`http://localhost:3000/.well-known/oauth-protected-resource`.
+MCP endpoint: `http://localhost:3000/mcp`. OAuth protected resource
+metadata: `http://localhost:3000/.well-known/oauth-protected-resource`.
+Sign-in needs a deployment AssemblyAI accepts (see [Auth](#auth)); locally,
+use an API key.
 
 ### Smoke test with MCP Inspector
 
@@ -195,15 +244,31 @@ block, so the suite tears down every transcript it successfully creates
 even when the run fails midway. Costs a few cents of transcription credit
 per run.
 
+### Sign-in test against a deployment
+
+```bash
+MCP_URL=https://<deployment>/mcp VERCEL_PROTECTION_BYPASS=<secret> npm run test:oauth
+```
+
+Signs in the way an MCP client does, discovering everything from the
+deployment: the 401 challenge, the protected resource metadata, the
+authorization server's metadata, client registration, then PKCE through the
+consent page in your browser (click Allow). Then it lists tools and makes one
+tool call with the access token, and checks a tampered token is refused.
+`VERCEL_PROTECTION_BYPASS` is the deployment's Protection Bypass for
+Automation secret, for preview deployments behind Vercel Authentication.
+No API key needed and no transcription credit spent.
+
 ## Project layout
 
 ```
 assemblyai-mcp/
 ├── app/
-│   ├── mcp/[transport]/route.ts             # mcp-handler entry, wrapped with withMcpAuth
+│   ├── mcp/[[...path]]/route.ts             # mcp-handler entry, wrapped with withOAuthExchange + withMcpAuth
 │   └── .well-known/oauth-protected-resource/route.ts
 ├── src/
 │   ├── server.ts                            # registerTools factory
+│   ├── oauth.ts                             # Sign in with AssemblyAI: access token → API key exchange
 │   ├── log.ts                               # JSON logging helpers + key hashing
 │   ├── tool-errors.ts                       # shared 401/404/429 error mapper
 │   ├── assemblyai.ts                        # fetch wrapper (submit, get, delete, retry)
@@ -217,6 +282,8 @@ assemblyai-mcp/
 │   │   ├── understand-transcript.ts
 │   │   └── delete-transcript.ts
 │   ├── smoke-test.ts                        # InMemoryTransport, mocked fetch
+│   ├── oauth-test.ts                        # token exchange, stubbed (npm test)
+│   ├── oauth-preview-test.ts                # sign-in against a deployment (npm run test:oauth)
 │   └── live-test.ts                         # real API, Streamable HTTP client
 ├── package.json
 ├── tsconfig.json
