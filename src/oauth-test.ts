@@ -10,7 +10,7 @@
  *   5. the cache never outlives the access token
  *   6. AssemblyAI's 401 → 401 with a challenge pointing at the resource metadata
  *   7. a 403 for a missing scope → 403 insufficient_scope; other 403s → 401
- *   8. 5xx, network errors and a missing service token → 503, never 401
+ *   8. 5xx, network errors, a missing or refused service token → 503, never 401
  *   9. no Bearer at all reaches the handler (withMcpAuth answers it)
  *  10. the protected resource metadata names the authorization server and scopes
  */
@@ -201,11 +201,13 @@ async function run() {
     const { deps } = stub([
       Response.json({ detail: "Could not revoke" }, { status: 503 }),
       new TypeError("fetch failed"),
+      Response.json({ detail: "Unknown client" }, { status: 401 }),
     ]);
     const { handler, seen } = recorder();
     const wrapped = withOAuthExchange(handler, deps);
     const upstream = await wrapped(mcpRequest(accessToken(undefined, "u")));
     const network = await wrapped(mcpRequest(accessToken(undefined, "n")));
+    const refusedServer = await wrapped(mcpRequest(accessToken(undefined, "c")));
     const noOidc = await withOAuthExchange(
       handler,
       stub([], {
@@ -219,6 +221,7 @@ async function run() {
       upstream.status === 503 && network.status === 503 && noOidc.status === 503,
       `${upstream.status} ${network.status} ${noOidc.status}`
     );
+    assert("8. a refused service token is a 503, not a sign-in loop", refusedServer.status === 503, String(refusedServer.status));
     assert("8. and never reaches the handler", seen.length === 0);
   }
 

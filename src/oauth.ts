@@ -179,6 +179,13 @@ export async function exchangeAccessToken(
   }
 
   const detail = scrubForLog(await detailOf(response)) ?? `HTTP ${response.status}`;
+  if (response.status === 401 && detail === "Unknown client") {
+    // AssemblyAI didn't accept this deployment's service token (not the
+    // deployment it trusts, or its OIDC settings aren't in place). Signing
+    // in again can't fix that, so it must not read as a refused token.
+    log({ event: "oauth_exchange_unavailable", level: "error", reason: "service_token_refused", status: 401 });
+    return { kind: "unavailable", detail: "AssemblyAI did not accept this server; try again later" };
+  }
   if (response.status === 401) {
     log({ event: "oauth_exchange_rejected", level: "warn", tokenHash: tokenId, status: 401, detail });
     return { kind: "rejected", detail };
