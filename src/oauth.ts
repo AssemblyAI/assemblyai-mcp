@@ -85,16 +85,20 @@ export function clearExchangeCache(): void {
   cache.clear();
 }
 
-/** The access token's own expiry, read without verifying it: it only bounds
- * how long a key is cached for it. AssemblyAI verifies the token. */
-function tokenExpiry(accessToken: string): number | undefined {
+/** A JWT's claims, read without verifying it. */
+function claimsOf(jwt: string): Record<string, unknown> {
   try {
-    const payload = accessToken.split(".")[1] ?? "";
-    const exp = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")).exp;
-    return typeof exp === "number" ? exp * 1000 : undefined;
+    return JSON.parse(Buffer.from(jwt.split(".")[1] ?? "", "base64url").toString("utf8"));
   } catch {
-    return undefined;
+    return {};
   }
+}
+
+/** The access token's own expiry: it only bounds how long a key is cached for
+ * it. AssemblyAI verifies the token. */
+function tokenExpiry(accessToken: string): number | undefined {
+  const exp = claimsOf(accessToken).exp;
+  return typeof exp === "number" ? exp * 1000 : undefined;
 }
 
 async function detailOf(response: Response): Promise<string> {
@@ -183,7 +187,16 @@ export async function exchangeAccessToken(
     // AssemblyAI didn't accept this deployment's service token (not the
     // deployment it trusts, or its OIDC settings aren't in place). Signing
     // in again can't fix that, so it must not read as a refused token.
-    log({ event: "oauth_exchange_unavailable", level: "error", reason: "service_token_refused", status: 401 });
+    // The claims AssemblyAI matches against its settings, to compare with
+    // them; the token itself is never logged.
+    const { iss, aud, project_id, environment } = claimsOf(serviceToken);
+    log({
+      event: "oauth_exchange_unavailable",
+      level: "error",
+      reason: "service_token_refused",
+      status: 401,
+      serviceToken: { iss, aud, project_id, environment },
+    });
     return { kind: "unavailable", detail: "AssemblyAI did not accept this server; try again later" };
   }
   if (response.status === 401) {
