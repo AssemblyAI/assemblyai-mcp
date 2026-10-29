@@ -222,6 +222,28 @@ export async function exchangeAccessToken(
   return { kind: "unavailable", detail: "AssemblyAI could not issue an API key; try again" };
 }
 
+/**
+ * The same request with another Bearer. Built from the request's public parts,
+ * not `new Request(req, init)`: on Vercel the incoming request is Next's own
+ * Request subclass, from a different copy of the fetch implementation than the
+ * global `Request`, whose copy constructor reads private fields the subclass
+ * doesn't have and throws.
+ */
+function withBearer(req: Request, token: string): Request {
+  const headers = new Headers(req.headers);
+  headers.set("Authorization", `Bearer ${token}`);
+  const hasBody = req.method !== "GET" && req.method !== "HEAD";
+  const init: RequestInit & { duplex?: "half" } = {
+    method: req.method,
+    headers,
+    signal: req.signal,
+    body: hasBody ? req.body : undefined,
+    // Node's fetch needs this to send a streamed body.
+    duplex: hasBody ? "half" : undefined,
+  };
+  return new Request(req.url, init);
+}
+
 function bearerOf(req: Request): string | undefined {
   const [type, token] = req.headers.get("Authorization")?.split(" ") ?? [];
   return type?.toLowerCase() === "bearer" && token ? token.trim() : undefined;
@@ -257,11 +279,8 @@ export function withOAuthExchange(
 
     const outcome = await exchangeAccessToken(bearer, deps);
     switch (outcome.kind) {
-      case "key": {
-        const headers = new Headers(req.headers);
-        headers.set("Authorization", `Bearer ${outcome.apiKey}`);
-        return handler(new Request(req, { headers }));
-      }
+      case "key":
+        return handler(withBearer(req, outcome.apiKey));
       case "rejected":
         return challenge(req, 401, "invalid_token", outcome.detail);
       case "insufficient_scope":

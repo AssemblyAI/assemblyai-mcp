@@ -6,6 +6,7 @@
  *   1. looksLikeAccessToken tells a JWT from an API key
  *   2. an API key passes through untouched; no exchange
  *   3. an access token is exchanged (both credentials sent) and the handler sees the key
+ *   3b. a request that isn't this runtime's own Request class (Next's, on Vercel) still works
  *   4. the key is cached per token for at most 5 minutes, and never past its rotation
  *   5. the cache never outlives the access token
  *   6. AssemblyAI's 401 → 401 with a challenge pointing at the resource metadata
@@ -124,6 +125,29 @@ async function run() {
     assert(
       "3. the exchange carries the access token and the service token",
       exchanges[0]?.authorization === `Bearer ${token}` && exchanges[0]?.serviceToken === "vercel-oidc-token"
+    );
+  }
+
+  {
+    // On Vercel the incoming request is Next's Request subclass from another
+    // copy of undici; `new Request(req, init)` throws on it. Stand in with an
+    // object that only has Request's public members.
+    clearExchangeCache();
+    const { deps } = stub([keyResponse("connection-key")]);
+    const { handler, seen, bodies } = recorder();
+    const real = mcpRequest(accessToken(undefined, "foreign"));
+    const foreign = {
+      url: real.url,
+      method: real.method,
+      headers: real.headers,
+      body: real.body,
+      signal: real.signal,
+    } as unknown as Request;
+    const res = await withOAuthExchange(handler, deps)(foreign);
+    assert(
+      "3b. a request of a foreign Request class is passed on with the key and its body",
+      res.status === 200 && seen[0] === "Bearer connection-key" && bodies[0]?.includes('"tools/list"') === true,
+      `${res.status} ${seen[0]} ${bodies[0]}`
     );
   }
 
