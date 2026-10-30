@@ -21,6 +21,8 @@
  * sign-in, instead of calling the API with a dead key.
  */
 
+import { createHash } from "node:crypto";
+
 import { getVercelOidcToken } from "@vercel/oidc";
 import { getPublicOrigin } from "mcp-handler";
 
@@ -78,7 +80,17 @@ interface CachedKey {
   until: number;
 }
 
+/**
+ * Shared across requests on purpose: that's what spares a session an exchange
+ * per request. Keyed by the full SHA-256 of the access token (never the token
+ * itself), so only the exact token that was exchanged gets its key back; the
+ * short `keyHash` is for logs only.
+ */
 const cache = new Map<string, CachedKey>();
+
+function cacheKey(accessToken: string): string {
+  return createHash("sha256").update(accessToken).digest("hex");
+}
 
 /** Test hook: forget every cached key. */
 export function clearExchangeCache(): void {
@@ -117,11 +129,12 @@ export async function exchangeAccessToken(
   accessToken: string,
   deps: ExchangeDeps = defaultDeps
 ): Promise<ExchangeOutcome> {
+  const entry = cacheKey(accessToken);
   const tokenId = keyHash(accessToken);
   const now = deps.now();
-  const cached = cache.get(tokenId);
+  const cached = cache.get(entry);
   if (cached && cached.until > now) return { kind: "key", apiKey: cached.apiKey };
-  cache.delete(tokenId);
+  cache.delete(entry);
 
   let serviceToken: string;
   try {
@@ -157,7 +170,8 @@ export async function exchangeAccessToken(
   }
 
   if (response.ok) {
-    const body = (await response.json().catch(() => ({}))) as {
+    // `?? {}` too: a body of JSON `null` parses fine but has no fields.
+    const body = ((await response.json().catch(() => null)) ?? {}) as {
       api_key?: unknown;
       api_key_rotates_at?: unknown;
     };
@@ -177,7 +191,7 @@ export async function exchangeAccessToken(
       const oldest = cache.keys().next().value;
       if (oldest !== undefined) cache.delete(oldest);
     }
-    cache.set(tokenId, { apiKey: body.api_key, until });
+    cache.set(entry, { apiKey: body.api_key, until });
     log({ event: "oauth_exchange_ok", tokenHash: tokenId, keyHash: keyHash(body.api_key) });
     return { kind: "key", apiKey: body.api_key };
   }

@@ -12,6 +12,7 @@
  *   6. AssemblyAI's 401 → 401 with a challenge pointing at the resource metadata
  *   7. a 403 for a missing scope → 403 insufficient_scope; other 403s → 401
  *   8. 5xx, network errors, a missing or refused service token → 503, never 401
+ *   8b. a successful exchange with no usable key (no body, JSON null) → 503
  *   9. no Bearer at all reaches the handler (withMcpAuth answers it)
  *  10. the protected resource metadata names the authorization server and scopes
  */
@@ -247,6 +248,23 @@ async function run() {
     );
     assert("8. a refused service token is a 503, not a sign-in loop", refusedServer.status === 503, String(refusedServer.status));
     assert("8. and never reaches the handler", seen.length === 0);
+  }
+
+  {
+    clearExchangeCache();
+    const { deps } = stub([
+      new Response("null", { status: 200, headers: { "Content-Type": "application/json" } }),
+      new Response("", { status: 200 }),
+      Response.json({ api_key: "" }),
+    ]);
+    const { handler, seen } = recorder();
+    const wrapped = withOAuthExchange(handler, deps);
+    const statuses = [];
+    for (const nonce of ["null", "empty", "blank"]) {
+      statuses.push((await wrapped(mcpRequest(accessToken(undefined, nonce)))).status);
+    }
+    assert("8b. an exchange that returns no usable key is a 503", statuses.every((s) => s === 503), statuses.join(" "));
+    assert("8b. and never reaches the handler", seen.length === 0);
   }
 
   {

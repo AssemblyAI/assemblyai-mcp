@@ -177,7 +177,8 @@ async function run() {
 
   // 6. The MCP endpoint with the access token: tools list, and a tool call
   // that reaches AssemblyAI with the exchanged key. A made-up transcript id
-  // comes back "not found" for an authorized key and "invalid key" otherwise.
+  // comes back as AssemblyAI's "transcript id not found" (a 400) only for a
+  // key it accepted; a refused key, an outage or an empty reply look different.
   const client = new Client({ name: "oauth-preview-test", version: "0.0.0" });
   const transport = new StreamableHTTPClientTransport(new URL(MCP_URL), {
     requestInit: { headers: deploymentHeaders({ Authorization: `Bearer ${accessToken}` }) },
@@ -192,7 +193,7 @@ async function run() {
   const probeText = probe.content?.map((c) => c.text ?? "").join(" ") ?? "";
   assert(
     "6. the exchanged key is accepted by the AssemblyAI API",
-    !/invalid api key|unauthori[sz]ed|401/i.test(probeText),
+    probe.isError === true && /transcript id not found/i.test(probeText),
     probeText.slice(0, 200)
   );
   await client.close();
