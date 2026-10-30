@@ -119,14 +119,22 @@ function tokenExpiry(accessToken: string): number | undefined {
   return typeof exp === "number" ? exp * 1000 : undefined;
 }
 
-async function detailOf(response: Response): Promise<string> {
+/** The response body as JSON, or null when it isn't JSON. Throws when the
+ * body can't be read at all (the deadline passed mid-body, the connection
+ * dropped): that's an outage, not an answer, whatever the status said. */
+async function jsonBody(response: Response): Promise<unknown> {
+  const text = await response.text();
   try {
-    const body = (await response.json()) as { detail?: unknown; error?: unknown };
-    const detail = body.detail ?? body.error;
-    return typeof detail === "string" ? detail : `HTTP ${response.status}`;
+    return JSON.parse(text);
   } catch {
-    return `HTTP ${response.status}`;
+    return null;
   }
+}
+
+function detailOf(body: unknown, status: number): string {
+  const { detail, error } = (body ?? {}) as { detail?: unknown; error?: unknown };
+  const text = detail ?? error;
+  return typeof text === "string" ? text : `HTTP ${status}`;
 }
 
 /** Exchange an access token for its connection's API key, from the cache when
@@ -179,9 +187,24 @@ export async function exchangeAccessToken(
   }
 
   const tokenId = keyHash(accessToken);
+  let parsed: unknown;
+  try {
+    parsed = await jsonBody(response);
+  } catch (error) {
+    const timedOut = error instanceof Error && error.name === "TimeoutError";
+    log({
+      event: "oauth_exchange_unavailable",
+      level: "error",
+      reason: timedOut ? "timeout" : "body_read",
+      status: response.status,
+      detail: scrubForLog(error instanceof Error ? error.message : String(error)),
+    });
+    return { kind: "unavailable", detail: "AssemblyAI could not be reached" };
+  }
+
   if (response.ok) {
-    // `?? {}` too: a body of JSON `null` parses fine but has no fields.
-    const body = ((await response.json().catch(() => null)) ?? {}) as {
+    // `?? {}`: a body of JSON `null`, or none at all, has no fields.
+    const body = (parsed ?? {}) as {
       api_key?: unknown;
       api_key_rotates_at?: unknown;
       connection_id?: unknown;
@@ -214,7 +237,7 @@ export async function exchangeAccessToken(
     return { kind: "key", apiKey: body.api_key };
   }
 
-  const detail = scrubForLog(await detailOf(response)) ?? `HTTP ${response.status}`;
+  const detail = scrubForLog(detailOf(parsed, response.status)) ?? `HTTP ${response.status}`;
   if (response.status === 401 && detail === "Unknown client") {
     // AssemblyAI didn't accept this deployment's service token (not the
     // deployment it trusts, or its OIDC settings aren't in place). Signing

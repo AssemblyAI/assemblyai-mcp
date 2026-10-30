@@ -15,6 +15,7 @@
  *   8. 5xx, network errors, a missing or refused service token → 503, never 401
  *   8b. a successful exchange with no usable key (no body, JSON null) → 503
  *   8c. a stalled exchange gives up after its deadline → 503
+ *   8d. a 401 whose body can't be read is an outage (503), not a refused token
  *   6b. a refusal whose detail isn't printable ASCII still answers its challenge
  *   9. no Bearer at all reaches the handler (withMcpAuth answers it)
  *  10. the protected resource metadata names the authorization server and scopes
@@ -346,6 +347,25 @@ async function run() {
       "8c. a stalled exchange gives up at its deadline with a 503",
       res?.status === 503 && seen.length === 0,
       `${res?.status ?? "no answer"} after ${Date.now() - started}ms`
+    );
+  }
+
+  {
+    // The deadline firing mid-body, or the connection dropping, after a 401
+    // status line: the detail ("Unknown client"?) never arrived.
+    clearExchangeCache();
+    const brokenBody = new ReadableStream({
+      start(controller) {
+        controller.error(new DOMException("The operation was aborted due to timeout", "TimeoutError"));
+      },
+    });
+    const { deps } = stub([new Response(brokenBody, { status: 401 })]);
+    const { handler, seen } = recorder();
+    const res = await withOAuthExchange(handler, deps)(mcpRequest(accessToken(undefined, "body")));
+    assert(
+      "8d. a 401 whose body can't be read is a 503, not a sign-in challenge",
+      res.status === 503 && !res.headers.get("WWW-Authenticate") && seen.length === 0,
+      String(res.status)
     );
   }
 
