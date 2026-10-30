@@ -235,6 +235,28 @@ export async function deleteTranscript(
   );
 }
 
+/**
+ * Upload raw file bytes to AssemblyAI's private storage. The returned
+ * upload_url only works with the same account's key, as an audio_url.
+ * Not retried: the body is a one-shot upload, and a retry after a slow
+ * success would just store the file twice.
+ */
+export async function uploadFile(
+  apiKey: string,
+  data: ArrayBuffer,
+  baseUrl: string = DEFAULT_BASE_URL
+): Promise<{ upload_url: string }> {
+  const response = await fetch(`${baseUrl}/v2/upload`, {
+    method: "POST",
+    headers: { Authorization: apiKey, "Content-Type": "application/octet-stream" },
+    body: data,
+  });
+  if (!response.ok) {
+    throw new AssemblyAIError(await safeErrorMessage(response), response.status);
+  }
+  return (await response.json()) as { upload_url: string };
+}
+
 export async function requestWithRetry<T>(
   apiKey: string,
   method: "GET" | "POST" | "DELETE",
