@@ -67,6 +67,8 @@ export function registerCreateUploadUrl(server: McpServer): void {
               `Upload link created (expires in ${UPLOAD_TTL_MS / 60000} minutes, files up to 4.5 MB). ` +
               `Replace /path/to/file and run:\n\n${command}\n\n` +
               `It prints {"upload_url": "..."}. Pass that upload_url as audio_url to submit_transcript. ` +
+              `If it fails with 413 or "Request Entity Too Large", the file is over 4.5 MB: compress it ` +
+              `(e.g. ffmpeg -i in -ac 1 -b:a 32k out.mp3) or ask the user for a public URL. ` +
               `Do not show this link to anyone: it uploads into the user's account.`,
           },
         ],

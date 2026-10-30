@@ -1347,6 +1347,9 @@ async function run() {
       "45. create_upload_url is not offered without UPLOAD_TOKEN_SECRET",
       !tools.some((t) => t.name === "create_upload_url"),
       tools.map((t) => t.name).join(", ")
+    );    assert(
+      "45. submit_transcript doesn't mention create_upload_url when it isn't offered",
+      !tools.find((t) => t.name === "submit_transcript")?.description?.includes("create_upload_url")
     );
   });
 
@@ -1360,6 +1363,10 @@ async function run() {
       "46. create_upload_url is offered, titled and read-only",
       Boolean(tool?.title) && tool?.annotations?.readOnlyHint === true,
       JSON.stringify(tool)
+    );
+    assert(
+      "46. submit_transcript points local files at create_upload_url",
+      tools.find((t) => t.name === "submit_transcript")?.description?.includes("create_upload_url") === true
     );
     resetMock([]);
     const res = await callTool(client, "create_upload_url", {}, "test-key");
@@ -1421,6 +1428,10 @@ async function run() {
     resetMock([jsonResponse(401, { error: "Invalid API key" })]);
     const rejected = await POST(new Request("https://mcp.assemblyai.com/upload/x", { method: "POST", body }), ctx(uploadToken));
     assert("48. AssemblyAI's 401 passes through as 401", rejected.status === 401, String(rejected.status));
+
+    resetMock([jsonResponse(503, { error: "unavailable" })]);
+    const down = await POST(new Request("https://mcp.assemblyai.com/upload/x", { method: "POST", body }), ctx(uploadToken));
+    assert("48. AssemblyAI's 5xx answers 502", down.status === 502, String(down.status));
   }
   delete process.env.UPLOAD_TOKEN_SECRET;
 

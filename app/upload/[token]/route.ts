@@ -1,4 +1,4 @@
-import { uploadFile } from "../../../src/assemblyai";
+import { AssemblyAIError, uploadFile } from "../../../src/assemblyai";
 import { log, logError, keyHash } from "../../../src/log";
 import { readUploadToken } from "../../../src/upload-token";
 
@@ -36,12 +36,17 @@ async function handle(req: Request, { params }: { params: Promise<{ token: strin
     });
     return json(200, { upload_url });
   } catch (err) {
-    const status = typeof (err as { status?: unknown }).status === "number" ? (err as { status: number }).status : 502;
     logError({ event: "upload", keyHash: keyHash(apiKey), bytes: data.byteLength, status: "error" }, err);
-    return json(status === 401 ? 401 : status >= 500 ? 502 : status, {
-      error: status === 401 ? "AssemblyAI rejected the API key (401)." : (err as Error).message,
-    });
+    return uploadError(err);
   }
+}
+
+// AssemblyAI's 4xx passes through; network failures and its 5xx become 502.
+function uploadError(err: unknown): Response {
+  const status = err instanceof AssemblyAIError ? err.status : 502;
+  if (status === 401) return json(401, { error: "AssemblyAI rejected the API key (401)." });
+  if (status >= 500) return json(502, { error: "AssemblyAI upload failed. Try again shortly." });
+  return json(status, { error: (err as Error).message });
 }
 
 export { handle as POST, handle as PUT };

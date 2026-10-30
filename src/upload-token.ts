@@ -16,8 +16,9 @@ import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:
 
 export const UPLOAD_TTL_MS = 10 * 60 * 1000;
 
-// Vercel Functions reject request bodies over 4.5 MB before our code runs.
-export const MAX_UPLOAD_BYTES = 4.5 * 1024 * 1024;
+// Vercel Functions reject request bodies over 4.5 MB (decimal) with a
+// plain-text 413 before our code runs.
+export const MAX_UPLOAD_BYTES = 4_500_000;
 
 const AAD = Buffer.from("assemblyai-mcp-upload-v1");
 

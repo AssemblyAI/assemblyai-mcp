@@ -5,6 +5,7 @@ import { submitTranscript } from "../assemblyai";
 import { log, keyHash } from "../log";
 import { speechUnderstandingSchema } from "../speech-understanding-schema";
 import { handleToolError } from "../tool-errors";
+import { uploadsConfigured } from "../upload-token";
 
 const ALLOWED_SCHEMES = new Set(["http:", "https:"]);
 
@@ -27,8 +28,10 @@ export function registerSubmitTranscript(server: McpServer): void {
       title: "Submit AssemblyAI Transcript",
       description:
         "Submit a public audio or video URL to AssemblyAI for transcription. " +
-        "For a LOCAL file, first call `create_upload_url`, upload the file, and pass the returned " +
-        "`upload_url` here as `audio_url`. " +
+        (uploadsConfigured()
+          ? "For a LOCAL file, first call `create_upload_url`, upload the file, and pass the returned " +
+            "`upload_url` here as `audio_url`. "
+          : "") +
         "Returns immediately with a `transcript_id` and the current status (usually `queued`). " +
         "The caller MUST then call `get_transcript` with the returned id in a loop " +
         "(every ~3 seconds) until status becomes `completed` or `error`. " +
