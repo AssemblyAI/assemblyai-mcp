@@ -21,8 +21,9 @@ const handler = createMcpHandler(
 
 async function verifyToken(_req: Request, bearer?: string) {
   if (!bearer || bearer.trim().length === 0) return undefined;
-  // By here the Bearer is an API key: pasted by the client, or exchanged for
-  // its access token by `withOAuthExchange`. We do NOT validate the key
+  // By here the Bearer is an API key: either the client pasted one, or the
+  // client sent an OAuth access token and `withOAuthExchange` got back an API
+  // key for it and put that in the Bearer instead. We do NOT validate the key
   // ourselves — AssemblyAI's 401 surfaces a bad key directly to the agent.
   // Returning an AuthInfo object means "Bearer is present, let the tool call
   // the upstream API and let AssemblyAI decide."
