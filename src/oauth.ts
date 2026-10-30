@@ -130,7 +130,6 @@ export async function exchangeAccessToken(
   deps: ExchangeDeps = defaultDeps
 ): Promise<ExchangeOutcome> {
   const entry = cacheKey(accessToken);
-  const tokenId = keyHash(accessToken);
   const now = deps.now();
   const cached = cache.get(entry);
   if (cached && cached.until > now) return { kind: "key", apiKey: cached.apiKey };
@@ -169,11 +168,13 @@ export async function exchangeAccessToken(
     return { kind: "unavailable", detail: "AssemblyAI could not be reached" };
   }
 
+  const tokenId = keyHash(accessToken);
   if (response.ok) {
     // `?? {}` too: a body of JSON `null` parses fine but has no fields.
     const body = ((await response.json().catch(() => null)) ?? {}) as {
       api_key?: unknown;
       api_key_rotates_at?: unknown;
+      connection_id?: unknown;
     };
     if (typeof body.api_key !== "string" || body.api_key.length === 0) {
       log({ event: "oauth_exchange_unavailable", level: "error", reason: "no_key_in_response" });
@@ -192,7 +193,14 @@ export async function exchangeAccessToken(
       if (oldest !== undefined) cache.delete(oldest);
     }
     cache.set(entry, { apiKey: body.api_key, until });
-    log({ event: "oauth_exchange_ok", tokenHash: tokenId, keyHash: keyHash(body.api_key) });
+    log({
+      event: "oauth_exchange_ok",
+      // Not a secret, and stable for the connection's life: joins these logs
+      // to AssemblyAI's own, its audit log and the member's Connected apps.
+      connectionId: typeof body.connection_id === "string" ? body.connection_id : undefined,
+      tokenHash: tokenId,
+      keyHash: keyHash(body.api_key),
+    });
     return { kind: "key", apiKey: body.api_key };
   }
 

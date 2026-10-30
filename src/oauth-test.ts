@@ -7,6 +7,7 @@
  *   2. an API key passes through untouched; no exchange
  *   3. an access token is exchanged (both credentials sent) and the handler sees the key
  *   3b. a request that isn't this runtime's own Request class (Next's, on Vercel) still works
+ *   3c. the success log names the connection and hashes, never the token or key
  *   4. the key is cached per token for at most 5 minutes, and never past its rotation
  *   5. the cache never outlives the access token
  *   6. AssemblyAI's 401 → 401 with a challenge pointing at the resource metadata
@@ -73,7 +74,11 @@ function stub(responses: Array<Response | Error>, opts: { serviceToken?: () => P
 }
 
 function keyResponse(apiKey: string, rotatesAt: string | null = "2026-11-10T12:00:00Z") {
-  return Response.json({ api_key: apiKey, api_key_rotates_at: rotatesAt });
+  return Response.json({
+    api_key: apiKey,
+    api_key_rotates_at: rotatesAt,
+    connection_id: "8f14e45f-ceea-467f-a8f5-0e1a4b2c3d4e",
+  });
 }
 
 /** A handler that records the Bearer and body it was given. */
@@ -149,6 +154,31 @@ async function run() {
       "3b. a request of a foreign Request class is passed on with the key and its body",
       res.status === 200 && seen[0] === "Bearer connection-key" && bodies[0]?.includes('"tools/list"') === true,
       `${res.status} ${seen[0]} ${bodies[0]}`
+    );
+  }
+
+  {
+    clearExchangeCache();
+    const token = accessToken(undefined, "log");
+    const { deps } = stub([keyResponse("connection-key-for-log")]);
+    const { handler } = recorder();
+    const lines: string[] = [];
+    const originalLog = console.log;
+    console.log = (line: string) => lines.push(line);
+    try {
+      await withOAuthExchange(handler, deps)(mcpRequest(token));
+    } finally {
+      console.log = originalLog;
+    }
+    const ok = lines.map((l) => JSON.parse(l)).find((l) => l.event === "oauth_exchange_ok") ?? {};
+    assert(
+      "3c. the success log names the connection and hashes, never the token or key",
+      ok.connectionId === "8f14e45f-ceea-467f-a8f5-0e1a4b2c3d4e" &&
+        typeof ok.tokenHash === "string" &&
+        typeof ok.keyHash === "string" &&
+        !lines.join("\n").includes(token) &&
+        !lines.join("\n").includes("connection-key-for-log"),
+      JSON.stringify(ok)
     );
   }
 
