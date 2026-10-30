@@ -45,6 +45,10 @@ export const OAUTH_SCOPES = ["aai:api", "offline_access"];
 
 export const RESOURCE_METADATA_PATH = "/.well-known/oauth-protected-resource";
 
+/** Give up on an exchange after this long and answer 503, rather than let a
+ * stalled AssemblyAI hold the request until the function times out. */
+const EXCHANGE_TIMEOUT_MS = 10_000;
+
 /** Re-exchange at least this often, to notice a revoked connection. */
 const MAX_CACHE_MS = 5 * 60 * 1000;
 const MAX_CACHE_ENTRIES = 1000;
@@ -67,12 +71,14 @@ export interface ExchangeDeps {
   fetch: typeof fetch;
   serviceToken: () => Promise<string>;
   now: () => number;
+  timeoutMs: number;
 }
 
 const defaultDeps: ExchangeDeps = {
   fetch: (...args) => fetch(...args),
   serviceToken: () => getVercelOidcToken(),
   now: () => Date.now(),
+  timeoutMs: EXCHANGE_TIMEOUT_MS,
 };
 
 interface CachedKey {
@@ -157,12 +163,16 @@ export async function exchangeAccessToken(
         "X-AAI-Service-Token": serviceToken,
         Accept: "application/json",
       },
+      // Also aborts reading the body below: a stalled body parses as no key
+      // (503), like a stalled connection.
+      signal: AbortSignal.timeout(deps.timeoutMs),
     });
   } catch (error) {
+    const timedOut = error instanceof Error && error.name === "TimeoutError";
     log({
       event: "oauth_exchange_unavailable",
       level: "error",
-      reason: "network",
+      reason: timedOut ? "timeout" : "network",
       detail: scrubForLog(error instanceof Error ? error.message : String(error)),
     });
     return { kind: "unavailable", detail: "AssemblyAI could not be reached" };
@@ -273,7 +283,10 @@ function bearerOf(req: Request): string | undefined {
 
 function challenge(req: Request, status: 401 | 403, error: string, description: string): Response {
   const metadata = `${getPublicOrigin(req)}${RESOURCE_METADATA_PATH}`;
-  const quoted = description.replace(/["\\]/g, "");
+  // A header value takes printable ASCII only: an upstream detail with a
+  // newline or a curly apostrophe would make `new Response` throw, turning the
+  // challenge into a 500. The JSON body keeps the original wording.
+  const quoted = description.replace(/[^\x20-\x7E]|["\\]/g, "");
   const scope = status === 403 ? `, scope="${OAUTH_SCOPES.join(" ")}"` : "";
   return new Response(JSON.stringify({ error, error_description: description }), {
     status,

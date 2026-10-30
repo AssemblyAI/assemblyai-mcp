@@ -14,6 +14,8 @@
  *   7. a 403 for a missing scope → 403 insufficient_scope; other 403s → 401
  *   8. 5xx, network errors, a missing or refused service token → 503, never 401
  *   8b. a successful exchange with no usable key (no body, JSON null) → 503
+ *   8c. a stalled exchange gives up after its deadline → 503
+ *   6b. a refusal whose detail isn't printable ASCII still answers its challenge
  *   9. no Bearer at all reaches the handler (withMcpAuth answers it)
  *  10. the protected resource metadata names the authorization server and scopes
  */
@@ -52,7 +54,10 @@ interface Exchange {
   serviceToken: string | null;
 }
 
-function stub(responses: Array<Response | Error>, opts: { serviceToken?: () => Promise<string> } = {}) {
+function stub(
+  responses: Array<Response | Error | "stall">,
+  opts: { serviceToken?: () => Promise<string>; timeoutMs?: number } = {}
+) {
   const exchanges: Exchange[] = [];
   let now = NOW;
   const deps: ExchangeDeps = {
@@ -64,11 +69,18 @@ function stub(responses: Array<Response | Error>, opts: { serviceToken?: () => P
       });
       const next = responses.shift();
       if (!next) throw new Error("unexpected exchange");
+      if (next === "stall") {
+        // Never answers; only the request's abort signal ends it.
+        return new Promise<Response>((_, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(init.signal?.reason));
+        });
+      }
       if (next instanceof Error) throw next;
       return next;
     },
     serviceToken: opts.serviceToken ?? (async () => "vercel-oidc-token"),
     now: () => now,
+    timeoutMs: opts.timeoutMs ?? 10_000,
   };
   return { deps, exchanges, advance: (ms: number) => (now += ms) };
 }
@@ -253,6 +265,22 @@ async function run() {
 
   {
     clearExchangeCache();
+    const detail = "This app\u2019s access was revoked;\nauthorize the app again";
+    const { deps } = stub([Response.json({ detail }, { status: 401 })]);
+    const { handler } = recorder();
+    const res = await withOAuthExchange(handler, deps)(mcpRequest(accessToken(undefined, "ascii")));
+    const challenge = res.headers.get("WWW-Authenticate") ?? "";
+    const body = (await res.json()) as { error_description?: string };
+    assert(
+      "6b. a non-ASCII refusal detail still answers 401 with an ASCII challenge",
+      res.status === 401 && /^[\x20-\x7E]+$/.test(challenge) && challenge.includes("authorize the app again"),
+      challenge
+    );
+    assert("6b. and the JSON body keeps the original wording", body.error_description === detail);
+  }
+
+  {
+    clearExchangeCache();
     const { deps } = stub([
       Response.json({ detail: "Could not revoke" }, { status: 503 }),
       new TypeError("fetch failed"),
@@ -295,6 +323,30 @@ async function run() {
     }
     assert("8b. an exchange that returns no usable key is a 503", statuses.every((s) => s === 503), statuses.join(" "));
     assert("8b. and never reaches the handler", seen.length === 0);
+  }
+
+  {
+    clearExchangeCache();
+    const { deps } = stub(["stall"], { timeoutMs: 50 });
+    const { handler, seen } = recorder();
+    const started = Date.now();
+    // AbortSignal.timeout's timer doesn't keep Node alive (a server's open
+    // socket does), so the race's timer also holds the process open.
+    // The 2s race is the test's own limit: without a deadline it fails
+    // rather than hanging.
+    let keepAlive: NodeJS.Timeout | undefined;
+    const res = await Promise.race([
+      withOAuthExchange(handler, deps)(mcpRequest(accessToken(undefined, "stall"))),
+      new Promise<null>((resolve) => {
+        keepAlive = setTimeout(() => resolve(null), 2000);
+      }),
+    ]);
+    clearTimeout(keepAlive);
+    assert(
+      "8c. a stalled exchange gives up at its deadline with a 503",
+      res?.status === 503 && seen.length === 0,
+      `${res?.status ?? "no answer"} after ${Date.now() - started}ms`
+    );
   }
 
   {
