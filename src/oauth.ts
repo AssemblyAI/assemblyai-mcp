@@ -300,8 +300,10 @@ function withBearer(req: Request, token: string): Request {
 }
 
 function bearerOf(req: Request): string | undefined {
-  const [type, token] = req.headers.get("Authorization")?.split(" ") ?? [];
-  return type?.toLowerCase() === "bearer" && token ? token.trim() : undefined;
+  // Any run of whitespace after the scheme, not just one space: a split on
+  // " " reads "Bearer  <token>" as an empty token and skips the exchange.
+  const match = /^bearer\s+(\S+)\s*$/i.exec(req.headers.get("Authorization")?.trim() ?? "");
+  return match?.[1];
 }
 
 function challenge(req: Request, status: 401 | 403, error: string, description: string): Response {

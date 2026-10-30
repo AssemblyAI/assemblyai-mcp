@@ -8,6 +8,7 @@
  *   3. an access token is exchanged (both credentials sent) and the handler sees the key
  *   3b. a request that isn't this runtime's own Request class (Next's, on Vercel) still works
  *   3c. the success log names the connection and hashes, never the token or key
+ *   3d. extra whitespace after "Bearer" still exchanges the token
  *   4. the key is cached per token for at most 5 minutes, and never past its rotation
  *   5. the cache never outlives the access token
  *   6. AssemblyAI's 401 → 401 with a challenge pointing at the resource metadata
@@ -192,6 +193,24 @@ async function run() {
         !lines.join("\n").includes(token) &&
         !lines.join("\n").includes("connection-key-for-log"),
       JSON.stringify(ok)
+    );
+  }
+
+  {
+    clearExchangeCache();
+    const token = accessToken(undefined, "spaces");
+    const { deps, exchanges } = stub([keyResponse("connection-key")]);
+    const { handler, seen } = recorder();
+    const req = new Request("https://mcp.example.com/mcp", {
+      method: "POST",
+      headers: { Authorization: `Bearer   ${token} ` },
+      body: "{}",
+    });
+    await withOAuthExchange(handler, deps)(req);
+    assert(
+      "3d. extra whitespace after \"Bearer\" still exchanges the token",
+      exchanges.length === 1 && exchanges[0]?.authorization === `Bearer ${token}` && seen[0] === "Bearer connection-key",
+      `${exchanges.length} ${seen[0]}`
     );
   }
 
