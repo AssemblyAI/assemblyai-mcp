@@ -47,6 +47,10 @@
  *   42. summarize_transcript 429 → friendly rate-limit message (shared tool-error mapper)
  *   43. every tool carries a title + readOnlyHint/destructiveHint; delete is destructive, reads are read-only
  *   44. logError scrubs URLs and long tokens from error messages and stacks
+ *   45. create_upload_url is hidden unless UPLOAD_TOKEN_SECRET is set
+ *   46. create_upload_url returns an /upload/<token> link + curl command, key not in the link
+ *   47. upload tokens round-trip; expired, tampered and other-secret tokens are refused
+ *   48. the upload route forwards to /v2/upload with the raw key; bad token 401, empty body 400
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -1334,6 +1338,102 @@ async function run() {
       out
     );
   }
+
+  // 45. create_upload_url is hidden unless UPLOAD_TOKEN_SECRET is set
+  delete process.env.UPLOAD_TOKEN_SECRET;
+  await withClientServer(async (client) => {
+    const { tools } = await client.listTools();
+    assert(
+      "45. create_upload_url is not offered without UPLOAD_TOKEN_SECRET",
+      !tools.some((t) => t.name === "create_upload_url"),
+      tools.map((t) => t.name).join(", ")
+    );    assert(
+      "45. submit_transcript doesn't mention create_upload_url when it isn't offered",
+      !tools.find((t) => t.name === "submit_transcript")?.description?.includes("create_upload_url")
+    );
+  });
+
+  // 46. create_upload_url returns a link whose token carries the caller's key, read-only annotated
+  process.env.UPLOAD_TOKEN_SECRET = "test-secret-" + "s".repeat(32);
+  let uploadToken = "";
+  await withClientServer(async (client) => {
+    const { tools } = await client.listTools();
+    const tool = tools.find((t) => t.name === "create_upload_url");
+    assert(
+      "46. create_upload_url is offered, titled and read-only",
+      Boolean(tool?.title) && tool?.annotations?.readOnlyHint === true,
+      JSON.stringify(tool)
+    );
+    assert(
+      "46. submit_transcript points local files at create_upload_url",
+      tools.find((t) => t.name === "submit_transcript")?.description?.includes("create_upload_url") === true
+    );
+    resetMock([]);
+    const res = await callTool(client, "create_upload_url", {}, "test-key");
+    const url = String(res.structuredContent?.upload_url ?? "");
+    uploadToken = url.split("/upload/")[1] ?? "";
+    const text = res.content?.[0]?.text ?? "";
+    assert(
+      "46. link points at /upload/<token>, comes with a curl command, calls no API",
+      !res.isError && url.startsWith("https://mcp.assemblyai.com/upload/") && text.includes("curl") && calls.length === 0,
+      JSON.stringify(res)
+    );
+    assert("46. the link does not contain the API key", !url.includes("test-key"), url);
+  });
+
+  // 47. upload tokens: valid round-trips; expired, tampered or other-secret tokens are refused
+  {
+    const { createUploadToken, readUploadToken, UPLOAD_TTL_MS } = await import("./upload-token");
+    const now = Date.now();
+    const { token } = createUploadToken("key-123", now);
+    const tampered = token.slice(0, -2) + (token.endsWith("A") ? "BB" : "AA");
+    assert("47. a fresh token yields the key", readUploadToken(token, now) === "key-123");
+    assert("47. an expired token is refused", readUploadToken(token, now + UPLOAD_TTL_MS + 1) === undefined);
+    assert("47. a tampered token is refused", readUploadToken(tampered, now) === undefined);
+    assert("47. garbage is refused", readUploadToken("not-a-token", now) === undefined);
+    process.env.UPLOAD_TOKEN_SECRET = "another-secret-" + "z".repeat(32);
+    assert("47. a token from another secret is refused", readUploadToken(token, now) === undefined);
+    process.env.UPLOAD_TOKEN_SECRET = "test-secret-" + "s".repeat(32);
+  }
+
+  // 48. the upload route forwards the body to /v2/upload with the raw key and returns upload_url
+  {
+    const { POST } = await import("../app/upload/[token]/route");
+    const ctx = (token: string) => ({ params: Promise.resolve({ token }) });
+    const body = new Uint8Array([1, 2, 3, 4]);
+
+    resetMock([jsonResponse(200, { upload_url: "https://cdn.assemblyai.com/upload/abc" })]);
+    const ok = await POST(new Request("https://mcp.assemblyai.com/upload/x", { method: "POST", body }), ctx(uploadToken));
+    const okBody = (await ok.json()) as { upload_url?: string };
+    assert(
+      "48. upload forwards to /v2/upload with the raw key and returns upload_url",
+      ok.status === 200 &&
+        okBody.upload_url === "https://cdn.assemblyai.com/upload/abc" &&
+        calls.length === 1 &&
+        calls[0]?.url.endsWith("/v2/upload") === true &&
+        calls[0]?.method === "POST" &&
+        calls[0]?.headers.authorization === "test-key" &&
+        calls[0]?.headers["content-type"] === "application/octet-stream",
+      JSON.stringify({ status: ok.status, okBody, calls })
+    );
+
+    resetMock([]);
+    const bad = await POST(new Request("https://mcp.assemblyai.com/upload/x", { method: "POST", body }), ctx("bogus"));
+    assert("48. a bad token answers 401 without calling AssemblyAI", bad.status === 401 && calls.length === 0, String(bad.status));
+
+    resetMock([]);
+    const empty = await POST(new Request("https://mcp.assemblyai.com/upload/x", { method: "POST" }), ctx(uploadToken));
+    assert("48. an empty body answers 400 without calling AssemblyAI", empty.status === 400 && calls.length === 0, String(empty.status));
+
+    resetMock([jsonResponse(401, { error: "Invalid API key" })]);
+    const rejected = await POST(new Request("https://mcp.assemblyai.com/upload/x", { method: "POST", body }), ctx(uploadToken));
+    assert("48. AssemblyAI's 401 passes through as 401", rejected.status === 401, String(rejected.status));
+
+    resetMock([jsonResponse(503, { error: "unavailable" })]);
+    const down = await POST(new Request("https://mcp.assemblyai.com/upload/x", { method: "POST", body }), ctx(uploadToken));
+    assert("48. AssemblyAI's 5xx answers 502", down.status === 502, String(down.status));
+  }
+  delete process.env.UPLOAD_TOKEN_SECRET;
 
   globalThis.fetch = originalFetch;
 

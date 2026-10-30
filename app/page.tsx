@@ -1,5 +1,7 @@
 import { headers } from "next/headers";
 
+import { uploadsConfigured } from "../src/upload-token";
+
 // A short page for people who open the server's address in a browser. AI apps
 // never see it: they talk to /mcp. Keep the tool list in sync with src/server.ts.
 const TOOLS = [
@@ -9,6 +11,7 @@ const TOOLS = [
   { name: "understand_transcript", what: "Translate, find action items, identify speakers" },
   { name: "delete_transcript", what: "Permanently delete a transcript" },
 ];
+const UPLOAD_TOOL = { name: "create_upload_url", what: "Upload a local file (up to 4.5 MB) to transcribe" };
 
 const css = `
   :root { --bg:#f6f7fb; --fg:#16192b; --muted:#5b6078; --card:#fff; --line:#d9dcea; --accent:#2f5bea; color-scheme: light; }
@@ -62,7 +65,7 @@ export default async function Home() {
       <section>
         <h2>Tools</h2>
         <ul>
-          {TOOLS.map((t) => (
+          {(uploadsConfigured() ? [UPLOAD_TOOL, ...TOOLS] : TOOLS).map((t) => (
             <li key={t.name}>
               <code>{t.name}</code>
               <span>{t.what}</span>

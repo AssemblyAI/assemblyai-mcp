@@ -64,6 +64,7 @@ https://assembly.ai/wildfires.mp3"*.
 | `understand_transcript(transcript_id, speech_understanding)` | Run Speech Understanding on an already-completed transcript — translation, speaker identification, custom formatting, chaptered summarization, action items — without re-submitting the audio (LLM Gateway `/v1/understanding`). |
 | `summarize_transcript(transcript_id, style?, custom_prompt?)` | Freeform or custom-prompt summary of a completed transcript via the LLM Gateway. `style`: `bullets` (default), `paragraph`, `headline`, `action_items`, or `custom`. |
 | `delete_transcript(transcript_id)` | Permanently delete a transcript and its data. Irreversible — only on explicit user request. |
+| `create_upload_url()` | For a local file: returns a 10-minute link and a `curl` command. The agent uploads the file (up to 4.5 MB) and gets an `upload_url` to pass to `submit_transcript`. Only offered when `UPLOAD_TOKEN_SECRET` is set. |
 
 **Typical agent flow:** `submit_transcript` → poll `get_transcript` until
 `completed` → optionally `understand_transcript` / `summarize_transcript` →
@@ -153,6 +154,7 @@ keys only work against its own API.
 | `ASSEMBLYAI_OAUTH_EXCHANGE_ORIGIN` | `https://www.assemblyai.com` | Where access tokens are exchanged for API keys |
 | `ASSEMBLYAI_BASE_URL` | `https://api.assemblyai.com` | The AssemblyAI API |
 | `ASSEMBLYAI_LLM_GATEWAY_BASE_URL` | `https://llm-gateway.assemblyai.com` | The LLM Gateway |
+| `UPLOAD_TOKEN_SECRET` | unset | 32+ random characters. Encrypts the API key inside upload links; without it, `create_upload_url` is not offered. Rotating it invalidates open links. |
 
 The service token needs no setting: Vercel provides it to the deployment
 (`VERCEL_OIDC_TOKEN`), and `@vercel/oidc` reads it.
