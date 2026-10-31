@@ -29,6 +29,10 @@ export const speechUnderstandingSchema = z.strictObject({
             .boolean()
             .optional()
             .describe("Translate even when the detected source language equals a target."),
+          effort: z
+            .enum(["low", "medium"])
+            .optional()
+            .describe("'medium' = higher quality for long (1.5h+) or multilingual audio; default 'low'."),
         })
         .optional()
         .describe("Translate the transcript into one or more languages."),
@@ -52,6 +56,10 @@ export const speechUnderstandingSchema = z.strictObject({
               "Richer metadata per speaker; each entry needs name (speaker_type='name') or role " +
                 "(speaker_type='role'); extra custom fields allowed."
             ),
+          effort: z
+            .enum(["low", "medium"])
+            .optional()
+            .describe("'medium' = higher quality for long (1.5h+) or multilingual audio; default 'low'."),
         })
         .optional()
         .describe("Requires the transcript to have speaker_labels=true."),
@@ -61,12 +69,29 @@ export const speechUnderstandingSchema = z.strictObject({
           phone_number: z.string().optional().describe("Phone format pattern, e.g. '(xxx)xxx-xxxx'."),
           email: z.string().optional().describe("Email format pattern, e.g. 'username@domain.com'."),
           format_utterances: z.boolean().optional().describe("Also format utterance-level text."),
+          effort: z
+            .enum(["low", "medium"])
+            .optional()
+            .describe("'medium' = higher quality for long (1.5h+) or multilingual audio; default 'low'."),
         })
         .optional()
         .describe("Reformat dates/phone numbers/emails in the transcript."),
       summarization: z
         .looseObject({
           summary_type: z.enum(["paragraph", "bullets"]).describe("Chapter summary style."),
+          headline_length: z
+            .number()
+            .int()
+            .min(5)
+            .max(15)
+            .optional()
+            .describe("Target word count for each chapter headline (5-15, default: 10)."),
+          approximate_chapters: z
+            .number()
+            .int()
+            .positive()
+            .optional()
+            .describe("Override: approximate number of chapters to split the transcript into."),
           effort: z
             .enum(["low", "medium"])
             .optional()

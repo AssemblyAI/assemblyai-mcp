@@ -643,6 +643,49 @@ async function run() {
     );
   });
 
+  // 20b. speech_understanding passes summarization options (headline_length, approximate_chapters, effort) and feature effort
+  await withClientServer(async (client) => {
+    resetMock([jsonResponse(200, { id: "txn-su-opts", status: "queued" })]);
+    await callTool(
+      client,
+      "submit_transcript",
+      {
+        audio_url: "https://example.com/x.mp3",
+        speaker_labels: true,
+        speech_understanding: {
+          request: {
+            translation: { target_languages: ["es"], effort: "medium", force_translation: true },
+            speaker_identification: { speaker_type: "name", effort: "low" },
+            custom_formatting: { format_utterances: true, effort: "medium" },
+            summarization: {
+              summary_type: "paragraph",
+              headline_length: 12,
+              approximate_chapters: 5,
+              effort: "medium",
+            },
+          },
+        },
+      },
+      "k"
+    );
+    const body = JSON.parse(calls[0]?.body ?? "{}");
+    const su = body.speech_understanding?.request;
+    assert(
+      "20b. summarization headline_length and approximate_chapters pass through",
+      su?.summarization?.headline_length === 12 &&
+        su?.summarization?.approximate_chapters === 5 &&
+        su?.summarization?.effort === "medium",
+      JSON.stringify(su?.summarization)
+    );
+    assert(
+      "20b. effort passes through on translation, speaker_id, and custom_formatting",
+      su?.translation?.effort === "medium" &&
+        su?.speaker_identification?.effort === "low" &&
+        su?.custom_formatting?.effort === "medium",
+      JSON.stringify(su)
+    );
+  });
+
   // 21. speech_understanding without the request wrapper → schema error, no API call.
   // NOTE: zod violations are rejected at the MCP protocol layer (InvalidParams),
   // so client.callTool THROWS here rather than returning isError — catch both shapes.
@@ -746,6 +789,44 @@ async function run() {
     assert(
       "23. action_items section with quote + timestamp",
       text.includes("--- action_items ---") && text.includes("Check air quality daily.") && text.includes("0:09"),
+      text
+    );
+  });
+
+  // 23b. get_transcript renders su_summary with bullets
+  await withClientServer(async (client) => {
+    resetMock([
+      jsonResponse(200, {
+        id: "txn-su-bullets",
+        status: "completed",
+        text: "hello",
+        audio_duration: 30,
+        speech_understanding: {
+          response: {
+            summarization: {
+              status: "success",
+              summary_type: "bullets",
+              summary: [
+                {
+                  start: 0,
+                  end: 25000,
+                  headline: "Key Takeaways",
+                  bullets: ["First point discussed", "Second point agreed upon"],
+                },
+              ],
+            },
+          },
+        },
+      }),
+    ]);
+    const result = await callTool(client, "get_transcript", { transcript_id: "txn-su-bullets" }, "k");
+    const text = result.content?.[0]?.text ?? "";
+    assert(
+      "23b. su_summary section with bullets joined without undefined",
+      text.includes("--- su_summary") &&
+        text.includes("Key Takeaways") &&
+        text.includes("First point discussed; Second point agreed upon") &&
+        !text.includes("undefined"),
       text
     );
   });
