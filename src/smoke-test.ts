@@ -51,6 +51,7 @@
  *   46. create_upload_url returns an /upload/<token> link + curl command, key not in the link
  *   47. upload tokens round-trip; expired, tampered and other-secret tokens are refused
  *   48. the upload route forwards to /v2/upload with the raw key; bad token 401, empty body 400
+ *   49. get_transcript drops per-word timestamps unless include_words is set
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -1434,6 +1435,46 @@ async function run() {
     assert("48. AssemblyAI's 5xx answers 502", down.status === 502, String(down.status));
   }
   delete process.env.UPLOAD_TOKEN_SECRET;
+
+  // 49. get_transcript drops per-word timestamps unless include_words is set
+  {
+    const record = {
+      id: "txn-w",
+      status: "completed",
+      text: "hello there.",
+      utterances: [
+        {
+          speaker: "A",
+          text: "hello there.",
+          start: 0,
+          end: 900,
+          words: [
+            { text: "hello", start: 0, end: 400, confidence: 0.9, speaker: "A" },
+            { text: "there.", start: 450, end: 900, confidence: 0.9, speaker: "A" },
+          ],
+        },
+      ],
+    };
+    await withClientServer(async (client) => {
+      resetMock([jsonResponse(200, record), jsonResponse(200, record)]);
+      const plain = await callTool(client, "get_transcript", { transcript_id: "txn-w" }, "k");
+      const speakers = (plain.structuredContent as { speakers?: Array<Record<string, unknown>> }).speakers ?? [];
+      const plainText = plain.content?.[0]?.text ?? "";
+      assert(
+        "49. by default, utterances keep text and timing but no words",
+        speakers.length === 1 && speakers[0]?.text === "hello there." && !("words" in (speakers[0] ?? {})) && !plainText.includes("--- words"),
+        JSON.stringify(plain.structuredContent)
+      );
+      const full = await callTool(client, "get_transcript", { transcript_id: "txn-w", include_words: true }, "k");
+      const fullSpeakers = (full.structuredContent as { speakers?: Array<{ words?: unknown[] }> }).speakers ?? [];
+      const fullText = full.content?.[0]?.text ?? "";
+      assert(
+        "49. include_words returns the words and renders a words section",
+        fullSpeakers[0]?.words?.length === 2 && fullText.includes("--- words") && fullText.includes("[A] 450–900: there."),
+        fullText
+      );
+    });
+  }
 
   globalThis.fetch = originalFetch;
 

@@ -31,7 +31,8 @@ export function registerGetTranscript(server: McpServer): void {
         "Fetch the current state of a transcript by id. " +
         "Returns the full transcript when `status` is `completed`, an error message when `status` is `error`, " +
         "or just the in-progress status (`queued` / `processing`) otherwise. " +
-        "Poll this tool every ~3 seconds after `submit_transcript` until you see `completed` or `error`.",
+        "Poll this tool every ~3 seconds after `submit_transcript` until you see `completed` or `error`. " +
+        "Per-word timestamps are left out unless you set `include_words` (only for word-level tasks such as subtitles).",
       // Reads a transcript's status and results.
       annotations: {
         readOnlyHint: true,
@@ -41,6 +42,13 @@ export function registerGetTranscript(server: McpServer): void {
         transcript_id: z
           .string()
           .describe("The transcript id returned by submit_transcript."),
+        include_words: z
+          .boolean()
+          .optional()
+          .describe(
+            "Also return per-word timestamps for each utterance (speaker_labels transcripts). " +
+              "Large: about 17 KB per minute of audio. Leave unset unless the task needs word-level timing."
+          ),
       },
     },
     async (args, extra) => {
@@ -87,7 +95,7 @@ export function registerGetTranscript(server: McpServer): void {
             );
           }
         }
-        const shaped = shape(record, redactedAudioUrl);
+        const shaped = shape(record, redactedAudioUrl, args.include_words === true);
         if (redactedAudioPending) shaped.redacted_audio_pending = true;
         if (redactedAudioError) shaped.redacted_audio_error = redactedAudioError;
         log({
@@ -117,13 +125,15 @@ export function registerGetTranscript(server: McpServer): void {
   );
 }
 
+type WordTiming = NonNullable<NonNullable<TranscriptRecord["utterances"]>[number]["words"]>[number];
+
 interface ShapedTranscript {
   transcript_id: string;
   status: TranscriptRecord["status"];
   text?: string;
   speech_model_used?: string;
   audio_duration?: number;
-  speakers?: TranslatedUtterance[];
+  speakers?: Array<TranslatedUtterance & { words?: WordTiming[] }>;
   summary?: string;
   error?: string;
   sentiment?: Array<{ text: string; sentiment: string; confidence: number; start: number; end: number; speaker: string | null }>;
@@ -140,7 +150,7 @@ interface ShapedTranscript {
   metadata?: { domain_used?: string | null; warnings?: Array<{ message: string }> };
 }
 
-function shape(record: TranscriptRecord, redactedAudioUrl?: string): ShapedTranscript {
+function shape(record: TranscriptRecord, redactedAudioUrl?: string, includeWords = false): ShapedTranscript {
   const out: ShapedTranscript = {
     transcript_id: record.id,
     status: record.status,
@@ -150,7 +160,9 @@ function shape(record: TranscriptRecord, redactedAudioUrl?: string): ShapedTrans
   if (record.audio_duration !== undefined) out.audio_duration = record.audio_duration;
   // != null (not !== undefined): an explicit `null` from the API means
   // "no data", same as the field being absent — don't leak it downstream.
-  if (record.utterances != null && record.utterances.length > 0) out.speakers = record.utterances;
+  if (record.utterances != null && record.utterances.length > 0) {
+    out.speakers = includeWords ? record.utterances : record.utterances.map(({ words: _words, ...u }) => u);
+  }
   if (record.summary !== undefined) out.summary = record.summary;
   if (record.error !== undefined) out.error = record.error;
   if (record.sentiment_analysis_results && record.sentiment_analysis_results.length > 0)
@@ -196,6 +208,14 @@ function formatTranscript(s: ShapedTranscript): string {
     lines.push("--- utterances (per-speaker segments; start/end are milliseconds from audio start) ---");
     for (const u of s.speakers) {
       lines.push(`[${u.speaker}] ${formatMs(u.start)}–${formatMs(u.end)}: ${u.text}`);
+    }
+  }
+
+  if (s.speakers && s.speakers.some((u) => u.words && u.words.length > 0)) {
+    lines.push("");
+    lines.push("--- words (start/end are milliseconds from audio start) ---");
+    for (const u of s.speakers) {
+      for (const w of u.words ?? []) lines.push(`[${w.speaker ?? u.speaker}] ${w.start}–${w.end}: ${w.text}`);
     }
   }
 
