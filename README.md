@@ -60,7 +60,7 @@ https://assembly.ai/wildfires.mp3"*.
 | Tool | Purpose |
 |---|---|
 | `submit_transcript(audio_url, ...)` | Start an async transcription of a public audio/video URL. Returns `{ transcript_id, status }` immediately. |
-| `get_transcript(transcript_id)` | Fetch the current state; full results once `status` is `completed`. Agents poll this ~every 3s. |
+| `get_transcript(transcript_id, include_words?)` | Fetch the current state; full results once `status` is `completed`. Agents poll this ~every 3s. Per-word timestamps only with `include_words: true`. |
 | `understand_transcript(transcript_id, speech_understanding)` | Run Speech Understanding on an already-completed transcript — translation, speaker identification, custom formatting, chaptered summarization, action items — without re-submitting the audio (LLM Gateway `/v1/understanding`). |
 | `summarize_transcript(transcript_id, style?, custom_prompt?)` | Freeform or custom-prompt summary of a completed transcript via the LLM Gateway. `style`: `bullets` (default), `paragraph`, `headline`, `action_items`, or `custom`. |
 | `delete_transcript(transcript_id)` | Permanently delete a transcript and its data. Irreversible — only on explicit user request. |
@@ -180,6 +180,9 @@ guarantee, all changes here are additive:
    `--- topics ---`, `--- highlights ---`, `--- unredacted_text ---`,
    `--- redacted_audio ---`, and `--- warnings ---`.
 4. **`structuredContent` is additive only** — new fields, never removed/renamed.
+   One exception: per-word timestamps (`speakers[].words`) were never part
+   of the declared shape and made up ~85% of every response, so they now
+   come back only with `include_words: true`.
 5. **Avoid deprecated AssemblyAI transcript params** (`auto_chapters`,
    `summarization`, `summary_model`, `summary_type`); use LLM Gateway instead.
    Mirror AssemblyAI's official MCP tool shapes where they exist.

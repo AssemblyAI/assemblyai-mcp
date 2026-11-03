@@ -116,6 +116,8 @@ export interface TranscriptRecord {
     end: number;
     /** Present when translation.match_original_utterance was requested. */
     translated_texts?: Record<string, string>;
+    /** Per-word timestamps. About 85% of a transcript's size, so get_transcript drops them unless asked. */
+    words?: Array<{ text: string; start: number; end: number; confidence: number; speaker: string | null }>;
   }>;
   summary?: string;
   error?: string;
