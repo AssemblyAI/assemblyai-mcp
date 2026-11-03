@@ -16,6 +16,11 @@ Built with Next.js 16 + `mcp-handler` + the official
 
 ## Quickstart
 
+AssemblyAI hosts it at **`https://mcp.assemblyai.com/mcp`**. It's listed in the
+official [MCP Registry](https://registry.modelcontextprotocol.io/v0.1/servers?search=com.assemblyai/mcp)
+as `com.assemblyai/mcp`. Setup for Claude, Cursor, VS Code and other clients:
+[assemblyai.com/docs/mcp-server](https://www.assemblyai.com/docs/mcp-server).
+
 **Sign in with AssemblyAI:** add the server's `/mcp` endpoint with no
 headers. The client opens AssemblyAI's sign-in and consent page, and the
 server uses an API key it gets for that connection; nothing to copy or
@@ -23,7 +28,7 @@ paste. (This works against AssemblyAI's hosted deployment; a self-hosted
 copy uses API keys, see [Auth](#auth).)
 
 ```bash
-claude mcp add --transport http assemblyai https://<host>/mcp
+claude mcp add --transport http assemblyai https://mcp.assemblyai.com/mcp
 ```
 
 **With an API key:** point your MCP client at the `/mcp` endpoint with your
@@ -32,7 +37,7 @@ AssemblyAI API key as the Bearer token.
 **Claude Code**
 
 ```bash
-claude mcp add --transport http assemblyai https://<host>/mcp \
+claude mcp add --transport http assemblyai https://mcp.assemblyai.com/mcp \
   --header "Authorization: Bearer $ASSEMBLYAI_API_KEY"
 ```
 
@@ -42,14 +47,14 @@ claude mcp add --transport http assemblyai https://<host>/mcp \
 {
   "mcpServers": {
     "assemblyai": {
-      "url": "https://<host>/mcp",
+      "url": "https://mcp.assemblyai.com/mcp",
       "headers": { "Authorization": "Bearer <ASSEMBLYAI_API_KEY>" }
     }
   }
 }
 ```
 
-No hosted instance handy? `npm install && npm run dev` serves it at
+Running your own copy? `npm install && npm run dev` serves it at
 `http://localhost:3000/mcp` (see [Local dev](#local-dev)).
 
 Then prompt the agent, e.g. *"transcribe this audio file and summarize it:
