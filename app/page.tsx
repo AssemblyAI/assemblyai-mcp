@@ -77,7 +77,7 @@ export default async function Home() {
       <section>
         <p>
           Get an API key in the <a href="https://www.assemblyai.com/dashboard">AssemblyAI dashboard</a>. Docs:{" "}
-          <a href="https://www.assemblyai.com/docs">assemblyai.com/docs</a>. Source:{" "}
+          <a href="https://www.assemblyai.com/docs/mcp-server">assemblyai.com/docs/mcp-server</a>. Source:{" "}
           <a href="https://github.com/AssemblyAI/assemblyai-mcp">github.com/AssemblyAI/assemblyai-mcp</a>.
         </p>
       </section>
