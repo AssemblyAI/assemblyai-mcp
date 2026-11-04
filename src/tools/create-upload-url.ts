@@ -20,7 +20,7 @@ export function registerCreateUploadUrl(server: McpServer): void {
         "Use this when the user wants to transcribe a LOCAL file (on their computer), not a public URL. " +
         "Returns a short-lived link and a ready-to-run `curl` command. Run the command with the file path " +
         "(you need shell access, e.g. in Claude Code, Cursor or Codex); it prints JSON with an `upload_url`. " +
-        "Then call `submit_transcript` with that `upload_url` as `audio_url`. The file goes to the user's " +
+        "Then call `submit_transcript` with that printed `upload_url` as `audio_url` (not the link itself). The file goes to the user's " +
         "private AssemblyAI storage, not a public host. Files up to 4.5 MB; the link expires in 10 minutes.",
       // Only mints a link; nothing changes until the agent uploads to it.
       annotations: {
@@ -41,9 +41,10 @@ export function registerCreateUploadUrl(server: McpServer): void {
 
       const { token, expiresAt } = createUploadToken(apiKey);
       const headers = extra.requestInfo?.headers;
-      const uploadUrl = `${publicOrigin(header(headers, "x-forwarded-host"), header(headers, "host"))}/upload/${token}`;
+      const uploadLink = `${publicOrigin(header(headers, "x-forwarded-host"), header(headers, "host"))}/upload/${token}`;
       // Plain curl, no --fail-with-body (curl 7.76+ only): error responses are JSON the agent can read.
-      const command = `curl -sS -X POST --data-binary @"/path/to/file" "${uploadUrl}"`;
+      // Single quotes: the link comes from request headers and must stay a shell literal.
+      const command = `curl -sS -X POST --data-binary @"/path/to/file" '${uploadLink.replaceAll("'", "'\\''")}'`;
       log({
         event: "tool_call",
         tool: "create_upload_url",
@@ -58,7 +59,7 @@ export function registerCreateUploadUrl(server: McpServer): void {
             text:
               `Upload link created (expires in ${UPLOAD_TTL_MS / 60000} minutes, files up to 4.5 MB). ` +
               `Replace /path/to/file and run:\n\n${command}\n\n` +
-              `It prints {"upload_url": "..."}. Pass that upload_url as audio_url to submit_transcript. ` +
+              `It prints {"upload_url": "..."}. Pass that printed upload_url (not this link) as audio_url to submit_transcript. ` +
               `If it prints {"error": ...} instead, follow the message. If it prints "Request Entity Too Large" ` +
               `or the error says the file is too large, the file is over 4.5 MB: compress it ` +
               `(e.g. ffmpeg -i in -ac 1 -b:a 32k out.mp3) or ask the user for a public URL. ` +
@@ -66,7 +67,7 @@ export function registerCreateUploadUrl(server: McpServer): void {
           },
         ],
         structuredContent: {
-          upload_url: uploadUrl,
+          upload_link: uploadLink,
           method: "POST",
           expires_at: new Date(expiresAt).toISOString(),
           max_bytes: MAX_UPLOAD_BYTES,

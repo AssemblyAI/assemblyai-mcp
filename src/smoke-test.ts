@@ -1373,7 +1373,7 @@ async function run() {
     );
     resetMock([]);
     const res = await callTool(client, "create_upload_url", {}, "test-key");
-    const url = String(res.structuredContent?.upload_url ?? "");
+    const url = String(res.structuredContent?.upload_link ?? "");
     uploadToken = url.split("/upload/")[1] ?? "";
     const text = res.content?.[0]?.text ?? "";
     assert(
@@ -1382,6 +1382,16 @@ async function run() {
       JSON.stringify(res)
     );
     assert("46. the link does not contain the API key", !url.includes("test-key"), url);
+    assert(
+      "46. the link is upload_link, not upload_url (that name is the printed AssemblyAI URL)",
+      !("upload_url" in (res.structuredContent ?? {})),
+      JSON.stringify(res.structuredContent)
+    );
+    assert(
+      "46. the curl command single-quotes the link",
+      String(res.structuredContent?.command ?? "").endsWith(`'${url}'`),
+      String(res.structuredContent?.command)
+    );
     assert(
       "46. the curl command works on curl < 7.76 (no --fail-with-body)",
       !String(res.structuredContent?.command ?? "").includes("--fail-with-body"),
@@ -1563,6 +1573,13 @@ async function run() {
     );
     assert("51. falls back to host, then the production host", publicOrigin(undefined, "localhost:3000") === "http://localhost:3000" && publicOrigin(null, null) === "https://mcp.assemblyai.com");
     assert("51. localhost.example.com gets https", publicOrigin("localhost.example.com", null) === "https://localhost.example.com");
+    assert(
+      "51. a host with shell or URL syntax falls back to production",
+      publicOrigin("example.com$(printf injected >&2)", null) === "https://mcp.assemblyai.com" &&
+        publicOrigin("evil.com/x?", null) === "https://mcp.assemblyai.com" &&
+        publicOrigin(null, "a'b.com") === "https://mcp.assemblyai.com"
+    );
+    assert("51. IPv6 and ports still work", publicOrigin(null, "[::1]:3000") === "https://[::1]:3000" && publicOrigin("127.0.0.1:3001", null) === "http://127.0.0.1:3001");
   }
 
   globalThis.fetch = originalFetch;

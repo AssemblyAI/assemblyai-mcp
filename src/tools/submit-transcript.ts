@@ -29,8 +29,8 @@ export function registerSubmitTranscript(server: McpServer): void {
       description:
         "Submit a public audio or video URL to AssemblyAI for transcription. " +
         (uploadsConfigured()
-          ? "For a LOCAL file, first call `create_upload_url`, upload the file, and pass the returned " +
-            "`upload_url` here as `audio_url`. "
+          ? "For a LOCAL file, first call `create_upload_url` and run its curl command, then pass the " +
+            "`upload_url` that the command prints here as `audio_url`. "
           : "") +
         "Returns immediately with a `transcript_id` and the current status (usually `queued`). " +
         "The caller MUST then call `get_transcript` with the returned id in a loop " +
@@ -53,7 +53,8 @@ export function registerSubmitTranscript(server: McpServer): void {
         audio_url: z
           .string()
           .describe(
-            "Public http(s) URL to an audio or video file, or the upload_url from create_upload_url for a local file."
+            "Public http(s) URL to an audio or video file, or, for a local file, the upload_url printed by " +
+              "create_upload_url's curl command (not the /upload/ link itself)."
           ),
         speaker_labels: z
           .boolean()
