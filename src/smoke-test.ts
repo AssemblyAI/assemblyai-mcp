@@ -1350,9 +1350,13 @@ async function run() {
       "45. create_upload_url is not offered without UPLOAD_TOKEN_SECRET",
       !tools.some((t) => t.name === "create_upload_url"),
       tools.map((t) => t.name).join(", ")
-    );    assert(
-      "45. submit_transcript doesn't mention create_upload_url when it isn't offered",
-      !tools.find((t) => t.name === "submit_transcript")?.description?.includes("create_upload_url")
+    );
+    // The whole definition, not just the description: input-schema descriptions reach clients too.
+    const submit = JSON.stringify(tools.find((t) => t.name === "submit_transcript"));
+    assert(
+      "45. submit_transcript (description and parameters) doesn't mention uploads when they aren't offered",
+      !submit.includes("create_upload_url") && !submit.includes("/upload/"),
+      submit
     );
   });
 
@@ -1490,6 +1494,17 @@ async function run() {
     ]);
     const hung = await POST(new Request("https://mcp.assemblyai.com/upload/x", { method: "POST", body }), ctx(uploadToken));
     assert("48. an upstream timeout answers 502", hung.status === 502, String(hung.status));
+
+    // With uploads turned off, even a once-valid link gets a 404 that doesn't point at the missing tool.
+    delete process.env.UPLOAD_TOKEN_SECRET;
+    resetMock([]);
+    const off = await POST(new Request("https://mcp.assemblyai.com/upload/x", { method: "POST", body }), ctx(uploadToken));
+    const offBody = await off.text();
+    assert(
+      "48. uploads turned off: 404, no mention of create_upload_url, nothing forwarded",
+      off.status === 404 && !offBody.includes("create_upload_url") && calls.length === 0,
+      `${off.status} ${offBody}`
+    );
   }
   delete process.env.UPLOAD_TOKEN_SECRET;
 

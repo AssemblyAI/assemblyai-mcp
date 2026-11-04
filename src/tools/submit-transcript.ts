@@ -53,8 +53,11 @@ export function registerSubmitTranscript(server: McpServer): void {
         audio_url: z
           .string()
           .describe(
-            "Public http(s) URL to an audio or video file, or, for a local file, the upload_url printed by " +
-              "create_upload_url's curl command (not the /upload/ link itself)."
+            "Public http(s) URL to an audio or video file" +
+              (uploadsConfigured()
+                ? ", or, for a local file, the upload_url printed by create_upload_url's curl command " +
+                  "(not the /upload/ link itself)."
+                : ".")
           ),
         speaker_labels: z
           .boolean()

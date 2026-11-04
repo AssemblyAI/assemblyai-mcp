@@ -1,6 +1,6 @@
 import { AssemblyAIError, uploadFile } from "../../../src/assemblyai";
 import { log, logError, keyHash } from "../../../src/log";
-import { MAX_UPLOAD_BYTES, readUploadToken } from "../../../src/upload-token";
+import { MAX_UPLOAD_BYTES, readUploadToken, uploadsConfigured } from "../../../src/upload-token";
 
 // Receives a local file from an agent (via the link from create_upload_url)
 // and forwards it to AssemblyAI's private /v2/upload. Nothing is stored here.
@@ -12,6 +12,7 @@ function json(status: number, body: unknown): Response {
 
 async function handle(req: Request, { params }: { params: Promise<{ token: string }> }) {
   const start = Date.now();
+  if (!uploadsConfigured()) return json(404, { error: "Local file uploads are not enabled on this server." });
   const { token } = await params;
   const apiKey = readUploadToken(token);
   if (!apiKey) {
