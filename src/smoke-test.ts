@@ -68,6 +68,8 @@ interface FetchCall {
   method: string;
   headers: Record<string, string>;
   body: string | null;
+  // Upload bodies as bytes: String() turns an ArrayBuffer into "[object ArrayBuffer]".
+  bytes: Uint8Array | null;
 }
 
 let calls: FetchCall[] = [];
@@ -88,8 +90,9 @@ function installMockFetch() {
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
     const method = init?.method ?? "GET";
-    const body = init?.body ? String(init.body) : null;
-    calls.push({ url, method, headers: captureHeaders(init), body });
+    const bytes = init?.body instanceof ArrayBuffer ? new Uint8Array(init.body.slice(0)) : null;
+    const body = init?.body && !bytes ? String(init.body) : null;
+    calls.push({ url, method, headers: captureHeaders(init), body, bytes });
 
     if (nextResponses.length === 0) {
       throw new Error(`Mock fetch: no queued response for ${method} ${url}`);
@@ -1435,7 +1438,8 @@ async function run() {
         calls[0]?.url.endsWith("/v2/upload") === true &&
         calls[0]?.method === "POST" &&
         calls[0]?.headers.authorization === "test-key" &&
-        calls[0]?.headers["content-type"] === "application/octet-stream",
+        calls[0]?.headers["content-type"] === "application/octet-stream" &&
+        Array.from(calls[0]?.bytes ?? []).join() === "1,2,3,4",
       JSON.stringify({ status: ok.status, okBody, calls })
     );
 
