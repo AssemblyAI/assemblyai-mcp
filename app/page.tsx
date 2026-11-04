@@ -1,5 +1,6 @@
 import { headers } from "next/headers";
 
+import { publicOrigin } from "../src/origin";
 import { uploadsConfigured } from "../src/upload-token";
 
 // A short page for people who open the server's address in a browser. AI apps
@@ -34,11 +35,7 @@ const css = `
 
 export default async function Home() {
   const h = await headers();
-  const host = h.get("x-forwarded-host") ?? h.get("host") ?? "mcp.assemblyai.com";
-  // Only a local dev host gets http; "localhost.example.com" must not match.
-  const hostname = host.split(":")[0];
-  const proto = hostname === "localhost" || hostname === "127.0.0.1" ? "http" : "https";
-  const endpoint = `${proto}://${host}/mcp`;
+  const endpoint = `${publicOrigin(h.get("x-forwarded-host"), h.get("host"))}/mcp`;
 
   return (
     <main>

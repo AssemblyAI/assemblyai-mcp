@@ -1,24 +1,14 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import { log, keyHash } from "../log";
+import { publicOrigin } from "../origin";
 import { createUploadToken, MAX_UPLOAD_BYTES, UPLOAD_TTL_MS } from "../upload-token";
-
-const FALLBACK_ORIGIN = "https://mcp.assemblyai.com";
 
 type Headers = Record<string, string | string[] | undefined> | undefined;
 
 function header(headers: Headers, name: string): string | undefined {
   const value = headers?.[name];
   return Array.isArray(value) ? value[0] : value;
-}
-
-// Same rule as the homepage: only an exact local host gets http.
-function originFrom(headers: Headers): string {
-  const host = header(headers, "x-forwarded-host") ?? header(headers, "host");
-  if (!host) return FALLBACK_ORIGIN;
-  const hostname = host.split(":")[0];
-  const proto = hostname === "localhost" || hostname === "127.0.0.1" ? "http" : "https";
-  return `${proto}://${host}`;
 }
 
 export function registerCreateUploadUrl(server: McpServer): void {
@@ -50,8 +40,10 @@ export function registerCreateUploadUrl(server: McpServer): void {
       }
 
       const { token, expiresAt } = createUploadToken(apiKey);
-      const uploadUrl = `${originFrom(extra.requestInfo?.headers)}/upload/${token}`;
-      const command = `curl -sS --fail-with-body -X POST --data-binary @"/path/to/file" "${uploadUrl}"`;
+      const headers = extra.requestInfo?.headers;
+      const uploadUrl = `${publicOrigin(header(headers, "x-forwarded-host"), header(headers, "host"))}/upload/${token}`;
+      // Plain curl, no --fail-with-body (curl 7.76+ only): error responses are JSON the agent can read.
+      const command = `curl -sS -X POST --data-binary @"/path/to/file" "${uploadUrl}"`;
       log({
         event: "tool_call",
         tool: "create_upload_url",
@@ -67,7 +59,8 @@ export function registerCreateUploadUrl(server: McpServer): void {
               `Upload link created (expires in ${UPLOAD_TTL_MS / 60000} minutes, files up to 4.5 MB). ` +
               `Replace /path/to/file and run:\n\n${command}\n\n` +
               `It prints {"upload_url": "..."}. Pass that upload_url as audio_url to submit_transcript. ` +
-              `If it fails with 413 or "Request Entity Too Large", the file is over 4.5 MB: compress it ` +
+              `If it prints {"error": ...} instead, follow the message. If it prints "Request Entity Too Large" ` +
+              `or the error says the file is too large, the file is over 4.5 MB: compress it ` +
               `(e.g. ffmpeg -i in -ac 1 -b:a 32k out.mp3) or ask the user for a public URL. ` +
               `Do not show this link to anyone: it uploads into the user's account.`,
           },

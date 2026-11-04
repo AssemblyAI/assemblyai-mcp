@@ -32,7 +32,8 @@ export function registerGetTranscript(server: McpServer): void {
         "Returns the full transcript when `status` is `completed`, an error message when `status` is `error`, " +
         "or just the in-progress status (`queued` / `processing`) otherwise. " +
         "Poll this tool every ~3 seconds after `submit_transcript` until you see `completed` or `error`. " +
-        "Per-word timestamps are left out unless you set `include_words` (only for word-level tasks such as subtitles).",
+        "Per-word timestamps are left out unless you set `include_words` (only for word-level tasks such as subtitles); " +
+          "they come per utterance with speaker_labels, otherwise as a top-level `words` list.",
       // Reads a transcript's status and results.
       annotations: {
         readOnlyHint: true,
@@ -46,7 +47,8 @@ export function registerGetTranscript(server: McpServer): void {
           .boolean()
           .optional()
           .describe(
-            "Also return per-word timestamps for each utterance (speaker_labels transcripts). " +
+            "Also return per-word timestamps: inside each utterance for speaker_labels transcripts, " +
+              "otherwise as a top-level `words` list. " +
               "Large: about 17 KB per minute of audio. Leave unset unless the task needs word-level timing."
           ),
       },
@@ -134,6 +136,8 @@ interface ShapedTranscript {
   speech_model_used?: string;
   audio_duration?: number;
   speakers?: Array<TranslatedUtterance & { words?: WordTiming[] }>;
+  /** Only with include_words on a transcript without utterances (no speaker_labels). */
+  words?: WordTiming[];
   summary?: string;
   error?: string;
   sentiment?: Array<{ text: string; sentiment: string; confidence: number; start: number; end: number; speaker: string | null }>;
@@ -162,6 +166,9 @@ function shape(record: TranscriptRecord, redactedAudioUrl?: string, includeWords
   // "no data", same as the field being absent — don't leak it downstream.
   if (record.utterances != null && record.utterances.length > 0) {
     out.speakers = includeWords ? record.utterances : record.utterances.map(({ words: _words, ...u }) => u);
+  } else if (includeWords && record.words != null && record.words.length > 0) {
+    // No speaker_labels: utterances are null and the words only exist at the top level.
+    out.words = record.words;
   }
   if (record.summary !== undefined) out.summary = record.summary;
   if (record.error !== undefined) out.error = record.error;
@@ -217,6 +224,10 @@ function formatTranscript(s: ShapedTranscript): string {
     for (const u of s.speakers) {
       for (const w of u.words ?? []) lines.push(`[${w.speaker ?? u.speaker}] ${w.start}–${w.end}: ${w.text}`);
     }
+  } else if (s.words && s.words.length > 0) {
+    lines.push("");
+    lines.push("--- words (start/end are milliseconds from audio start) ---");
+    for (const w of s.words) lines.push(`${w.speaker ? `[${w.speaker}] ` : ""}${w.start}–${w.end}: ${w.text}`);
   }
 
   if (s.sentiment && s.sentiment.length > 0) {

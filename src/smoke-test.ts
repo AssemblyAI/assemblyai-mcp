@@ -52,6 +52,8 @@
  *   47. upload tokens round-trip; expired, tampered and other-secret tokens are refused
  *   48. the upload route forwards to /v2/upload with the raw key; bad token 401, empty body 400
  *   49. get_transcript drops per-word timestamps unless include_words is set
+ *   50. include_words falls back to top-level words when there are no utterances
+ *   51. publicOrigin takes the first x-forwarded-host entry
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -1380,6 +1382,11 @@ async function run() {
       JSON.stringify(res)
     );
     assert("46. the link does not contain the API key", !url.includes("test-key"), url);
+    assert(
+      "46. the curl command works on curl < 7.76 (no --fail-with-body)",
+      !String(res.structuredContent?.command ?? "").includes("--fail-with-body"),
+      String(res.structuredContent?.command)
+    );
   });
 
   // 47. upload tokens: valid round-trips; expired, tampered or other-secret tokens are refused
@@ -1433,6 +1440,46 @@ async function run() {
     resetMock([jsonResponse(503, { error: "unavailable" })]);
     const down = await POST(new Request("https://mcp.assemblyai.com/upload/x", { method: "POST", body }), ctx(uploadToken));
     assert("48. AssemblyAI's 5xx answers 502", down.status === 502, String(down.status));
+
+    const { MAX_UPLOAD_BYTES } = await import("./upload-token");
+    resetMock([]);
+    const declared = await POST(
+      new Request("https://mcp.assemblyai.com/upload/x", {
+        method: "POST",
+        body,
+        headers: { "Content-Length": String(MAX_UPLOAD_BYTES + 1) },
+      }),
+      ctx(uploadToken)
+    );
+    assert("48. a Content-Length over the limit answers 413 without calling AssemblyAI", declared.status === 413 && calls.length === 0, String(declared.status));
+
+    resetMock([]);
+    const chunk = new Uint8Array(1_000_000);
+    let sent = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (sent >= 20) return controller.close();
+        sent++;
+        controller.enqueue(chunk);
+      },
+    });
+    const streamed = await POST(
+      new Request("https://mcp.assemblyai.com/upload/x", { method: "POST", body: stream, duplex: "half" } as RequestInit),
+      ctx(uploadToken)
+    );
+    assert(
+      "48. a body without Content-Length that passes the limit answers 413 and stops reading",
+      streamed.status === 413 && calls.length === 0 && sent < 20,
+      JSON.stringify({ status: streamed.status, sent })
+    );
+
+    resetMock([
+      () => {
+        throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
+      },
+    ]);
+    const hung = await POST(new Request("https://mcp.assemblyai.com/upload/x", { method: "POST", body }), ctx(uploadToken));
+    assert("48. an upstream timeout answers 502", hung.status === 502, String(hung.status));
   }
   delete process.env.UPLOAD_TOKEN_SECRET;
 
@@ -1474,6 +1521,48 @@ async function run() {
         fullText
       );
     });
+  }
+
+  // 50. include_words falls back to top-level words when there are no utterances
+  {
+    const record = {
+      id: "txn-nw",
+      status: "completed",
+      text: "hello there.",
+      utterances: null,
+      words: [
+        { text: "hello", start: 0, end: 400, confidence: 0.9, speaker: null },
+        { text: "there.", start: 450, end: 900, confidence: 0.9, speaker: null },
+      ],
+    };
+    await withClientServer(async (client) => {
+      resetMock([jsonResponse(200, record), jsonResponse(200, record)]);
+      const plain = await callTool(client, "get_transcript", { transcript_id: "txn-nw" }, "k");
+      assert(
+        "50. without include_words, top-level words stay out",
+        !("words" in (plain.structuredContent ?? {})) && !(plain.content?.[0]?.text ?? "").includes("--- words"),
+        JSON.stringify(plain.structuredContent)
+      );
+      const full = await callTool(client, "get_transcript", { transcript_id: "txn-nw", include_words: true }, "k");
+      const words = (full.structuredContent as { words?: unknown[] }).words ?? [];
+      const fullText = full.content?.[0]?.text ?? "";
+      assert(
+        "50. include_words returns top-level words when speaker_labels is off",
+        words.length === 2 && fullText.includes("--- words") && fullText.includes("450–900: there.") && !fullText.includes("[null]"),
+        fullText
+      );
+    });
+  }
+
+  // 51. publicOrigin takes the first x-forwarded-host entry
+  {
+    const { publicOrigin } = await import("./origin");
+    assert(
+      "51. a multi-proxy x-forwarded-host uses the first host",
+      publicOrigin("mcp.assemblyai.com, edge.internal", "edge.internal") === "https://mcp.assemblyai.com"
+    );
+    assert("51. falls back to host, then the production host", publicOrigin(undefined, "localhost:3000") === "http://localhost:3000" && publicOrigin(null, null) === "https://mcp.assemblyai.com");
+    assert("51. localhost.example.com gets https", publicOrigin("localhost.example.com", null) === "https://localhost.example.com");
   }
 
   globalThis.fetch = originalFetch;
