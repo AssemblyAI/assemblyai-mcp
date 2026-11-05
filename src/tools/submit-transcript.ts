@@ -8,6 +8,22 @@ import { handleToolError } from "../tool-errors";
 
 const ALLOWED_SCHEMES = new Set(["http:", "https:"]);
 
+/**
+ * A file the user attached in ChatGPT. ChatGPT fills in every top-level param
+ * named in `_meta["openai/fileParams"]` with this object. Its schema must
+ * declare all four properties and require exactly download_url and file_id,
+ * or OpenAI's tool scan rejects the plugin. download_url is a temporary link
+ * AssemblyAI can fetch directly, so it goes in as the audio_url.
+ */
+const chatgptFileSchema = z
+  .looseObject({
+    download_url: z.string(),
+    file_id: z.string(),
+    mime_type: z.string().optional(),
+    file_name: z.string().optional(),
+  })
+  .describe("An audio or video file the user attached in ChatGPT. ChatGPT fills this in.");
+
 function validateAudioUrl(audioUrl: string): void {
   let parsed: URL;
   try {
@@ -20,13 +36,26 @@ function validateAudioUrl(audioUrl: string): void {
   }
 }
 
+/** Exactly one source: a URL, or a file attached in ChatGPT. */
+function pickAudioUrl(audioUrl: string | undefined, fileUrl: string | undefined): string {
+  if (audioUrl && fileUrl) {
+    throw new Error("Pass either audio_url or file, not both.");
+  }
+  const url = audioUrl ?? fileUrl;
+  if (!url) {
+    throw new Error("Pass audio_url (a public http(s) URL) or file (a file attached in ChatGPT).");
+  }
+  return url;
+}
+
 export function registerSubmitTranscript(server: McpServer): void {
   server.registerTool(
     "submit_transcript",
     {
       title: "Submit AssemblyAI Transcript",
       description:
-        "Submit a public audio or video URL to AssemblyAI for transcription. " +
+        "Submit a public audio or video URL, or a file the user attached in ChatGPT, to AssemblyAI " +
+        "for transcription. Pass exactly one of `audio_url` or `file`. " +
         "Returns immediately with a `transcript_id` and the current status (usually `queued`). " +
         "The caller MUST then call `get_transcript` with the returned id in a loop " +
         "(every ~3 seconds) until status becomes `completed` or `error`. " +
@@ -44,10 +73,13 @@ export function registerSubmitTranscript(server: McpServer): void {
         idempotentHint: false,
         openWorldHint: true,
       },
+      _meta: { "openai/fileParams": ["file"] },
       inputSchema: {
         audio_url: z
           .string()
-          .describe("Public http(s) URL to an audio or video file."),
+          .optional()
+          .describe("Public http(s) URL to an audio or video file. Omit when `file` is set."),
+        file: chatgptFileSchema.optional(),
         speaker_labels: z
           .boolean()
           .optional()
@@ -329,8 +361,10 @@ export function registerSubmitTranscript(server: McpServer): void {
         );
       }
 
+      let audioUrl: string;
       try {
-        validateAudioUrl(args.audio_url);
+        audioUrl = pickAudioUrl(args.audio_url, args.file?.download_url);
+        validateAudioUrl(audioUrl);
       } catch (err) {
         log({
           event: "bad_audio_url",
@@ -348,8 +382,8 @@ export function registerSubmitTranscript(server: McpServer): void {
             "redact_pii_policies/redact_pii_sub require redact_pii: true. Set redact_pii to enable redaction."
           );
         }
-        const { audio_url, summarization: _ignored, ...rest } = args;
-        const record = await submitTranscript(apiKey, { audio_url, ...rest });
+        const { audio_url: _url, file: _file, summarization: _ignored, ...rest } = args;
+        const record = await submitTranscript(apiKey, { audio_url: audioUrl, ...rest });
         log({
           event: "tool_call",
           tool: "submit_transcript",

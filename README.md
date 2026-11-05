@@ -59,7 +59,7 @@ https://assembly.ai/wildfires.mp3"*.
 
 | Tool | Purpose |
 |---|---|
-| `submit_transcript(audio_url, ...)` | Start an async transcription of a public audio/video URL. Returns `{ transcript_id, status }` immediately. |
+| `submit_transcript(audio_url \| file, ...)` | Start an async transcription of a public audio/video URL, or of a file the user attached in ChatGPT (`file`, filled in by ChatGPT through `_meta["openai/fileParams"]`). Returns `{ transcript_id, status }` immediately. |
 | `get_transcript(transcript_id)` | Fetch the current state; full results once `status` is `completed`. Agents poll this ~every 3s. |
 | `understand_transcript(transcript_id, speech_understanding)` | Run Speech Understanding on an already-completed transcript — translation, speaker identification, custom formatting, chaptered summarization, action items — without re-submitting the audio (LLM Gateway `/v1/understanding`). |
 | `summarize_transcript(transcript_id, style?, custom_prompt?)` | Freeform or custom-prompt summary of a completed transcript via the LLM Gateway. `style`: `bullets` (default), `paragraph`, `headline`, `action_items`, or `custom`. |

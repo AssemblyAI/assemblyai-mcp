@@ -1335,6 +1335,77 @@ async function run() {
     );
   }
 
+  // 45. ChatGPT file uploads: submit_transcript names `file` in openai/fileParams with the
+  //     schema OpenAI's tool scan requires, and sends its download_url as the audio_url
+  await withClientServer(async (client) => {
+    const { tools } = await client.listTools();
+    const tool = tools.find((t) => t.name === "submit_transcript");
+    const schema = tool?.inputSchema as {
+      required?: string[];
+      properties?: Record<string, { type?: string; properties?: Record<string, unknown>; required?: string[] }>;
+    };
+    const file = schema?.properties?.file;
+    assert(
+      "45. submit_transcript lists file in _meta openai/fileParams",
+      JSON.stringify(tool?._meta?.["openai/fileParams"]) === JSON.stringify(["file"]),
+      JSON.stringify(tool?._meta)
+    );
+    assert(
+      "45. file declares all four properties and requires only download_url and file_id",
+      file?.type === "object" &&
+        JSON.stringify(Object.keys(file.properties ?? {}).sort()) ===
+          JSON.stringify(["download_url", "file_id", "file_name", "mime_type"]) &&
+        JSON.stringify([...(file.required ?? [])].sort()) === JSON.stringify(["download_url", "file_id"]),
+      JSON.stringify(file)
+    );
+    assert(
+      "45. neither audio_url nor file is required by the schema",
+      !(schema?.required ?? []).includes("audio_url") && !(schema?.required ?? []).includes("file"),
+      JSON.stringify(schema?.required)
+    );
+
+    const download = "https://files.oaiusercontent.com/file-abc?sig=xyz";
+    resetMock([jsonResponse(200, { id: "txn-file", status: "queued" })]);
+    const ok = await callTool(
+      client,
+      "submit_transcript",
+      { file: { download_url: download, file_id: "file-abc", mime_type: "audio/mpeg", file_name: "call.mp3" } },
+      "k"
+    );
+    const sent = JSON.parse(calls[0]?.body ?? "{}");
+    assert(
+      "45. a ChatGPT file is submitted with its download_url as audio_url, and no file field",
+      ok.isError !== true && ok.structuredContent?.transcript_id === "txn-file" && sent.audio_url === download && !("file" in sent),
+      JSON.stringify({ ok, sent })
+    );
+
+    resetMock([]);
+    const both = await callTool(
+      client,
+      "submit_transcript",
+      { audio_url: "https://example.com/x.mp3", file: { download_url: download, file_id: "file-abc" } },
+      "k"
+    );
+    assert("45. audio_url and file together are refused without calling AssemblyAI", both.isError === true && calls.length === 0);
+
+    resetMock([]);
+    const neither = await callTool(client, "submit_transcript", {}, "k");
+    assert(
+      "45. no source at all is refused without calling AssemblyAI",
+      neither.isError === true && calls.length === 0 && (neither.content?.[0]?.text ?? "").includes("audio_url"),
+      JSON.stringify(neither)
+    );
+
+    resetMock([]);
+    const badFile = await callTool(
+      client,
+      "submit_transcript",
+      { file: { download_url: "file:///etc/passwd", file_id: "file-abc" } },
+      "k"
+    );
+    assert("45. a file whose download_url is not http(s) is refused", badFile.isError === true && calls.length === 0);
+  });
+
   globalThis.fetch = originalFetch;
 
   console.log(`\n${passed} passed, ${failed} failed`);
