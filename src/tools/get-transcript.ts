@@ -6,6 +6,7 @@ import { log, logError, keyHash } from "../log";
 import { handleToolError } from "../tool-errors";
 import {
   formatMs,
+  formatScore,
   renderTranslations,
   renderTranslatedUtterances,
   renderSpeechUnderstanding,
@@ -204,7 +205,8 @@ function formatTranscript(s: ShapedTranscript): string {
     lines.push("--- sentiment (per-sentence; start/end are mm:ss) ---");
     for (const r of s.sentiment) {
       const who = r.speaker ? ` (Speaker ${r.speaker})` : "";
-      lines.push(`[${r.sentiment} ${r.confidence.toFixed(2)}] ${formatMs(r.start)}–${formatMs(r.end)}${who}: ${r.text}`);
+      const conf = r.confidence !== undefined && r.confidence !== null ? ` ${formatScore(r.confidence)}` : "";
+      lines.push(`[${r.sentiment}${conf}] ${formatMs(r.start)}–${formatMs(r.end)}${who}: ${r.text}`);
     }
   }
 

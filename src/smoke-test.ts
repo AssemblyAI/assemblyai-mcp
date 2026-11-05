@@ -1272,6 +1272,34 @@ async function run() {
     );
   });
 
+  // 41b. formatTranscript sentiment tolerates non-numeric or null confidence and timestamps without throwing
+  await withClientServer(async (client) => {
+    resetMock([
+      jsonResponse(200, {
+        id: "txn-sent-null",
+        status: "completed",
+        text: "hi",
+        audio_duration: 3,
+        sentiment_analysis_results: [
+          {
+            text: "great job",
+            start: 0,
+            end: null as unknown as number,
+            sentiment: "POSITIVE",
+            confidence: null as unknown as number,
+          },
+        ],
+      }),
+    ]);
+    const result = await callTool(client, "get_transcript", { transcript_id: "txn-sent-null" }, "k");
+    const text = result.content?.[0]?.text ?? "";
+    assert(
+      "41b. sentiment renders without throwing when confidence or timestamps are null",
+      result.isError !== true && text.includes("--- sentiment") && text.includes("[POSITIVE] 0:00–0:00: great job"),
+      text
+    );
+  });
+
   // 42. summarize_transcript 429 → friendly rate-limit message (shared tool-error mapper)
   await withClientServer(async (client) => {
     resetMock([jsonResponse(429, { error: "rate limit exceeded" })]);
