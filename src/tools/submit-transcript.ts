@@ -41,7 +41,8 @@ function pickAudioUrl(audioUrl: string | undefined, fileUrl: string | undefined)
   if (audioUrl && fileUrl) {
     throw new Error("Pass either audio_url or file, not both.");
   }
-  const url = audioUrl ?? fileUrl;
+  // ||, not ??: models often fill an unused optional param with "".
+  const url = audioUrl || fileUrl;
   if (!url) {
     throw new Error("Pass audio_url (a public http(s) URL) or file (a file attached in ChatGPT).");
   }

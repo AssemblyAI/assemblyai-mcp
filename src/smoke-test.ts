@@ -1379,6 +1379,19 @@ async function run() {
       JSON.stringify({ ok, sent })
     );
 
+    resetMock([jsonResponse(200, { id: "txn-file2", status: "queued" })]);
+    const emptyUrl = await callTool(
+      client,
+      "submit_transcript",
+      { audio_url: "", file: { download_url: download, file_id: "file-abc" } },
+      "k"
+    );
+    assert(
+      "45. an empty audio_url next to a file uses the file",
+      emptyUrl.isError !== true && JSON.parse(calls[0]?.body ?? "{}").audio_url === download,
+      JSON.stringify({ emptyUrl, calls })
+    );
+
     resetMock([]);
     const both = await callTool(
       client,
