@@ -64,7 +64,7 @@ function openBrowser(url: string) {
 }
 
 /** Wait for the browser to come back to the loopback redirect. */
-function catchRedirect(state: string): Promise<string> {
+function catchRedirect(state: string): Promise<{ code: string; iss: string | null }> {
   return new Promise((resolve, reject) => {
     const server = createServer((req, res) => {
       const url = new URL(req.url ?? "/", REDIRECT_URI);
@@ -77,7 +77,7 @@ function catchRedirect(state: string): Promise<string> {
       if (url.searchParams.get("state") !== state) return reject(new Error("state mismatch"));
       const code = url.searchParams.get("code");
       if (!code) return reject(new Error(`no code: ${url.searchParams.get("error") ?? "unknown error"}`));
-      resolve(code);
+      resolve({ code, iss: url.searchParams.get("iss") });
     });
     server.listen(PORT, "127.0.0.1");
     setTimeout(() => {
@@ -152,7 +152,9 @@ async function run() {
   const redirect = catchRedirect(state);
   console.log("    opening the consent page; click Allow");
   openBrowser(authorize.toString());
-  const code = await redirect;
+  const { code, iss } = await redirect;
+  // RFC 9207: clients that check `iss` refuse a code from any other issuer.
+  assert("5. the redirect names the advertised issuer", iss === issuer, `iss=${iss}`);
 
   const tokenResponse = await fetch(tokenEndpoint, {
     method: "POST",
