@@ -259,6 +259,12 @@ tool call with the access token, and checks a tampered token is refused.
 Automation secret, for preview deployments behind Vercel Authentication.
 No API key needed and no transcription credit spent.
 
+It registers as a public client, as Claude Code does: Stytch only lets a
+client with a secret (as claude.ai's connectors register) use an `https`
+redirect, so this test can't sign in as one. It also requires the redirect
+to carry an `iss` naming the advertised authorization server (RFC 9207), as
+stricter clients do.
+
 ## Project layout
 
 ```
