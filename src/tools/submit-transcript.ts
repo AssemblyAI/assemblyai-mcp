@@ -5,6 +5,7 @@ import { submitTranscript } from "../assemblyai";
 import { log, keyHash } from "../log";
 import { speechUnderstandingSchema } from "../speech-understanding-schema";
 import { handleToolError } from "../tool-errors";
+import { uploadsConfigured } from "../upload-token";
 
 const ALLOWED_SCHEMES = new Set(["http:", "https:"]);
 
@@ -62,6 +63,10 @@ export function registerSubmitTranscript(server: McpServer): void {
       title: "Submit AssemblyAI Transcript",
       description:
         "Submit a public audio or video URL to AssemblyAI for transcription: pass it in `audio_url`. " +
+        (uploadsConfigured()
+          ? "For a LOCAL file, first call `create_upload_url` and run its curl command, then pass the " +
+            "`upload_url` that the command prints here as `audio_url`. "
+          : "") +
         "In ChatGPT only, a file the user attached can go in `file` instead (never both). " +
         "Returns immediately with a `transcript_id` and the current status (usually `queued`). " +
         "The caller MUST then call `get_transcript` with the returned id in a loop " +
@@ -85,7 +90,14 @@ export function registerSubmitTranscript(server: McpServer): void {
         audio_url: z
           .string()
           .optional()
-          .describe("Public http(s) URL to an audio or video file. Omit when `file` is set."),
+          .describe(
+            "Public http(s) URL to an audio or video file" +
+              (uploadsConfigured()
+                ? ", or, for a local file, the upload_url printed by create_upload_url's curl command " +
+                  "(not the /upload/ link itself)."
+                : ".") +
+              " Omit when `file` is set."
+          ),
         file: chatgptFileSchema.optional(),
         speaker_labels: z
           .boolean()

@@ -1,5 +1,8 @@
 import { headers } from "next/headers";
 
+import { publicOrigin } from "../src/origin";
+import { uploadsConfigured } from "../src/upload-token";
+
 // A short page for people who open the server's address in a browser. AI apps
 // never see it: they talk to /mcp. Keep the tool list in sync with src/server.ts.
 const TOOLS = [
@@ -9,6 +12,7 @@ const TOOLS = [
   { name: "understand_transcript", what: "Translate, find action items, identify speakers" },
   { name: "delete_transcript", what: "Permanently delete a transcript" },
 ];
+const UPLOAD_TOOL = { name: "create_upload_url", what: "Upload a local file (up to 4.5 MB) to transcribe" };
 
 const css = `
   :root { --bg:#f6f7fb; --fg:#16192b; --muted:#5b6078; --card:#fff; --line:#d9dcea; --accent:#2f5bea; color-scheme: light; }
@@ -31,11 +35,7 @@ const css = `
 
 export default async function Home() {
   const h = await headers();
-  const host = h.get("x-forwarded-host") ?? h.get("host") ?? "mcp.assemblyai.com";
-  // Only a local dev host gets http; "localhost.example.com" must not match.
-  const hostname = host.split(":")[0];
-  const proto = hostname === "localhost" || hostname === "127.0.0.1" ? "http" : "https";
-  const endpoint = `${proto}://${host}/mcp`;
+  const endpoint = `${publicOrigin(h.get("x-forwarded-host"), h.get("host"))}/mcp`;
 
   return (
     <main>
@@ -62,7 +62,7 @@ export default async function Home() {
       <section>
         <h2>Tools</h2>
         <ul>
-          {TOOLS.map((t) => (
+          {(uploadsConfigured() ? [UPLOAD_TOOL, ...TOOLS] : TOOLS).map((t) => (
             <li key={t.name}>
               <code>{t.name}</code>
               <span>{t.what}</span>
@@ -74,7 +74,7 @@ export default async function Home() {
       <section>
         <p>
           Get an API key in the <a href="https://www.assemblyai.com/dashboard">AssemblyAI dashboard</a>. Docs:{" "}
-          <a href="https://www.assemblyai.com/docs">assemblyai.com/docs</a>. Source:{" "}
+          <a href="https://www.assemblyai.com/docs/mcp-server">assemblyai.com/docs/mcp-server</a>. Source:{" "}
           <a href="https://github.com/AssemblyAI/assemblyai-mcp">github.com/AssemblyAI/assemblyai-mcp</a>.
         </p>
       </section>

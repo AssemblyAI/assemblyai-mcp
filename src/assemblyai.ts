@@ -106,9 +106,14 @@ export interface TranscriptRecord {
   id: string;
   status: "queued" | "processing" | "completed" | "error";
   text?: string;
+  language_code?: string | null;
+  language_confidence?: number | null;
+  language_detection?: boolean | null;
   /** Which model actually transcribed the audio (e.g. universal-2 after a language fallback). */
   speech_model_used?: string;
   audio_duration?: number;
+  /** Per-word timestamps for the whole transcript; the only word timings when speaker_labels is off. */
+  words?: Array<{ text: string; start: number; end: number; confidence: number; speaker: string | null }>;
   utterances?: Array<{
     speaker: string;
     text: string;
@@ -116,6 +121,8 @@ export interface TranscriptRecord {
     end: number;
     /** Present when translation.match_original_utterance was requested. */
     translated_texts?: Record<string, string>;
+    /** Per-word timestamps. About 85% of a transcript's size, so get_transcript drops them unless asked. */
+    words?: Array<{ text: string; start: number; end: number; confidence: number; speaker: string | null }>;
   }>;
   summary?: string;
   error?: string;
@@ -233,6 +240,33 @@ export async function deleteTranscript(
     undefined,
     1
   );
+}
+
+// Below the upload route's 60 s maxDuration.
+export const UPLOAD_TIMEOUT_MS = 50_000;
+
+/**
+ * Upload raw file bytes to AssemblyAI's private storage. The returned
+ * upload_url only works with the same account's key, as an audio_url.
+ * Not retried: the body is a one-shot upload, and a retry after a slow
+ * success would just store the file twice.
+ */
+export async function uploadFile(
+  apiKey: string,
+  data: ArrayBuffer,
+  baseUrl: string = DEFAULT_BASE_URL
+): Promise<{ upload_url: string }> {
+  const response = await fetch(`${baseUrl}/v2/upload`, {
+    method: "POST",
+    headers: { Authorization: apiKey, "Content-Type": "application/octet-stream" },
+    body: data,
+    // A hung upstream becomes the route's own logged 502, not a platform 504.
+    signal: AbortSignal.timeout(UPLOAD_TIMEOUT_MS),
+  });
+  if (!response.ok) {
+    throw new AssemblyAIError(await safeErrorMessage(response), response.status);
+  }
+  return (await response.json()) as { upload_url: string };
 }
 
 export async function requestWithRetry<T>(

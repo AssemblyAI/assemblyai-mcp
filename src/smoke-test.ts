@@ -47,6 +47,14 @@
  *   42. summarize_transcript 429 → friendly rate-limit message (shared tool-error mapper)
  *   43. every tool carries a title + readOnlyHint/destructiveHint; delete is destructive, reads are read-only
  *   44. logError scrubs URLs and long tokens from error messages and stacks
+ *   45. create_upload_url is hidden unless UPLOAD_TOKEN_SECRET is set
+ *   46. create_upload_url returns an /upload/<token> link + curl command, key not in the link
+ *   47. upload tokens round-trip; expired, tampered and other-secret tokens are refused
+ *   48. the upload route forwards to /v2/upload with the raw key; bad token 401, empty body 400
+ *   49. get_transcript drops per-word timestamps unless include_words is set
+ *   50. include_words falls back to top-level words when there are no utterances
+ *   51. publicOrigin takes the first x-forwarded-host entry
+ *   52. ChatGPT files: openai/fileParams + file schema; download_url is sent as audio_url
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -61,6 +69,8 @@ interface FetchCall {
   method: string;
   headers: Record<string, string>;
   body: string | null;
+  // Upload bodies as bytes: String() turns an ArrayBuffer into "[object ArrayBuffer]".
+  bytes: Uint8Array | null;
 }
 
 let calls: FetchCall[] = [];
@@ -81,8 +91,9 @@ function installMockFetch() {
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
     const method = init?.method ?? "GET";
-    const body = init?.body ? String(init.body) : null;
-    calls.push({ url, method, headers: captureHeaders(init), body });
+    const bytes = init?.body instanceof ArrayBuffer ? new Uint8Array(init.body.slice(0)) : null;
+    const body = init?.body && !bytes ? String(init.body) : null;
+    calls.push({ url, method, headers: captureHeaders(init), body, bytes });
 
     if (nextResponses.length === 0) {
       throw new Error(`Mock fetch: no queued response for ${method} ${url}`);
@@ -296,6 +307,35 @@ async function run() {
       `payload: ${text5b}`
     );
   });
+
+  // Language metadata must reach both structured and text-only MCP clients.
+  for (const languageFields of [
+    { language_code: "es", language_confidence: 0.98, language_detection: true },
+    { language_code: "en", language_confidence: 0, language_detection: false },
+    {},
+    { language_code: null, language_confidence: null, language_detection: null },
+  ]) {
+    await withClientServer(async (client) => {
+      resetMock([jsonResponse(200, {
+        id: "txn-language",
+        status: "completed",
+        text: "hello",
+        ...languageFields,
+      })]);
+      const result = await callTool(client, "get_transcript", { transcript_id: "txn-language" }, "k");
+      const text = result.content?.[0]?.text ?? "";
+      for (const key of ["language_code", "language_confidence", "language_detection"] as const) {
+        const value = languageFields[key];
+        assert(
+          `get_transcript preserves ${key}=${value} in structured and readable output`,
+          value == null
+            ? !(key in (result.structuredContent ?? {})) && !text.includes(`${key}=`)
+            : result.structuredContent?.[key] === value && text.includes(`${key}=${value}`),
+          JSON.stringify(result)
+        );
+      }
+    });
+  }
 
   // 6. get_transcript while processing
   await withClientServer(async (client) => {
@@ -1335,7 +1375,263 @@ async function run() {
     );
   }
 
-  // 45. ChatGPT file uploads: submit_transcript names `file` in openai/fileParams with the
+  // 45. create_upload_url is hidden unless UPLOAD_TOKEN_SECRET is set
+  delete process.env.UPLOAD_TOKEN_SECRET;
+  await withClientServer(async (client) => {
+    const { tools } = await client.listTools();
+    assert(
+      "45. create_upload_url is not offered without UPLOAD_TOKEN_SECRET",
+      !tools.some((t) => t.name === "create_upload_url"),
+      tools.map((t) => t.name).join(", ")
+    );
+    // The whole definition, not just the description: input-schema descriptions reach clients too.
+    const submit = JSON.stringify(tools.find((t) => t.name === "submit_transcript"));
+    assert(
+      "45. submit_transcript (description and parameters) doesn't mention uploads when they aren't offered",
+      !submit.includes("create_upload_url") && !submit.includes("/upload/"),
+      submit
+    );
+  });
+
+  // 46. create_upload_url returns a link whose token carries the caller's key, not read-only
+  process.env.UPLOAD_TOKEN_SECRET = "test-secret-" + "s".repeat(32);
+  let uploadToken = "";
+  await withClientServer(async (client) => {
+    const { tools } = await client.listTools();
+    const tool = tools.find((t) => t.name === "create_upload_url");
+    assert(
+      "46. create_upload_url is offered, titled, not read-only and not destructive",
+      Boolean(tool?.title) && tool?.annotations?.readOnlyHint === false && tool?.annotations?.destructiveHint === false,
+      JSON.stringify(tool)
+    );
+    assert(
+      "46. submit_transcript points local files at create_upload_url",
+      tools.find((t) => t.name === "submit_transcript")?.description?.includes("create_upload_url") === true
+    );
+    resetMock([]);
+    const res = await callTool(client, "create_upload_url", {}, "test-key");
+    const url = String(res.structuredContent?.upload_link ?? "");
+    uploadToken = url.split("/upload/")[1] ?? "";
+    const text = res.content?.[0]?.text ?? "";
+    assert(
+      "46. link points at /upload/<token>, comes with a curl command, calls no API",
+      !res.isError && url.startsWith("https://mcp.assemblyai.com/upload/") && text.includes("curl") && calls.length === 0,
+      JSON.stringify(res)
+    );
+    assert("46. the link does not contain the API key", !url.includes("test-key"), url);
+    assert(
+      "46. the link is upload_link, not upload_url (that name is the printed AssemblyAI URL)",
+      !("upload_url" in (res.structuredContent ?? {})),
+      JSON.stringify(res.structuredContent)
+    );
+    assert(
+      "46. the curl command single-quotes the link",
+      String(res.structuredContent?.command ?? "").endsWith(`'${url}'`),
+      String(res.structuredContent?.command)
+    );
+    assert(
+      "46. the curl command works on curl < 7.76 (no --fail-with-body)",
+      !String(res.structuredContent?.command ?? "").includes("--fail-with-body"),
+      String(res.structuredContent?.command)
+    );
+  });
+
+  // 47. upload tokens: valid round-trips; expired, tampered or other-secret tokens are refused
+  {
+    const { createUploadToken, readUploadToken, UPLOAD_TTL_MS } = await import("./upload-token");
+    const now = Date.now();
+    const { token } = createUploadToken("key-123", now);
+    const tampered = token.slice(0, -2) + (token.endsWith("A") ? "BB" : "AA");
+    assert("47. a fresh token yields the key", readUploadToken(token, now) === "key-123");
+    assert("47. an expired token is refused", readUploadToken(token, now + UPLOAD_TTL_MS + 1) === undefined);
+    assert("47. a tampered token is refused", readUploadToken(tampered, now) === undefined);
+    assert("47. garbage is refused", readUploadToken("not-a-token", now) === undefined);
+    process.env.UPLOAD_TOKEN_SECRET = "another-secret-" + "z".repeat(32);
+    assert("47. a token from another secret is refused", readUploadToken(token, now) === undefined);
+    process.env.UPLOAD_TOKEN_SECRET = "test-secret-" + "s".repeat(32);
+  }
+
+  // 48. the upload route forwards the body to /v2/upload with the raw key and returns upload_url
+  {
+    const { POST } = await import("../app/upload/[token]/route");
+    const ctx = (token: string) => ({ params: Promise.resolve({ token }) });
+    const body = new Uint8Array([1, 2, 3, 4]);
+
+    resetMock([jsonResponse(200, { upload_url: "https://cdn.assemblyai.com/upload/abc" })]);
+    const ok = await POST(new Request("https://mcp.assemblyai.com/upload/x", { method: "POST", body }), ctx(uploadToken));
+    const okBody = (await ok.json()) as { upload_url?: string };
+    assert(
+      "48. upload forwards to /v2/upload with the raw key and returns upload_url",
+      ok.status === 200 &&
+        okBody.upload_url === "https://cdn.assemblyai.com/upload/abc" &&
+        calls.length === 1 &&
+        calls[0]?.url.endsWith("/v2/upload") === true &&
+        calls[0]?.method === "POST" &&
+        calls[0]?.headers.authorization === "test-key" &&
+        calls[0]?.headers["content-type"] === "application/octet-stream" &&
+        Array.from(calls[0]?.bytes ?? []).join() === "1,2,3,4",
+      JSON.stringify({ status: ok.status, okBody, calls })
+    );
+
+    resetMock([]);
+    const bad = await POST(new Request("https://mcp.assemblyai.com/upload/x", { method: "POST", body }), ctx("bogus"));
+    assert("48. a bad token answers 401 without calling AssemblyAI", bad.status === 401 && calls.length === 0, String(bad.status));
+
+    resetMock([]);
+    const empty = await POST(new Request("https://mcp.assemblyai.com/upload/x", { method: "POST" }), ctx(uploadToken));
+    assert("48. an empty body answers 400 without calling AssemblyAI", empty.status === 400 && calls.length === 0, String(empty.status));
+
+    resetMock([jsonResponse(401, { error: "Invalid API key" })]);
+    const rejected = await POST(new Request("https://mcp.assemblyai.com/upload/x", { method: "POST", body }), ctx(uploadToken));
+    assert("48. AssemblyAI's 401 passes through as 401", rejected.status === 401, String(rejected.status));
+
+    resetMock([jsonResponse(503, { error: "unavailable" })]);
+    const down = await POST(new Request("https://mcp.assemblyai.com/upload/x", { method: "POST", body }), ctx(uploadToken));
+    assert("48. AssemblyAI's 5xx answers 502", down.status === 502, String(down.status));
+
+    const { MAX_UPLOAD_BYTES } = await import("./upload-token");
+    resetMock([]);
+    const declared = await POST(
+      new Request("https://mcp.assemblyai.com/upload/x", {
+        method: "POST",
+        body,
+        headers: { "Content-Length": String(MAX_UPLOAD_BYTES + 1) },
+      }),
+      ctx(uploadToken)
+    );
+    assert("48. a Content-Length over the limit answers 413 without calling AssemblyAI", declared.status === 413 && calls.length === 0, String(declared.status));
+
+    resetMock([]);
+    const chunk = new Uint8Array(1_000_000);
+    let sent = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (sent >= 20) return controller.close();
+        sent++;
+        controller.enqueue(chunk);
+      },
+    });
+    const streamed = await POST(
+      new Request("https://mcp.assemblyai.com/upload/x", { method: "POST", body: stream, duplex: "half" } as RequestInit),
+      ctx(uploadToken)
+    );
+    assert(
+      "48. a body without Content-Length that passes the limit answers 413 and stops reading",
+      streamed.status === 413 && calls.length === 0 && sent < 20,
+      JSON.stringify({ status: streamed.status, sent })
+    );
+
+    resetMock([
+      () => {
+        throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
+      },
+    ]);
+    const hung = await POST(new Request("https://mcp.assemblyai.com/upload/x", { method: "POST", body }), ctx(uploadToken));
+    assert("48. an upstream timeout answers 502", hung.status === 502, String(hung.status));
+
+    // With uploads turned off, even a once-valid link gets a 404 that doesn't point at the missing tool.
+    delete process.env.UPLOAD_TOKEN_SECRET;
+    resetMock([]);
+    const off = await POST(new Request("https://mcp.assemblyai.com/upload/x", { method: "POST", body }), ctx(uploadToken));
+    const offBody = await off.text();
+    assert(
+      "48. uploads turned off: 404, no mention of create_upload_url, nothing forwarded",
+      off.status === 404 && !offBody.includes("create_upload_url") && calls.length === 0,
+      `${off.status} ${offBody}`
+    );
+  }
+  delete process.env.UPLOAD_TOKEN_SECRET;
+
+  // 49. get_transcript drops per-word timestamps unless include_words is set
+  {
+    const record = {
+      id: "txn-w",
+      status: "completed",
+      text: "hello there.",
+      utterances: [
+        {
+          speaker: "A",
+          text: "hello there.",
+          start: 0,
+          end: 900,
+          words: [
+            { text: "hello", start: 0, end: 400, confidence: 0.9, speaker: "A" },
+            { text: "there.", start: 450, end: 900, confidence: 0.9, speaker: "A" },
+          ],
+        },
+      ],
+    };
+    await withClientServer(async (client) => {
+      resetMock([jsonResponse(200, record), jsonResponse(200, record)]);
+      const plain = await callTool(client, "get_transcript", { transcript_id: "txn-w" }, "k");
+      const speakers = (plain.structuredContent as { speakers?: Array<Record<string, unknown>> }).speakers ?? [];
+      const plainText = plain.content?.[0]?.text ?? "";
+      assert(
+        "49. by default, utterances keep text and timing but no words",
+        speakers.length === 1 && speakers[0]?.text === "hello there." && !("words" in (speakers[0] ?? {})) && !plainText.includes("--- words"),
+        JSON.stringify(plain.structuredContent)
+      );
+      const full = await callTool(client, "get_transcript", { transcript_id: "txn-w", include_words: true }, "k");
+      const fullSpeakers = (full.structuredContent as { speakers?: Array<{ words?: unknown[] }> }).speakers ?? [];
+      const fullText = full.content?.[0]?.text ?? "";
+      assert(
+        "49. include_words returns the words and renders a words section",
+        fullSpeakers[0]?.words?.length === 2 && fullText.includes("--- words") && fullText.includes("[A] 450–900: there."),
+        fullText
+      );
+    });
+  }
+
+  // 50. include_words falls back to top-level words when there are no utterances
+  {
+    const record = {
+      id: "txn-nw",
+      status: "completed",
+      text: "hello there.",
+      utterances: null,
+      words: [
+        { text: "hello", start: 0, end: 400, confidence: 0.9, speaker: null },
+        { text: "there.", start: 450, end: 900, confidence: 0.9, speaker: null },
+      ],
+    };
+    await withClientServer(async (client) => {
+      resetMock([jsonResponse(200, record), jsonResponse(200, record)]);
+      const plain = await callTool(client, "get_transcript", { transcript_id: "txn-nw" }, "k");
+      assert(
+        "50. without include_words, top-level words stay out",
+        !("words" in (plain.structuredContent ?? {})) && !(plain.content?.[0]?.text ?? "").includes("--- words"),
+        JSON.stringify(plain.structuredContent)
+      );
+      const full = await callTool(client, "get_transcript", { transcript_id: "txn-nw", include_words: true }, "k");
+      const words = (full.structuredContent as { words?: unknown[] }).words ?? [];
+      const fullText = full.content?.[0]?.text ?? "";
+      assert(
+        "50. include_words returns top-level words when speaker_labels is off",
+        words.length === 2 && fullText.includes("--- words") && fullText.includes("450–900: there.") && !fullText.includes("[null]"),
+        fullText
+      );
+    });
+  }
+
+  // 51. publicOrigin takes the first x-forwarded-host entry
+  {
+    const { publicOrigin } = await import("./origin");
+    assert(
+      "51. a multi-proxy x-forwarded-host uses the first host",
+      publicOrigin("mcp.assemblyai.com, edge.internal", "edge.internal") === "https://mcp.assemblyai.com"
+    );
+    assert("51. falls back to host, then the production host", publicOrigin(undefined, "localhost:3000") === "http://localhost:3000" && publicOrigin(null, null) === "https://mcp.assemblyai.com");
+    assert("51. localhost.example.com gets https", publicOrigin("localhost.example.com", null) === "https://localhost.example.com");
+    assert(
+      "51. a host with shell or URL syntax falls back to production",
+      publicOrigin("example.com$(printf injected >&2)", null) === "https://mcp.assemblyai.com" &&
+        publicOrigin("evil.com/x?", null) === "https://mcp.assemblyai.com" &&
+        publicOrigin(null, "a'b.com") === "https://mcp.assemblyai.com"
+    );
+    assert("51. IPv6 and ports still work", publicOrigin(null, "[::1]:3000") === "https://[::1]:3000" && publicOrigin("127.0.0.1:3001", null) === "http://127.0.0.1:3001");
+  }
+
+  // 52. ChatGPT file uploads: submit_transcript names `file` in openai/fileParams with the
   //     schema OpenAI's tool scan requires, and sends its download_url as the audio_url
   await withClientServer(async (client) => {
     const { tools } = await client.listTools();
@@ -1346,12 +1642,12 @@ async function run() {
     };
     const file = schema?.properties?.file;
     assert(
-      "45. submit_transcript lists file in _meta openai/fileParams",
+      "52. submit_transcript lists file in _meta openai/fileParams",
       JSON.stringify(tool?._meta?.["openai/fileParams"]) === JSON.stringify(["file"]),
       JSON.stringify(tool?._meta)
     );
     assert(
-      "45. file declares all four properties and requires only download_url and file_id",
+      "52. file declares all four properties and requires only download_url and file_id",
       file?.type === "object" &&
         JSON.stringify(Object.keys(file.properties ?? {}).sort()) ===
           JSON.stringify(["download_url", "file_id", "file_name", "mime_type"]) &&
@@ -1359,7 +1655,7 @@ async function run() {
       JSON.stringify(file)
     );
     assert(
-      "45. neither audio_url nor file is required by the schema",
+      "52. neither audio_url nor file is required by the schema",
       !(schema?.required ?? []).includes("audio_url") && !(schema?.required ?? []).includes("file"),
       JSON.stringify(schema?.required)
     );
@@ -1374,7 +1670,7 @@ async function run() {
     );
     const sent = JSON.parse(calls[0]?.body ?? "{}");
     assert(
-      "45. a ChatGPT file is submitted with its download_url as audio_url, and no file field",
+      "52. a ChatGPT file is submitted with its download_url as audio_url, and no file field",
       ok.isError !== true && ok.structuredContent?.transcript_id === "txn-file" && sent.audio_url === download && !("file" in sent),
       JSON.stringify({ ok, sent })
     );
@@ -1387,7 +1683,7 @@ async function run() {
       "k"
     );
     assert(
-      "45. an empty audio_url next to a file uses the file",
+      "52. an empty audio_url next to a file uses the file",
       emptyUrl.isError !== true && JSON.parse(calls[0]?.body ?? "{}").audio_url === download,
       JSON.stringify({ emptyUrl, calls })
     );
@@ -1399,12 +1695,12 @@ async function run() {
       { audio_url: "https://example.com/x.mp3", file: { download_url: download, file_id: "file-abc" } },
       "k"
     );
-    assert("45. audio_url and file together are refused without calling AssemblyAI", both.isError === true && calls.length === 0);
+    assert("52. audio_url and file together are refused without calling AssemblyAI", both.isError === true && calls.length === 0);
 
     resetMock([]);
     const neither = await callTool(client, "submit_transcript", {}, "k");
     assert(
-      "45. no source at all is refused without calling AssemblyAI",
+      "52. no source at all is refused without calling AssemblyAI",
       neither.isError === true && calls.length === 0 && (neither.content?.[0]?.text ?? "").includes("audio_url"),
       JSON.stringify(neither)
     );
@@ -1416,7 +1712,7 @@ async function run() {
       { file: { download_url: "file:///etc/passwd", file_id: "file-abc" } },
       "k"
     );
-    assert("45. a file whose download_url is not http(s) is refused", badFile.isError === true && calls.length === 0);
+    assert("52. a file whose download_url is not http(s) is refused", badFile.isError === true && calls.length === 0);
   });
 
   globalThis.fetch = originalFetch;
