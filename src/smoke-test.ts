@@ -54,6 +54,7 @@
  *   49. get_transcript drops per-word timestamps unless include_words is set
  *   50. include_words falls back to top-level words when there are no utterances
  *   51. publicOrigin takes the first x-forwarded-host entry
+ *   52. ChatGPT files: openai/fileParams + file schema; download_url is sent as audio_url
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -1629,6 +1630,167 @@ async function run() {
     );
     assert("51. IPv6 and ports still work", publicOrigin(null, "[::1]:3000") === "https://[::1]:3000" && publicOrigin("127.0.0.1:3001", null) === "http://127.0.0.1:3001");
   }
+
+  // 52. ChatGPT file uploads: submit_transcript names `file` in openai/fileParams with the
+  //     schema OpenAI's tool scan requires, and sends its download_url as the audio_url
+  await withClientServer(async (client) => {
+    const { tools } = await client.listTools();
+    const tool = tools.find((t) => t.name === "submit_transcript");
+    const schema = tool?.inputSchema as {
+      required?: string[];
+      properties?: Record<string, { type?: string; properties?: Record<string, unknown>; required?: string[] }>;
+    };
+    const file = schema?.properties?.file;
+    assert(
+      "52. submit_transcript lists file in _meta openai/fileParams",
+      JSON.stringify(tool?._meta?.["openai/fileParams"]) === JSON.stringify(["file"]),
+      JSON.stringify(tool?._meta)
+    );
+    assert(
+      "52. file declares all four properties and requires only download_url and file_id",
+      file?.type === "object" &&
+        JSON.stringify(Object.keys(file.properties ?? {}).sort()) ===
+          JSON.stringify(["download_url", "file_id", "file_name", "mime_type"]) &&
+        JSON.stringify([...(file.required ?? [])].sort()) === JSON.stringify(["download_url", "file_id"]),
+      JSON.stringify(file)
+    );
+    assert(
+      "52. neither audio_url nor file is required by the schema",
+      !(schema?.required ?? []).includes("audio_url") && !(schema?.required ?? []).includes("file"),
+      JSON.stringify(schema?.required)
+    );
+
+    const download = "https://files.oaiusercontent.com/file-abc?sig=xyz";
+    resetMock([jsonResponse(200, { id: "txn-file", status: "queued" })]);
+    const ok = await callTool(
+      client,
+      "submit_transcript",
+      { file: { download_url: download, file_id: "file-abc", mime_type: "audio/mpeg", file_name: "call.mp3" } },
+      "k"
+    );
+    const sent = JSON.parse(calls[0]?.body ?? "{}");
+    assert(
+      "52. a ChatGPT file is submitted with its download_url as audio_url, and no file field",
+      ok.isError !== true && ok.structuredContent?.transcript_id === "txn-file" && sent.audio_url === download && !("file" in sent),
+      JSON.stringify({ ok, sent })
+    );
+
+    resetMock([jsonResponse(200, { id: "txn-file2", status: "queued" })]);
+    const emptyUrl = await callTool(
+      client,
+      "submit_transcript",
+      { audio_url: "", file: { download_url: download, file_id: "file-abc" } },
+      "k"
+    );
+    assert(
+      "52. an empty audio_url next to a file uses the file",
+      emptyUrl.isError !== true && JSON.parse(calls[0]?.body ?? "{}").audio_url === download,
+      JSON.stringify({ emptyUrl, calls })
+    );
+
+    resetMock([]);
+    const both = await callTool(
+      client,
+      "submit_transcript",
+      { audio_url: "https://example.com/x.mp3", file: { download_url: download, file_id: "file-abc" } },
+      "k"
+    );
+    assert("52. audio_url and file together are refused without calling AssemblyAI", both.isError === true && calls.length === 0);
+
+    resetMock([]);
+    const neither = await callTool(client, "submit_transcript", {}, "k");
+    assert(
+      "52. no source at all is refused without calling AssemblyAI",
+      neither.isError === true && calls.length === 0 && (neither.content?.[0]?.text ?? "").includes("audio_url"),
+      JSON.stringify(neither)
+    );
+
+    resetMock([]);
+    const badFile = await callTool(
+      client,
+      "submit_transcript",
+      { file: { download_url: "file:///etc/passwd", file_id: "file-abc" } },
+      "k"
+    );
+    assert("52. a file whose download_url is not http(s) is refused", badFile.isError === true && calls.length === 0);
+
+    // ChatGPT may send null or {} when nothing is attached: the public URL must still work.
+    for (const [label, emptyFile] of [["null", null], ["{}", {}], ['{download_url: ""}', { download_url: "", file_id: "" }]] as const) {
+      resetMock([jsonResponse(200, { id: "txn-empty", status: "queued" })]);
+      const res = await callTool(client, "submit_transcript", { audio_url: "https://example.com/a.mp3", file: emptyFile }, "k");
+      const sentBody = JSON.parse(calls[0]?.body ?? "{}");
+      assert(
+        `52. file: ${label} next to a public audio_url is ignored`,
+        res.isError !== true && sentBody.audio_url === "https://example.com/a.mp3" && !("file" in sentBody),
+        JSON.stringify(res)
+      );
+    }
+
+    // A model may echo the attachment's name or link into audio_url: the file wins.
+    for (const [label, echo] of [["its file name", "call.mp3"], ["its download_url", download]] as const) {
+      resetMock([jsonResponse(200, { id: "txn-echo", status: "queued" })]);
+      const res = await callTool(
+        client,
+        "submit_transcript",
+        { audio_url: echo, file: { download_url: download, file_id: "file-abc", file_name: "call.mp3" } },
+        "k"
+      );
+      assert(
+        `52. audio_url set to ${label} next to a file uses the file`,
+        res.isError !== true && JSON.parse(calls[0]?.body ?? "{}").audio_url === download,
+        JSON.stringify(res)
+      );
+    }
+
+    // Refusals log what the client sent and why.
+    const lines: string[] = [];
+    const originalLog = console.log;
+    console.log = (line: string) => lines.push(line);
+    try {
+      resetMock([]);
+      await callTool(client, "submit_transcript", {}, "k");
+      await callTool(
+        client,
+        "submit_transcript",
+        { audio_url: "https://example.com/x.mp3", file: { download_url: download, file_id: "file-abc" } },
+        "k"
+      );
+      await callTool(client, "submit_transcript", { file: { download_url: "file:///etc/passwd", file_id: "f" } }, "k");
+      await callTool(client, "submit_transcript", { file: null }, "k");
+      // A caller-supplied _empty must never reach the logs.
+      await callTool(
+        client,
+        "submit_transcript",
+        { file: { download_url: "file:///x", file_id: "f", _empty: "https://leak.example.com/secret?sig=1" } },
+        "k"
+      );
+      await callTool(client, "submit_transcript", { file: { download_url: "", file_id: "f", _empty: "LEAK-2" } }, "k");
+    } finally {
+      console.log = originalLog;
+    }
+    const events = lines
+      .map((l) => { try { return JSON.parse(l); } catch { return {}; } })
+      .filter((e) => e.event === "bad_audio_url")
+      .map((e) => `${e.sent}/${e.file_param}/${e.reason}`);
+    assert(
+      "52. bad_audio_url logs sent, file_param and reason (incl. an empty file from ChatGPT)",
+      JSON.stringify(events) ===
+        JSON.stringify([
+          "none/absent/none",
+          "both/set/conflict",
+          "file/set/bad_url",
+          "none/null/none",
+          "file/set/bad_url",
+          "none/no_download_url/none",
+        ]),
+      JSON.stringify(events)
+    );
+    assert(
+      "52. a caller-supplied _empty value never reaches the logs",
+      !lines.join("\n").includes("leak.example.com") && !lines.join("\n").includes("LEAK-2"),
+      lines.filter((l) => l.includes("LEAK") || l.includes("leak")).join("\n")
+    );
+  });
 
   globalThis.fetch = originalFetch;
 
