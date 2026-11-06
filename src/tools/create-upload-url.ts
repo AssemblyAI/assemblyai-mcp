@@ -22,9 +22,12 @@ export function registerCreateUploadUrl(server: McpServer): void {
         "(you need shell access, e.g. in Claude Code, Cursor or Codex); it prints JSON with an `upload_url`. " +
         "Then call `submit_transcript` with that printed `upload_url` as `audio_url` (not the link itself). The file goes to the user's " +
         "private AssemblyAI storage, not a public host. Files up to 4.5 MB; the link expires in 10 minutes.",
-      // Only mints a link; nothing changes until the agent uploads to it.
+      // Not read-only: it issues a credential that can write files into the user's
+      // AssemblyAI storage, so clients should ask the user before calling it.
       annotations: {
-        readOnlyHint: true,
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
         openWorldHint: false,
       },
       inputSchema: {},

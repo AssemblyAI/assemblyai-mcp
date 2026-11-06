@@ -1363,15 +1363,15 @@ async function run() {
     );
   });
 
-  // 46. create_upload_url returns a link whose token carries the caller's key, read-only annotated
+  // 46. create_upload_url returns a link whose token carries the caller's key, not read-only
   process.env.UPLOAD_TOKEN_SECRET = "test-secret-" + "s".repeat(32);
   let uploadToken = "";
   await withClientServer(async (client) => {
     const { tools } = await client.listTools();
     const tool = tools.find((t) => t.name === "create_upload_url");
     assert(
-      "46. create_upload_url is offered, titled and read-only",
-      Boolean(tool?.title) && tool?.annotations?.readOnlyHint === true,
+      "46. create_upload_url is offered, titled, not read-only and not destructive",
+      Boolean(tool?.title) && tool?.annotations?.readOnlyHint === false && tool?.annotations?.destructiveHint === false,
       JSON.stringify(tool)
     );
     assert(
