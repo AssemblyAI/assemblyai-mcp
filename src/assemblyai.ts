@@ -106,6 +106,9 @@ export interface TranscriptRecord {
   id: string;
   status: "queued" | "processing" | "completed" | "error";
   text?: string;
+  language_code?: string | null;
+  language_confidence?: number | null;
+  language_detection?: boolean | null;
   /** Which model actually transcribed the audio (e.g. universal-2 after a language fallback). */
   speech_model_used?: string;
   audio_duration?: number;
