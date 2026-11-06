@@ -1757,6 +1757,14 @@ async function run() {
       );
       await callTool(client, "submit_transcript", { file: { download_url: "file:///etc/passwd", file_id: "f" } }, "k");
       await callTool(client, "submit_transcript", { file: null }, "k");
+      // A caller-supplied _empty must never reach the logs.
+      await callTool(
+        client,
+        "submit_transcript",
+        { file: { download_url: "file:///x", file_id: "f", _empty: "https://leak.example.com/secret?sig=1" } },
+        "k"
+      );
+      await callTool(client, "submit_transcript", { file: { download_url: "", file_id: "f", _empty: "LEAK-2" } }, "k");
     } finally {
       console.log = originalLog;
     }
@@ -1767,8 +1775,20 @@ async function run() {
     assert(
       "52. bad_audio_url logs sent, file_param and reason (incl. an empty file from ChatGPT)",
       JSON.stringify(events) ===
-        JSON.stringify(["none/absent/none", "both/set/conflict", "file/set/bad_url", "none/null/none"]),
+        JSON.stringify([
+          "none/absent/none",
+          "both/set/conflict",
+          "file/set/bad_url",
+          "none/null/none",
+          "file/set/bad_url",
+          "none/no_download_url/none",
+        ]),
       JSON.stringify(events)
+    );
+    assert(
+      "52. a caller-supplied _empty value never reaches the logs",
+      !lines.join("\n").includes("leak.example.com") && !lines.join("\n").includes("LEAK-2"),
+      lines.filter((l) => l.includes("LEAK") || l.includes("leak")).join("\n")
     );
   });
 

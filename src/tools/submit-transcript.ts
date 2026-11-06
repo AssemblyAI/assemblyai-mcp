@@ -117,7 +117,8 @@ export function registerSubmitTranscript(server: McpServer): void {
           ? "For a LOCAL file, first call `create_upload_url` and run its curl command, then pass the " +
             "`upload_url` that the command prints here as `audio_url`. "
           : "") +
-        "In ChatGPT only, a file the user attached can go in `file` instead (never both). " +
+        "In ChatGPT only, a file the user attached can go in `file` instead. If both are set, the file is " +
+        "used, unless `audio_url` is a different http(s) URL: then the call is refused. " +
         "Returns immediately with a `transcript_id` and the current status (usually `queued`). " +
         "The caller MUST then call `get_transcript` with the returned id in a loop " +
         "(every ~3 seconds) until status becomes `completed` or `error`. " +
@@ -146,7 +147,7 @@ export function registerSubmitTranscript(server: McpServer): void {
                 ? ", or, for a local file, the upload_url printed by create_upload_url's curl command " +
                   "(not the /upload/ link itself)."
                 : ".") +
-              " Omit when `file` is set."
+              " Omit when `file` is set; if both are set, the file is used."
           ),
         file: chatgptFileParam,
         speaker_labels: z
@@ -435,7 +436,15 @@ export function registerSubmitTranscript(server: McpServer): void {
       // What the client sent, for the logs: which sources, and whether ChatGPT
       // sent an empty file param (absent / set / null / no_download_url).
       const sent = fileUrl ? (args.audio_url ? "both" : "file") : args.audio_url ? "audio_url" : "none";
-      const fileParam = !args.file ? "absent" : typeof args.file._empty === "string" ? args.file._empty : "set";
+      // Fixed categories only: `file` is a loose object, so a caller can put any
+      // value in `_empty`. Never log it; a file with a download_url is "set".
+      const fileParam = !args.file
+        ? "absent"
+        : fileUrl
+          ? "set"
+          : args.file._empty === "null"
+            ? "null"
+            : "no_download_url";
       let source: "audio_url" | "file";
       try {
         ({ url: audioUrl, source } = pickAudioUrl(args.audio_url, fileUrl));
