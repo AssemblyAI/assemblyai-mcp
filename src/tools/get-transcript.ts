@@ -121,6 +121,9 @@ interface ShapedTranscript {
   transcript_id: string;
   status: TranscriptRecord["status"];
   text?: string;
+  language_code?: string;
+  language_confidence?: number;
+  language_detection?: boolean;
   speech_model_used?: string;
   audio_duration?: number;
   speakers?: TranslatedUtterance[];
@@ -146,6 +149,9 @@ function shape(record: TranscriptRecord, redactedAudioUrl?: string): ShapedTrans
     status: record.status,
   };
   if (record.text !== undefined) out.text = record.text;
+  if (record.language_code != null) out.language_code = record.language_code;
+  if (record.language_confidence != null) out.language_confidence = record.language_confidence;
+  if (record.language_detection != null) out.language_detection = record.language_detection;
   if (record.speech_model_used !== undefined) out.speech_model_used = record.speech_model_used;
   if (record.audio_duration !== undefined) out.audio_duration = record.audio_duration;
   // != null (not !== undefined): an explicit `null` from the API means
@@ -184,6 +190,10 @@ function formatTranscript(s: ShapedTranscript): string {
 
   const lines: string[] = [];
   lines.push(`status=completed transcript_id=${s.transcript_id}${s.speech_model_used ? ` speech_model_used=${s.speech_model_used}` : ""}${s.audio_duration !== undefined ? ` audio_duration=${s.audio_duration}s` : ""}`);
+
+  if (s.language_code !== undefined) lines.push(`language_code=${s.language_code}`);
+  if (s.language_confidence !== undefined) lines.push(`language_confidence=${s.language_confidence}`);
+  if (s.language_detection !== undefined) lines.push(`language_detection=${s.language_detection}`);
 
   if (s.text) {
     lines.push("");

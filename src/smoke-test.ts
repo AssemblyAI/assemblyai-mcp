@@ -297,6 +297,35 @@ async function run() {
     );
   });
 
+  // Language metadata must reach both structured and text-only MCP clients.
+  for (const languageFields of [
+    { language_code: "es", language_confidence: 0.98, language_detection: true },
+    { language_code: "en", language_confidence: 0, language_detection: false },
+    {},
+    { language_code: null, language_confidence: null, language_detection: null },
+  ]) {
+    await withClientServer(async (client) => {
+      resetMock([jsonResponse(200, {
+        id: "txn-language",
+        status: "completed",
+        text: "hello",
+        ...languageFields,
+      })]);
+      const result = await callTool(client, "get_transcript", { transcript_id: "txn-language" }, "k");
+      const text = result.content?.[0]?.text ?? "";
+      for (const key of ["language_code", "language_confidence", "language_detection"] as const) {
+        const value = languageFields[key];
+        assert(
+          `get_transcript preserves ${key}=${value} in structured and readable output`,
+          value == null
+            ? !(key in (result.structuredContent ?? {})) && !text.includes(`${key}=`)
+            : result.structuredContent?.[key] === value && text.includes(`${key}=${value}`),
+          JSON.stringify(result)
+        );
+      }
+    });
+  }
+
   // 6. get_transcript while processing
   await withClientServer(async (client) => {
     resetMock([jsonResponse(200, { id: "txn-2", status: "processing" })]);
