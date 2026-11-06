@@ -22,7 +22,10 @@ const chatgptFileSchema = z
     mime_type: z.string().optional(),
     file_name: z.string().optional(),
   })
-  .describe("An audio or video file the user attached in ChatGPT. ChatGPT fills this in.");
+  .describe(
+    "ChatGPT only: a file the user attached in ChatGPT, filled in by ChatGPT. " +
+      "Other clients: do not set this; pass a public URL in `audio_url`.",
+  );
 
 function validateAudioUrl(audioUrl: string): void {
   let parsed: URL;
@@ -36,7 +39,7 @@ function validateAudioUrl(audioUrl: string): void {
   }
 }
 
-/** Exactly one source: a URL, or a file attached in ChatGPT. */
+/** Exactly one source: a URL, or (in ChatGPT only) an attached file. */
 function pickAudioUrl(audioUrl: string | undefined, fileUrl: string | undefined): string {
   if (audioUrl && fileUrl) {
     throw new Error("Pass either audio_url or file, not both.");
@@ -44,7 +47,10 @@ function pickAudioUrl(audioUrl: string | undefined, fileUrl: string | undefined)
   // ||, not ??: models often fill an unused optional param with "".
   const url = audioUrl || fileUrl;
   if (!url) {
-    throw new Error("Pass audio_url (a public http(s) URL) or file (a file attached in ChatGPT).");
+    throw new Error(
+      "Pass audio_url: a public http(s) URL to the audio or video. " +
+        "(In ChatGPT, an attached file goes in file.)",
+    );
   }
   return url;
 }
@@ -55,8 +61,8 @@ export function registerSubmitTranscript(server: McpServer): void {
     {
       title: "Submit AssemblyAI Transcript",
       description:
-        "Submit a public audio or video URL, or a file the user attached in ChatGPT, to AssemblyAI " +
-        "for transcription. Pass exactly one of `audio_url` or `file`. " +
+        "Submit a public audio or video URL to AssemblyAI for transcription: pass it in `audio_url`. " +
+        "In ChatGPT only, a file the user attached can go in `file` instead (never both). " +
         "Returns immediately with a `transcript_id` and the current status (usually `queued`). " +
         "The caller MUST then call `get_transcript` with the returned id in a loop " +
         "(every ~3 seconds) until status becomes `completed` or `error`. " +
