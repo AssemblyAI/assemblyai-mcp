@@ -18,7 +18,7 @@ export function GET(req: Request) {
       authorization_servers: [OAUTH_ISSUER],
       scopes_supported: OAUTH_SCOPES,
       bearer_methods_supported: ["header"],
-      resource_documentation: "https://www.assemblyai.com/docs/api-reference/overview",
+      resource_documentation: "https://www.assemblyai.com/docs/mcp-server",
     },
     {
       headers: { "Cache-Control": "public, max-age=3600" },

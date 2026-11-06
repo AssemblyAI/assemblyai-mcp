@@ -16,6 +16,11 @@ Built with Next.js 16 + `mcp-handler` + the official
 
 ## Quickstart
 
+AssemblyAI hosts it at **`https://mcp.assemblyai.com/mcp`**. It's listed in the
+official [MCP Registry](https://registry.modelcontextprotocol.io/v0.1/servers?search=com.assemblyai/mcp)
+as `com.assemblyai/mcp`. Setup for Claude, Cursor, VS Code and other clients:
+[assemblyai.com/docs/mcp-server](https://www.assemblyai.com/docs/mcp-server).
+
 **Sign in with AssemblyAI:** add the server's `/mcp` endpoint with no
 headers. The client opens AssemblyAI's sign-in and consent page, and the
 server uses an API key it gets for that connection; nothing to copy or
@@ -23,7 +28,7 @@ paste. (This works against AssemblyAI's hosted deployment; a self-hosted
 copy uses API keys, see [Auth](#auth).)
 
 ```bash
-claude mcp add --transport http assemblyai https://<host>/mcp
+claude mcp add --transport http assemblyai https://mcp.assemblyai.com/mcp
 ```
 
 **With an API key:** point your MCP client at the `/mcp` endpoint with your
@@ -32,7 +37,7 @@ AssemblyAI API key as the Bearer token.
 **Claude Code**
 
 ```bash
-claude mcp add --transport http assemblyai https://<host>/mcp \
+claude mcp add --transport http assemblyai https://mcp.assemblyai.com/mcp \
   --header "Authorization: Bearer $ASSEMBLYAI_API_KEY"
 ```
 
@@ -42,14 +47,14 @@ claude mcp add --transport http assemblyai https://<host>/mcp \
 {
   "mcpServers": {
     "assemblyai": {
-      "url": "https://<host>/mcp",
+      "url": "https://mcp.assemblyai.com/mcp",
       "headers": { "Authorization": "Bearer <ASSEMBLYAI_API_KEY>" }
     }
   }
 }
 ```
 
-No hosted instance handy? `npm install && npm run dev` serves it at
+Running your own copy? `npm install && npm run dev` serves it at
 `http://localhost:3000/mcp` (see [Local dev](#local-dev)).
 
 Then prompt the agent, e.g. *"transcribe this audio file and summarize it:
@@ -60,10 +65,11 @@ https://assembly.ai/wildfires.mp3"*.
 | Tool | Purpose |
 |---|---|
 | `submit_transcript(audio_url, ...)` | Start an async transcription of a public audio/video URL. Returns `{ transcript_id, status }` immediately. |
-| `get_transcript(transcript_id)` | Fetch the current state; full results once `status` is `completed`. Agents poll this ~every 3s. |
+| `get_transcript(transcript_id, include_words?)` | Fetch the current state; full results once `status` is `completed`. Agents poll this ~every 3s. Per-word timestamps only with `include_words: true`. |
 | `understand_transcript(transcript_id, speech_understanding)` | Run Speech Understanding on an already-completed transcript — translation, speaker identification, custom formatting, chaptered summarization, action items — without re-submitting the audio (LLM Gateway `/v1/understanding`). |
 | `summarize_transcript(transcript_id, style?, custom_prompt?)` | Freeform or custom-prompt summary of a completed transcript via the LLM Gateway. `style`: `bullets` (default), `paragraph`, `headline`, `action_items`, or `custom`. |
 | `delete_transcript(transcript_id)` | Permanently delete a transcript and its data. Irreversible — only on explicit user request. |
+| `create_upload_url()` | For a local file: returns a 10-minute link and a `curl` command. The agent uploads the file (up to 4.5 MB) and gets an `upload_url` to pass to `submit_transcript`. Only offered when `UPLOAD_TOKEN_SECRET` is set. |
 
 **Typical agent flow:** `submit_transcript` → poll `get_transcript` until
 `completed` → optionally `understand_transcript` / `summarize_transcript` →
@@ -153,6 +159,7 @@ keys only work against its own API.
 | `ASSEMBLYAI_OAUTH_EXCHANGE_ORIGIN` | `https://www.assemblyai.com` | Where access tokens are exchanged for API keys |
 | `ASSEMBLYAI_BASE_URL` | `https://api.assemblyai.com` | The AssemblyAI API |
 | `ASSEMBLYAI_LLM_GATEWAY_BASE_URL` | `https://llm-gateway.assemblyai.com` | The LLM Gateway |
+| `UPLOAD_TOKEN_SECRET` | unset | 32+ random characters. Encrypts the API key inside upload links; without it, `create_upload_url` is not offered. Rotating it invalidates open links. |
 
 The service token needs no setting: Vercel provides it to the deployment
 (`VERCEL_OIDC_TOKEN`), and `@vercel/oidc` reads it.
@@ -180,6 +187,9 @@ guarantee, all changes here are additive:
    `--- topics ---`, `--- highlights ---`, `--- unredacted_text ---`,
    `--- redacted_audio ---`, and `--- warnings ---`.
 4. **`structuredContent` is additive only** — new fields, never removed/renamed.
+   One exception: per-word timestamps (`speakers[].words`) were never part
+   of the declared shape and made up ~85% of every response, so they now
+   come back only with `include_words: true`.
 5. **Avoid deprecated AssemblyAI transcript params** (`auto_chapters`,
    `summarization`, `summary_model`, `summary_type`); use LLM Gateway instead.
    Mirror AssemblyAI's official MCP tool shapes where they exist.

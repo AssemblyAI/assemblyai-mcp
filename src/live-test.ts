@@ -98,9 +98,10 @@ async function run() {
 
   // 1. Tool discovery
   const tools = await client.listTools();
-  const names = tools.tools.map((t) => t.name).sort();
+  // create_upload_url only appears where UPLOAD_TOKEN_SECRET is set.
+  const names = tools.tools.map((t) => t.name).filter((n) => n !== "create_upload_url").sort();
   assert(
-    "1. tools/list exposes exactly the 5 tools",
+    "1. tools/list exposes the 5 transcript tools",
     JSON.stringify(names) ===
       JSON.stringify([
         "delete_transcript",
