@@ -28,32 +28,82 @@ const chatgptFileSchema = z
       "Other clients: do not set this; pass a public URL in `audio_url`.",
   );
 
-function validateAudioUrl(audioUrl: string): void {
-  let parsed: URL;
-  try {
-    parsed = new URL(audioUrl);
-  } catch {
-    throw new Error(`audio_url must be an http:// or https:// URL, got ${JSON.stringify(audioUrl)}`);
+/**
+ * ChatGPT may send `null` or `{}` (no download_url) when nothing is attached.
+ * Treat both as "no file" so a public audio_url still works, but mark them
+ * (`_empty`) so the logs show how often it happens. This is a preprocess step,
+ * not `.nullish()`: the published schema must stay a plain object, or OpenAI's
+ * tool scan rejects the file param.
+ */
+const chatgptFileParam = z.preprocess((value) => {
+  if (value === null) return { download_url: "", file_id: "", _empty: "null" };
+  if (typeof value === "object" && !Array.isArray(value)) {
+    const file = value as { download_url?: unknown; file_id?: unknown };
+    if (file.download_url === undefined || file.download_url === null || file.download_url === "") {
+      return {
+        ...file,
+        download_url: "",
+        file_id: typeof file.file_id === "string" ? file.file_id : "",
+        _empty: "no_download_url",
+      };
+    }
   }
-  if (!ALLOWED_SCHEMES.has(parsed.protocol) || !parsed.hostname) {
-    throw new Error(`audio_url must be an http:// or https:// URL, got ${JSON.stringify(audioUrl)}`);
+  return value;
+}, chatgptFileSchema.optional());
+
+/** A bad source: `reason` goes into the log so we can see how clients fail. */
+class AudioSourceError extends Error {
+  constructor(
+    message: string,
+    readonly reason: "none" | "conflict" | "bad_url",
+  ) {
+    super(message);
   }
 }
 
-/** Exactly one source: a URL, or (in ChatGPT only) an attached file. */
-function pickAudioUrl(audioUrl: string | undefined, fileUrl: string | undefined): string {
-  if (audioUrl && fileUrl) {
-    throw new Error("Pass either audio_url or file, not both.");
+function isHttpUrl(value: string): boolean {
+  try {
+    const parsed = new URL(value);
+    return ALLOWED_SCHEMES.has(parsed.protocol) && Boolean(parsed.hostname);
+  } catch {
+    return false;
   }
-  // ||, not ??: models often fill an unused optional param with "".
-  const url = audioUrl || fileUrl;
-  if (!url) {
-    throw new Error(
-      "Pass audio_url: a public http(s) URL to the audio or video. " +
-        "(In ChatGPT, an attached file goes in file.)",
+}
+
+function validateAudioUrl(audioUrl: string): void {
+  if (!isHttpUrl(audioUrl)) {
+    throw new AudioSourceError(
+      `audio_url must be an http:// or https:// URL, got ${JSON.stringify(audioUrl)}`,
+      "bad_url",
     );
   }
-  return url;
+}
+
+/**
+ * One source: a URL, or (in ChatGPT only) an attached file. When a file is
+ * attached, a model may also echo its name or link into audio_url; that is not
+ * a second source, so the file wins. Only two different http(s) URLs conflict.
+ */
+function pickAudioUrl(
+  audioUrl: string | undefined,
+  fileUrl: string | undefined,
+): { url: string; source: "audio_url" | "file" } {
+  if (fileUrl) {
+    // ||-style check: models often fill an unused optional param with "".
+    if (!audioUrl || audioUrl === fileUrl || !isHttpUrl(audioUrl)) {
+      return { url: fileUrl, source: "file" };
+    }
+    throw new AudioSourceError(
+      "audio_url and file point to different files. Pass only one of them.",
+      "conflict",
+    );
+  }
+  if (audioUrl) return { url: audioUrl, source: "audio_url" };
+  throw new AudioSourceError(
+    "Pass audio_url: a public http(s) URL to the audio or video. " +
+      "(In ChatGPT, an attached file goes in file.)",
+    "none",
+  );
 }
 
 export function registerSubmitTranscript(server: McpServer): void {
@@ -98,7 +148,7 @@ export function registerSubmitTranscript(server: McpServer): void {
                 : ".") +
               " Omit when `file` is set."
           ),
-        file: chatgptFileSchema.optional(),
+        file: chatgptFileParam,
         speaker_labels: z
           .boolean()
           .optional()
@@ -381,8 +431,14 @@ export function registerSubmitTranscript(server: McpServer): void {
       }
 
       let audioUrl: string;
+      const fileUrl = args.file?.download_url || undefined;
+      // What the client sent, for the logs: which sources, and whether ChatGPT
+      // sent an empty file param (absent / set / null / no_download_url).
+      const sent = fileUrl ? (args.audio_url ? "both" : "file") : args.audio_url ? "audio_url" : "none";
+      const fileParam = !args.file ? "absent" : typeof args.file._empty === "string" ? args.file._empty : "set";
+      let source: "audio_url" | "file";
       try {
-        audioUrl = pickAudioUrl(args.audio_url, args.file?.download_url);
+        ({ url: audioUrl, source } = pickAudioUrl(args.audio_url, fileUrl));
         validateAudioUrl(audioUrl);
       } catch (err) {
         log({
@@ -391,6 +447,9 @@ export function registerSubmitTranscript(server: McpServer): void {
           keyHash: keyHash(apiKey),
           latencyMs: Date.now() - start,
           status: "error",
+          sent,
+          file_param: fileParam,
+          reason: err instanceof AudioSourceError ? err.reason : "unknown",
         });
         throw err;
       }
@@ -410,6 +469,9 @@ export function registerSubmitTranscript(server: McpServer): void {
           transcript_id: record.id,
           status: "success",
           latencyMs: Date.now() - start,
+          sent,
+          file_param: fileParam,
+          source,
         });
         return {
           content: [
