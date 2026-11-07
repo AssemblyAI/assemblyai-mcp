@@ -15,8 +15,8 @@ export interface SuChapter {
 
 export interface SuActionItem {
   action_item: string;
-  quote: string;
-  timestamp: number;
+  quote?: string | null;
+  timestamp?: number | null;
 }
 
 export interface TranslatedUtterance {
@@ -53,7 +53,8 @@ export interface AutoHighlightsResult {
   results?: Array<{ count: number; rank: number; text: string }>;
 }
 
-export function formatMs(ms: number): string {
+export function formatMs(ms: number | null | undefined): string {
+  if (typeof ms !== "number" || !Number.isFinite(ms) || ms < 0) return "0:00";
   const totalSec = Math.floor(ms / 1000);
   const m = Math.floor(totalSec / 60);
   const s = totalSec % 60;
@@ -101,7 +102,19 @@ export function renderSuSummary(chapters: SuChapter[]): string[] {
 
 export function renderActionItems(items: SuActionItem[]): string[] {
   const lines = ["", "--- action_items ---"];
-  for (const i of items) lines.push(`- ${i.action_item} (quote: "${i.quote}" @ ${formatMs(i.timestamp)})`);
+  for (const i of items) {
+    const hasQuote = typeof i.quote === "string" && i.quote.length > 0;
+    const hasTimestamp = typeof i.timestamp === "number" && Number.isFinite(i.timestamp);
+    let details = "";
+    if (hasQuote && hasTimestamp) {
+      details = ` (quote: "${i.quote}" @ ${formatMs(i.timestamp)})`;
+    } else if (hasQuote) {
+      details = ` (quote: "${i.quote}")`;
+    } else if (hasTimestamp) {
+      details = ` (@ ${formatMs(i.timestamp)})`;
+    }
+    lines.push(`- ${i.action_item}${details}`);
+  }
   return lines;
 }
 

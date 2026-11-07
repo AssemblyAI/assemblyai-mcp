@@ -33,7 +33,7 @@
  *   28. understand_transcript 429 → rate-limit message; summarize_transcript description points here
  *   29. delete_transcript DELETEs to /v2/transcript/{id} and confirms with transcript_id + deleted: true
  *   30. delete_transcript 404 → already deleted or not found message
- *   31. renderSpeechUnderstanding: mapping-only custom_formatting, failed-feature marker, empty action_items note
+ *   31. renderSpeechUnderstanding: mapping-only custom_formatting, failed-feature marker, empty action_items note, optional quote/timestamp formatting
  *   32. submit_transcript rejects redact_pii_policies/redact_pii_sub without redact_pii, no fetch
  *   33. understand_transcript's /v1/understanding is not retried on 5xx (billable, non-idempotent)
  *   34. submit_transcript punctuate:false/format_text:false pass through explicitly
@@ -1109,6 +1109,55 @@ async function run() {
     assert(
       "31c. empty action_items.items renders header + (none found)",
       text.includes("--- action_items ---") && text.includes("(none found)"),
+      text
+    );
+  });
+
+  // 31d. action_items formatting tolerates optional/omitted quote and timestamp without undefined or NaN
+  await withClientServer(async (client) => {
+    resetMock([
+      jsonResponse(200, {
+        id: "txn-su-ai",
+        status: "completed",
+        text: "meeting transcript",
+        audio_duration: 60,
+        speech_understanding: {
+          response: {
+            action_items: {
+              status: "success",
+              items: [
+                {
+                  action_item: "Full item",
+                  quote: "We need this done",
+                  timestamp: 12000,
+                },
+                {
+                  action_item: "Quote only",
+                  quote: "Just do it",
+                },
+                {
+                  action_item: "Timestamp only",
+                  timestamp: 30000,
+                },
+                {
+                  action_item: "Bare item",
+                },
+              ],
+            },
+          },
+        },
+      }),
+    ]);
+    const result = await callTool(client, "get_transcript", { transcript_id: "txn-su-ai" }, "k");
+    const text = result.content?.[0]?.text ?? "";
+    assert(
+      "31d. action items render quote and timestamp safely without undefined or NaN",
+      text.includes("- Full item (quote: \"We need this done\" @ 0:12)") &&
+        text.includes("- Quote only (quote: \"Just do it\")") &&
+        text.includes("- Timestamp only (@ 0:30)") &&
+        text.includes("- Bare item") &&
+        !text.includes("undefined") &&
+        !text.includes("NaN"),
       text
     );
   });
