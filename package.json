@@ -16,18 +16,25 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "1.26.0",
+    "@modelcontextprotocol/sdk": "1.32.2",
     "@vercel/oidc": "4.0.1",
     "mcp-handler": "1.1.0",
-    "next": "16.3.4",
+    "next": "16.4.3",
     "react": "19.2.5",
     "react-dom": "19.2.5",
-    "zod": "4.5.4"
+    "zod": "4.6.7"
   },
   "devDependencies": {
     "@types/node": "24.12.2",
     "@types/react": "19.2.14",
-    "tsx": "4.21.0",
+    "tsx": "4.23.15",
     "typescript": "6.0.2"
+  },
+  "overrides": {
+    "mcp-handler": {
+      "@modelcontextprotocol/sdk": "$@modelcontextprotocol/sdk"
+    },
+    "zod": "$zod",
+    "@hono/node-server": "2.1.5"
   }
 }
