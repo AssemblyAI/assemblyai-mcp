@@ -3,6 +3,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import { submitTranscript } from "../assemblyai";
 import { log, keyHash } from "../log";
+import { publicOrigin } from "../origin";
 import { speechUnderstandingSchema } from "../speech-understanding-schema";
 import { handleToolError } from "../tool-errors";
 import { uploadsConfigured } from "../upload-token";
@@ -55,7 +56,7 @@ const chatgptFileParam = z.preprocess((value) => {
 class AudioSourceError extends Error {
   constructor(
     message: string,
-    readonly reason: "none" | "conflict" | "bad_url",
+    readonly reason: "none" | "conflict" | "bad_url" | "upload_link",
   ) {
     super(message);
   }
@@ -77,6 +78,36 @@ function validateAudioUrl(audioUrl: string): void {
       "bad_url",
     );
   }
+}
+
+const UPLOAD_LINK_PATH = /^\/upload\/[^/]+\/?$/;
+
+/**
+ * The link `create_upload_url` hands out receives files (POST/PUT); it is not
+ * where the file ends up. A model that skips the curl step, or passes that link
+ * instead of the printed `upload_url`, would make AssemblyAI GET it: a slow,
+ * vague download failure, and the token (it holds the encrypted API key) saved
+ * in the transcript record. Refuse it on our own hosts.
+ */
+function isOwnUploadLink(audioUrl: string, ownHosts: ReadonlySet<string>): boolean {
+  try {
+    const parsed = new URL(audioUrl);
+    return ownHosts.has(parsed.host.toLowerCase()) && UPLOAD_LINK_PATH.test(parsed.pathname);
+  } catch {
+    return false;
+  }
+}
+
+type Headers = Record<string, string | string[] | undefined> | undefined;
+
+function header(headers: Headers, name: string): string | undefined {
+  const value = headers?.[name];
+  return Array.isArray(value) ? value[0] : value;
+}
+
+function ownHostsOf(headers: Headers): Set<string> {
+  const requestHost = new URL(publicOrigin(header(headers, "x-forwarded-host"), header(headers, "host"))).host;
+  return new Set(["mcp.assemblyai.com", requestHost.toLowerCase()]);
 }
 
 /**
@@ -449,6 +480,15 @@ export function registerSubmitTranscript(server: McpServer): void {
       try {
         ({ url: audioUrl, source } = pickAudioUrl(args.audio_url, fileUrl));
         validateAudioUrl(audioUrl);
+        if (source === "audio_url" && isOwnUploadLink(audioUrl, ownHostsOf(extra.requestInfo?.headers))) {
+          // Do not echo the link: its token can upload into the user's account.
+          throw new AudioSourceError(
+            "audio_url is the upload link from create_upload_url, not the uploaded file. " +
+              "Run the curl command it gave you with the file path, then pass the `upload_url` " +
+              "that the command prints as audio_url.",
+            "upload_link",
+          );
+        }
       } catch (err) {
         log({
           event: "bad_audio_url",

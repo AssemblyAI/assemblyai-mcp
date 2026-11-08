@@ -3,12 +3,32 @@ type LogEvent = Record<string, unknown> & {
   level?: "info" | "warn" | "error";
 };
 
+/** Longest string kept per log field. A caller controls some values (a bad
+ * transcript_id can be megabytes); one request must not make one huge log line. */
+export const MAX_LOG_FIELD_CHARS = 256;
+
+/** Strings over the limit are cut, with the number of dropped characters. */
+export function capForLog(value: unknown, depth = 0): unknown {
+  if (typeof value === "string") {
+    return value.length > MAX_LOG_FIELD_CHARS
+      ? `${value.slice(0, MAX_LOG_FIELD_CHARS)}…[+${value.length - MAX_LOG_FIELD_CHARS} chars]`
+      : value;
+  }
+  if (depth >= 3 || value === null || typeof value !== "object") return value;
+  if (Array.isArray(value)) return value.map((item) => capForLog(item, depth + 1));
+  return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, capForLog(v, depth + 1)]));
+}
+
+function capFields(event: Record<string, unknown>): Record<string, unknown> {
+  return capForLog(event) as Record<string, unknown>;
+}
+
 export function log(event: LogEvent) {
   console.log(
     JSON.stringify({
       timestamp: new Date().toISOString(),
       level: event.level || "info",
-      ...event,
+      ...capFields(event),
     })
   );
 }
@@ -31,10 +51,10 @@ export function logError(event: Record<string, unknown>, error: unknown) {
     JSON.stringify({
       timestamp: new Date().toISOString(),
       level: "error",
-      ...event,
+      ...capFields(event),
       error: {
         name: err.name,
-        message: scrubForLog(err.message),
+        message: capForLog(scrubForLog(err.message)),
         stack: scrubForLog(err.stack),
       },
     })

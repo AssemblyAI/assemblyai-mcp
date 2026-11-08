@@ -1,5 +1,6 @@
 import { createMcpHandler, withMcpAuth } from "mcp-handler";
 
+import { withJsonBodyCheck } from "../../../src/json-body";
 import { RESOURCE_METADATA_PATH, withOAuthExchange } from "../../../src/oauth";
 import { registerTools } from "../../../src/server";
 
@@ -35,7 +36,7 @@ async function verifyToken(_req: Request, bearer?: string) {
 }
 
 const authed = withOAuthExchange(
-  withMcpAuth(handler, verifyToken, {
+  withMcpAuth(withJsonBodyCheck(handler), verifyToken, {
     required: true,
     resourceMetadataPath: RESOURCE_METADATA_PATH,
   })

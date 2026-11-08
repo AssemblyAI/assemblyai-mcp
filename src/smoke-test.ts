@@ -55,6 +55,10 @@
  *   50. include_words falls back to top-level words when there are no utterances
  *   51. publicOrigin takes the first x-forwarded-host entry
  *   52. ChatGPT files: openai/fileParams + file schema; download_url is sent as audio_url
+ *   53. submit_transcript refuses our own /upload/<token> link as audio_url, without echoing it
+ *   54. create_upload_url says what to do when the network blocks the upload
+ *   55. a non-JSON POST body gets a JSON-RPC parse error, not a hang
+ *   56. log fields are capped, so a huge caller value can't make a huge log line
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -62,7 +66,8 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
 import { registerTools } from "./server";
-import { logError } from "./log";
+import { log, logError, MAX_LOG_FIELD_CHARS } from "./log";
+import { withJsonBodyCheck } from "./json-body";
 
 interface FetchCall {
   url: string;
@@ -1791,6 +1796,103 @@ async function run() {
       lines.filter((l) => l.includes("LEAK") || l.includes("leak")).join("\n")
     );
   });
+
+  // 53. Our own upload link is the mailbox, not the file: refuse it, don't echo the token.
+  process.env.UPLOAD_TOKEN_SECRET = "test-secret-" + "s".repeat(32);
+  await withClientServer(async (client) => {
+    const link = "https://mcp.assemblyai.com/upload/tok-SECRET-abc123";
+    const lines: string[] = [];
+    const originalLog = console.log;
+    console.log = (line: string) => lines.push(line);
+    let res;
+    try {
+      resetMock([]);
+      res = await callTool(client, "submit_transcript", { audio_url: link }, "k");
+    } finally {
+      console.log = originalLog;
+    }
+    const text = res.content?.[0]?.text ?? "";
+    assert(
+      "53. the /upload/<token> link is refused without calling AssemblyAI",
+      res.isError === true && calls.length === 0 && text.includes("upload_url") && text.includes("curl"),
+      JSON.stringify(res)
+    );
+    assert("53. the refusal does not echo the token", !text.includes("tok-SECRET-abc123"), text);
+    assert(
+      "53. the refusal is logged as reason upload_link, without the link",
+      lines.some((l) => l.includes('"reason":"upload_link"')) && !lines.join("\n").includes("tok-SECRET"),
+      lines.join("\n")
+    );
+    for (const [label, other] of [
+      ["another host's /upload/ path", "https://example.com/upload/abc.mp3"],
+      ["a deeper path on our host", "https://mcp.assemblyai.com/upload/abc/file.mp3"],
+      ["the AssemblyAI CDN upload_url", "https://cdn.assemblyai.com/upload/abc-123"],
+    ]) {
+      resetMock([jsonResponse(200, { id: "txn-ok", status: "queued" })]);
+      const ok = await callTool(client, "submit_transcript", { audio_url: other }, "k");
+      assert(`53. ${label} is still accepted`, ok.isError !== true && calls.length === 1, JSON.stringify(ok));
+    }
+  });
+
+  // 54. A blocked network gets a clear next step, not retries or workarounds.
+  await withClientServer(async (client) => {
+    resetMock([]);
+    const res = await callTool(client, "create_upload_url", {}, "k");
+    const text = res.content?.[0]?.text ?? "";
+    assert(
+      "54. create_upload_url explains a blocked network: allow the host, public URL, or a local client",
+      text.includes("Could not resolve host") && text.includes("mcp.assemblyai.com") &&
+        text.includes("public URL") && text.includes("Claude Code") && text.includes("do not retry"),
+      text
+    );
+  });
+
+  // 55. mcp-handler's req.json() rejects outside its try/catch: answer first.
+  {
+    let reached = 0;
+    const inner = async () => { reached++; return new Response("ok"); };
+    const checked = withJsonBodyCheck(inner);
+    const post = (body: string, type = "application/json") =>
+      new Request("http://localhost/mcp", { method: "POST", headers: { "content-type": type }, body });
+    const bad = await checked(post("not json"));
+    const badBody = await bad.json();
+    assert(
+      "55. a non-JSON body gets 400 with JSON-RPC error -32700",
+      bad.status === 400 && badBody?.error?.code === -32700 && badBody?.id === null && reached === 0,
+      JSON.stringify(badBody)
+    );
+    const good = await checked(post('{"jsonrpc":"2.0","id":1,"method":"ping"}'));
+    assert("55. a JSON body is passed on, still readable", good.status === 200 && reached === 1);
+    await checked(post("not json", "text/plain"));
+    await checked(new Request("http://localhost/mcp", { method: "GET" }));
+    assert("55. other content types and GET are passed on unchanged", reached === 3);
+  }
+
+  // 56. Caller values reach the logs (transcript_id); cap every string field.
+  {
+    const lines: string[] = [];
+    const originalLog = console.log;
+    console.log = (line: string) => lines.push(line);
+    try {
+      log({ event: "t", transcript_id: "x".repeat(100_000), nested: { v: "y".repeat(5_000) }, short: "ok" });
+      logError({ event: "e", transcript_id: "z".repeat(100_000) }, new Error("m".repeat(10_000)));
+    } finally {
+      console.log = originalLog;
+    }
+    const [first, second] = lines.map((l) => JSON.parse(l));
+    assert(
+      "56. long fields are cut to the limit with a count of dropped chars",
+      first.transcript_id.length < MAX_LOG_FIELD_CHARS + 30 && first.transcript_id.endsWith("…[+99744 chars]") &&
+        first.nested.v.length < MAX_LOG_FIELD_CHARS + 30 && first.short === "ok",
+      JSON.stringify(first).slice(0, 300)
+    );
+    assert(
+      "56. logError caps event fields and the error message too",
+      second.transcript_id.length < MAX_LOG_FIELD_CHARS + 30 && second.error.message.length < MAX_LOG_FIELD_CHARS + 30,
+      JSON.stringify(second).slice(0, 300)
+    );
+    assert("56. a capped log line stays small", lines.every((l) => l.length < 20_000), String(lines.map((l) => l.length)));
+  }
 
   globalThis.fetch = originalFetch;
 
