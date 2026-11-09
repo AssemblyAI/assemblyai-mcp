@@ -57,7 +57,7 @@
  *   52. ChatGPT files: openai/fileParams + file schema; download_url is sent as audio_url
  *   53. submit_transcript refuses our own /upload/<token> link as audio_url, without echoing it
  *   54. create_upload_url says what to do when the network blocks the upload
- *   55. a non-JSON POST body gets a JSON-RPC parse error, not a hang
+ *   55. a non-JSON POST body gets a JSON-RPC parse error, not a hang; an oversized one 413 before parsing
  *   56. log fields are capped, so a huge caller value can't make a huge log line
  */
 
@@ -66,8 +66,8 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
 import { registerTools } from "./server";
-import { log, logError, MAX_LOG_FIELD_CHARS } from "./log";
-import { withJsonBodyCheck } from "./json-body";
+import { log, logError, MAX_LOG_FIELD_CHARS, MAX_LOG_STACK_CHARS } from "./log";
+import { MAX_BODY_BYTES, withJsonBodyCheck } from "./json-body";
 
 interface FetchCall {
   url: string;
@@ -1866,6 +1866,38 @@ async function run() {
     await checked(post("not json", "text/plain"));
     await checked(new Request("http://localhost/mcp", { method: "GET" }));
     assert("55. other content types and GET are passed on unchanged", reached === 3);
+
+    // Oversized: refuse before buffering it all, with or without Content-Length.
+    const big = "x".repeat(MAX_BODY_BYTES + 1);
+    const declared = await checked(post(big));
+    assert(
+      "55. a body over the limit gets 413 before it reaches the handler",
+      declared.status === 413 && (await declared.json())?.error?.code === -32000 && reached === 3
+    );
+    let pulled = 0;
+    const chunk = new Uint8Array(1024 * 1024).fill(120);
+    const endless = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulled++;
+        if (pulled > 50) controller.close();
+        else controller.enqueue(chunk);
+      },
+    });
+    const chunked = await checked(
+      new Request("http://localhost/mcp", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: endless,
+        duplex: "half",
+      } as RequestInit)
+    );
+    assert(
+      "55. a chunked body with no Content-Length stops being read once it passes the limit",
+      chunked.status === 413 && pulled <= 8 && reached === 3,
+      `status=${chunked.status} pulled=${pulled}`
+    );
+    const atLimit = await checked(post(JSON.stringify({ pad: "y".repeat(MAX_BODY_BYTES - 20) })));
+    assert("55. a JSON body just under the limit is passed on", atLimit.status === 200 && reached === 4);
   }
 
   // 56. Caller values reach the logs (transcript_id); cap every string field.
@@ -1875,7 +1907,11 @@ async function run() {
     console.log = (line: string) => lines.push(line);
     try {
       log({ event: "t", transcript_id: "x".repeat(100_000), nested: { v: "y".repeat(5_000) }, short: "ok" });
-      logError({ event: "e", transcript_id: "z".repeat(100_000) }, new Error("m".repeat(10_000)));
+      // Prose, not one long token: the scrubber already redacts long tokens.
+      const prose = "the audio file could not be read ".repeat(3_000);
+      const err = new Error(prose);
+      err.name = "Bad".repeat(1_000);
+      logError({ event: "e", transcript_id: "z".repeat(100_000) }, err);
     } finally {
       console.log = originalLog;
     }
@@ -1887,11 +1923,13 @@ async function run() {
       JSON.stringify(first).slice(0, 300)
     );
     assert(
-      "56. logError caps event fields and the error message too",
-      second.transcript_id.length < MAX_LOG_FIELD_CHARS + 30 && second.error.message.length < MAX_LOG_FIELD_CHARS + 30,
+      "56. logError caps event fields, the error name, message and stack (long prose)",
+      second.transcript_id.length < MAX_LOG_FIELD_CHARS + 30 && second.error.message.length < MAX_LOG_FIELD_CHARS + 30 &&
+        second.error.name.length < MAX_LOG_FIELD_CHARS + 30 && second.error.stack.length < MAX_LOG_STACK_CHARS + 30 &&
+        second.error.stack.includes("…[+"),
       JSON.stringify(second).slice(0, 300)
     );
-    assert("56. a capped log line stays small", lines.every((l) => l.length < 20_000), String(lines.map((l) => l.length)));
+    assert("56. a capped log line stays small", lines.every((l) => l.length < 5_000), String(lines.map((l) => l.length)));
   }
 
   globalThis.fetch = originalFetch;

@@ -19,6 +19,15 @@ export function capForLog(value: unknown, depth = 0): unknown {
   return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, capForLog(v, depth + 1)]));
 }
 
+/** Stacks are worth more room than a field, but they repeat the message, so
+ * they need a cap too. */
+export const MAX_LOG_STACK_CHARS = 2048;
+
+function capText(value: string | undefined, max: number): string | undefined {
+  if (value === undefined || value.length <= max) return value;
+  return `${value.slice(0, max)}…[+${value.length - max} chars]`;
+}
+
 function capFields(event: Record<string, unknown>): Record<string, unknown> {
   return capForLog(event) as Record<string, unknown>;
 }
@@ -53,9 +62,9 @@ export function logError(event: Record<string, unknown>, error: unknown) {
       level: "error",
       ...capFields(event),
       error: {
-        name: err.name,
-        message: capForLog(scrubForLog(err.message)),
-        stack: scrubForLog(err.stack),
+        name: capText(err.name, MAX_LOG_FIELD_CHARS),
+        message: capText(scrubForLog(err.message), MAX_LOG_FIELD_CHARS),
+        stack: capText(scrubForLog(err.stack), MAX_LOG_STACK_CHARS),
       },
     })
   );
