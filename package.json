@@ -10,7 +10,7 @@
     "build": "next build",
     "dev": "next dev",
     "start": "next start",
-    "test": "tsx src/smoke-test.ts && tsx src/oauth-test.ts",
+    "test": "tsx src/smoke-test.ts && tsx src/tts-test.ts && tsx src/oauth-test.ts",
     "test:live": "tsx src/live-test.ts",
     "test:oauth": "tsx src/oauth-preview-test.ts",
     "typecheck": "tsc --noEmit"
