@@ -98,8 +98,9 @@ async function run() {
 
   // 1. Tool discovery
   const tools = await client.listTools();
-  // create_upload_url only appears where UPLOAD_TOKEN_SECRET is set.
-  const names = tools.tools.map((t) => t.name).filter((n) => n !== "create_upload_url").sort();
+  // create_upload_url only appears where UPLOAD_TOKEN_SECRET is set; create_speech where TTS_ENABLED=1.
+  const optional = new Set(["create_upload_url", "create_speech"]);
+  const names = tools.tools.map((t) => t.name).filter((n) => !optional.has(n)).sort();
   assert(
     "1. tools/list exposes the 5 transcript tools",
     JSON.stringify(names) ===

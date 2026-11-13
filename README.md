@@ -70,6 +70,7 @@ https://assembly.ai/wildfires.mp3"*.
 | `summarize_transcript(transcript_id, style?, custom_prompt?)` | Freeform or custom-prompt summary of a completed transcript via the LLM Gateway. `style`: `bullets` (default), `paragraph`, `headline`, `action_items`, or `custom`. |
 | `delete_transcript(transcript_id)` | Permanently delete a transcript and its data. Irreversible — only on explicit user request. |
 | `create_upload_url()` | For a local file: returns a 10-minute link and a `curl` command. The agent uploads the file (up to 4.5 MB) and gets an `upload_url` to pass to `submit_transcript`. Only offered when `UPLOAD_TOKEN_SECRET` is set. |
+| `create_speech(text, voice_id?, language?, format?, delivery?)` | Text to speech (Streaming TTS). `delivery: "file"` (default) returns a `curl` command with a 5-minute TTS-only token; the agent runs it and the audio is saved on the user's computer (up to 5,000 characters, billed when it runs). `delivery: "inline"` returns MP3 audio in the tool result (up to 1,000 characters). Billed per character. Only offered when `TTS_ENABLED=1`. |
 
 **Typical agent flow:** `submit_transcript` → poll `get_transcript` until
 `completed` → optionally `understand_transcript` / `summarize_transcript` →
@@ -160,6 +161,9 @@ keys only work against its own API.
 | `ASSEMBLYAI_BASE_URL` | `https://api.assemblyai.com` | The AssemblyAI API |
 | `ASSEMBLYAI_LLM_GATEWAY_BASE_URL` | `https://llm-gateway.assemblyai.com` | The LLM Gateway |
 | `UPLOAD_TOKEN_SECRET` | unset | 32+ random characters. Encrypts the API key inside upload links; without it, `create_upload_url` is not offered. Rotating it invalidates open links. |
+| `TTS_ENABLED` | unset | `1` offers the `create_speech` tool (text to speech). Any other value, or unset: the tool is not listed. |
+| `ASSEMBLYAI_TTS_BASE_URL` | `https://tts.us.assemblyai.com` | The Streaming TTS API (`https://tts.eu.assemblyai.com` for the EU data zone) |
+| `ASSEMBLYAI_TOKEN_BASE_URL` | `https://token.us.assemblyai.com` | Where `create_speech` mints its short-lived TTS tokens |
 
 The service token needs no setting: Vercel provides it to the deployment
 (`VERCEL_OIDC_TOKEN`), and `@vercel/oidc` reads it.
