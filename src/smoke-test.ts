@@ -55,6 +55,8 @@
  *   50. include_words falls back to top-level words when there are no utterances
  *   51. publicOrigin takes the first x-forwarded-host entry
  *   52. ChatGPT files: openai/fileParams + file schema; download_url is sent as audio_url
+ *   53. submit_transcript's POST /v2/transcript is not retried on 5xx (billable, non-idempotent)
+ *   54. summarize_transcript's POST /v1/chat/completions is not retried on 5xx (billable, non-idempotent)
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -1789,6 +1791,33 @@ async function run() {
       "52. a caller-supplied _empty value never reaches the logs",
       !lines.join("\n").includes("leak.example.com") && !lines.join("\n").includes("LEAK-2"),
       lines.filter((l) => l.includes("LEAK") || l.includes("leak")).join("\n")
+    );
+  });
+
+  // 53. submit_transcript's POST /v2/transcript is not retried on 5xx (billable, non-idempotent)
+  await withClientServer(async (client) => {
+    resetMock([jsonResponse(500, { error: "server error" })]);
+    const result = await callTool(
+      client,
+      "submit_transcript",
+      { audio_url: "https://example.com/x.mp3" },
+      "k"
+    );
+    assert(
+      "53. billable POST /v2/transcript is not retried on 5xx (exactly 1 call)",
+      calls.length === 1 && result.isError === true,
+      `calls=${calls.length} isError=${result.isError}`
+    );
+  });
+
+  // 54. summarize_transcript's POST /v1/chat/completions is not retried on 5xx (billable, non-idempotent)
+  await withClientServer(async (client) => {
+    resetMock([jsonResponse(500, { error: "server error" })]);
+    const result = await callTool(client, "summarize_transcript", { transcript_id: "txn-sum" }, "k");
+    assert(
+      "54. billable POST /v1/chat/completions is not retried on 5xx (exactly 1 call)",
+      calls.length === 1 && result.isError === true,
+      `calls=${calls.length} isError=${result.isError}`
     );
   });
 
