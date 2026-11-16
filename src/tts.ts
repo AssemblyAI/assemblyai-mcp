@@ -5,7 +5,7 @@
  * The base URLs are read per call, so a deployment (or a test) can point them
  * at another data zone or a fake.
  */
-import { AssemblyAIError, requestWithRetry } from "./assemblyai";
+import { AssemblyAIError } from "./assemblyai";
 
 /** The tool is only offered where the deployment turns it on. */
 export function ttsEnabled(): boolean {
@@ -38,6 +38,15 @@ export const SPEECH_TOKEN_TTL_SECONDS = 300;
 
 // Below the MCP route's 60 s maxDuration.
 const SPEECH_TIMEOUT_MS = 50_000;
+
+/**
+ * One deadline for the whole token request: every attempt, the backoff and the
+ * body read. Short, because the OAuth key exchange can run first in the same
+ * 60 s request, and minting a token is normally fast.
+ */
+export const TOKEN_DEADLINE_MS = 15_000;
+const TOKEN_ATTEMPTS = 2;
+const TOKEN_BACKOFF_MS = 1_000;
 
 export const SPEECH_LANGUAGES = ["english", "spanish", "german", "italian", "portuguese", "french"] as const;
 export type SpeechLanguage = (typeof SPEECH_LANGUAGES)[number];
@@ -140,17 +149,76 @@ export async function createSpeech(apiKey: string, options: SpeechOptions): Prom
  * A short-lived token that can only call Streaming TTS. It goes into the curl
  * command we hand out, so the API key itself never does.
  */
-export async function createTtsToken(apiKey: string, expiresInSeconds: number): Promise<string> {
-  const { token } = await requestWithRetry<{ token?: string }>(
-    apiKey,
-    "POST",
-    "/v1/token",
-    { product: "tts", expires_in_seconds: expiresInSeconds },
-    2,
-    tokenBaseUrl()
-  );
-  if (typeof token !== "string" || token.length === 0) {
-    throw new AssemblyAIError("The token service returned no token.", 502);
+export async function createTtsToken(
+  apiKey: string,
+  expiresInSeconds: number,
+  deadlineMs: number = TOKEN_DEADLINE_MS
+): Promise<string> {
+  // Retrying is safe here: a token costs nothing, unlike the speech itself.
+  const signal = AbortSignal.timeout(deadlineMs);
+  let lastError: unknown;
+  for (let attempt = 0; attempt < TOKEN_ATTEMPTS; attempt++) {
+    try {
+      if (attempt > 0) await sleepUnlessAborted(TOKEN_BACKOFF_MS, signal);
+      const response = await fetch(`${tokenBaseUrl()}/v1/token`, {
+        method: "POST",
+        // No `Bearer ` prefix: AssemblyAI expects the raw key.
+        headers: { Authorization: apiKey, "Content-Type": "application/json" },
+        body: JSON.stringify({ product: "tts", expires_in_seconds: expiresInSeconds }),
+        signal,
+      });
+      if (response.status >= 500) {
+        lastError = new AssemblyAIError(await errorMessage(response), response.status);
+        continue;
+      }
+      if (!response.ok) throw new AssemblyAIError(await errorMessage(response), response.status);
+      const { token } = (await response.json()) as { token?: unknown };
+      if (typeof token !== "string" || token.length === 0) {
+        throw new AssemblyAIError("The token service returned no token.", 502);
+      }
+      return token;
+    } catch (err) {
+      if (err instanceof AssemblyAIError) throw err;
+      if (signal.aborted) {
+        throw new AssemblyAIError(
+          `The token service did not answer within ${deadlineMs / 1000} seconds. ` +
+            "This is temporary; nothing was billed. Call again once; if it fails again, tell the user.",
+          504
+        );
+      }
+      lastError = err; // a network error: try once more
+    }
   }
-  return token;
+  if (lastError instanceof AssemblyAIError) throw lastError;
+  throw new AssemblyAIError(`The token service could not be reached: ${String(lastError)}`, 502);
+}
+
+async function errorMessage(response: Response): Promise<string> {
+  const text = await response.text();
+  try {
+    const body = JSON.parse(text);
+    for (const key of ["error", "message", "detail"] as const) {
+      if (body && typeof body === "object" && typeof body[key] === "string") {
+        return `HTTP ${response.status}: ${body[key]}`;
+      }
+    }
+  } catch {
+    // Not JSON: keep the start of the text.
+  }
+  return `HTTP ${response.status}: ${text.slice(0, 500)}`;
+}
+
+function sleepUnlessAborted(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) return reject(signal.reason);
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal.reason);
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
 }

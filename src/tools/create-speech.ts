@@ -1,3 +1,5 @@
+import { randomBytes } from "node:crypto";
+
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
@@ -218,7 +220,9 @@ export function registerCreateSpeech(server: McpServer): void {
         }
 
         const token = await createTtsToken(apiKey, SPEECH_TOKEN_TTL_SECONDS);
-        const outputFile = `speech.${format}`;
+        // A new name per call: when long text is split into parts, each part's
+        // command must not overwrite the one before (or a file of the user's).
+        const outputFile = `speech-${randomBytes(4).toString("hex")}.${format}`;
         const body = JSON.stringify(
           speechRequestBody({ text: args.text, voice_id: args.voice_id, language: args.language, format })
         );
@@ -226,7 +230,8 @@ export function registerCreateSpeech(server: McpServer): void {
         // Every value is a single-quoted shell literal: the text comes from the caller.
         const command =
           `curl -sS -o ${shellQuote(outputFile)} -w '%{http_code}\\n' ` +
-          `-H ${shellQuote(`Authorization: ${token}`)} -d ${shellQuote(body)} ${shellQuote(`${ttsBaseUrl()}/v1/speech`)}`;
+          `-H ${shellQuote(`Authorization: ${token}`)} -H 'Content-Type: application/json' ` +
+          `-d ${shellQuote(body)} ${shellQuote(`${ttsBaseUrl()}/v1/speech`)}`;
         const expiresAt = new Date(Date.now() + SPEECH_TOKEN_TTL_SECONDS * 1000).toISOString();
         log({ ...base, event: "tool_call", status: "success", latencyMs: Date.now() - start });
         return {
@@ -263,14 +268,21 @@ export function registerCreateSpeech(server: McpServer): void {
           if (!(err instanceof Refusal)) logError({ ...payload, event: "create_speech_error" }, err);
           throw err;
         }
+        // Only the speech API receives the text, so only its errors could echo it:
+        // log their status and code, never their message. The token service never
+        // sees the text, so its errors are logged in full.
+        const logFailure = (event: string) =>
+          err instanceof TtsError
+            ? log({ ...payload, event, level: "error", http_status: err.status, code: err.code ?? null })
+            : logError({ ...payload, event, http_status: err.status }, err);
         if (err.status === 401) {
-          logError({ ...payload, event: "assemblyai_rejected_key" }, err);
+          logFailure("assemblyai_rejected_key");
           throw new Error(
             "AssemblyAI rejected the API key (401). " +
               "Check the Bearer token configured in your MCP client connection."
           );
         }
-        logError({ ...payload, event: "create_speech_error", code: err instanceof TtsError ? err.code ?? null : null }, err);
+        logFailure("create_speech_error");
         throw new Error(err.message + (err instanceof TtsError ? hintFor(err) : ""));
       }
     }

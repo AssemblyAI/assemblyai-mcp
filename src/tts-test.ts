@@ -12,8 +12,9 @@
  *   7. delivery "inline": one buffered MP3 request, the audio comes back as an audio block
  *   8. inline refusals: too long, wav, blank; an empty clip is an error
  *   9. API errors map to a next step (voice, funds, rate limit, key)
- *  10. token service failures
- *  11. logs never hold the text, the token or the key
+ *  10. token service failures; one deadline covers every attempt, the backoff and the body read
+ *  11. logs never hold the text, the token or the key, even when an API error echoes the text
+ *  12. each file command saves to its own file name
  */
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
@@ -25,7 +26,8 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
 import { registerTools } from "./server";
-import { INLINE_BIT_RATE, MAX_INLINE_SPEECH_CHARS, MAX_SPEECH_CHARS, SPEECH_TOKEN_TTL_SECONDS } from "./tts";
+import { AssemblyAIError } from "./assemblyai";
+import { createTtsToken, INLINE_BIT_RATE, MAX_INLINE_SPEECH_CHARS, MAX_SPEECH_CHARS, SPEECH_TOKEN_TTL_SECONDS } from "./tts";
 
 interface FetchCall {
   url: string;
@@ -210,11 +212,14 @@ async function run() {
       command.includes("Authorization: TMP-TOKEN-abc") && !command.includes(KEY) && !text.includes(KEY),
       command
     );
+    const outputFile = String(res.structuredContent?.output_file ?? "");
     assert(
-      "3. the command posts a buffered MP3 request to the TTS host and saves speech.mp3",
-      command.startsWith("curl -sS -o 'speech.mp3' ") && command.endsWith("'https://tts.us.assemblyai.com/v1/speech'") &&
+      "3. the command posts a buffered MP3 JSON request to the TTS host and saves speech-<random>.mp3",
+      /^speech-[0-9a-f]{8}\.mp3$/.test(outputFile) &&
+        command.startsWith(`curl -sS -o '${outputFile}' `) && command.endsWith("'https://tts.us.assemblyai.com/v1/speech'") &&
+        command.includes("-H 'Content-Type: application/json' -d '") &&
         command.includes('"encoding":"mp3"') && command.includes('"stream":false') &&
-        res.structuredContent?.output_file === "speech.mp3" && res.structuredContent?.delivery === "file",
+        text.includes(`saves the audio as ${outputFile}`) && res.structuredContent?.delivery === "file",
       command
     );
     assert(
@@ -276,7 +281,13 @@ async function run() {
     );
     assert(
       "4. the words are exactly curl's arguments, nothing extra",
-      words.filter((w) => w !== "").length === 10 && words[9] === "https://tts.us.assemblyai.com/v1/speech",
+      words.filter((w) => w !== "").length === 12 && words[11] === "https://tts.us.assemblyai.com/v1/speech",
+      JSON.stringify(words)
+    );
+    assert(
+      "4. the command declares the JSON body, as one header argument",
+      words[words.lastIndexOf("-H") + 1] === "Content-Type: application/json" &&
+        words.indexOf("-d") > words.lastIndexOf("-H"),
       JSON.stringify(words)
     );
   });
@@ -288,9 +299,9 @@ async function run() {
     const command = String(res.structuredContent?.command ?? "");
     const body = JSON.parse(command.match(/-d '(\{.*\})' /)?.[1] ?? "{}");
     assert(
-      "5. wav sets pcm_s16le in a wav container and names speech.wav; voice and language pass through",
+      "5. wav sets pcm_s16le in a wav container and names speech-<random>.wav; voice and language pass through",
       body.encoding === "pcm_s16le" && body.container === "wav" && body.voice_id === "aai-constanza" &&
-        body.language === "spanish" && body.bit_rate === undefined && command.includes("-o 'speech.wav'"),
+        body.language === "spanish" && body.bit_rate === undefined && /-o 'speech-[0-9a-f]{8}\.wav' /.test(command),
       command
     );
     resetMock([]);
@@ -422,7 +433,99 @@ async function run() {
     resetMock([json(200, {})]);
     const none = await speak(client, { text: "Hi." });
     assert("10. an answer with no token is an error, not a command without one", none.isError === true && !textOf(none).includes("curl"), textOf(none));
+    resetMock([json(503, { error: "busy" }), tokenOk()]);
+    const retried = await speak(client, { text: "Hi." });
+    assert(
+      "10. a token 5xx is tried once more (a token costs nothing), then succeeds",
+      retried.isError !== true && calls.length === 2 && String(retried.structuredContent?.command ?? "").includes("TMP-TOKEN-abc"),
+      textOf(retried)
+    );
+    resetMock([json(503, { error: "busy" }), json(503, { error: "still busy" })]);
+    const busy = await speak(client, { text: "Hi." });
+    assert(
+      "10. two token 5xx answers stop after 2 attempts, with no command",
+      busy.isError === true && calls.length === 2 && textOf(busy).includes("HTTP 503") && !textOf(busy).includes("curl"),
+      textOf(busy)
+    );
   });
+
+  // 10b. The token request has one deadline for all attempts, the backoff and the body read
+  {
+    const realFetch = globalThis.fetch;
+    // AbortSignal.timeout's timer does not hold the process open; in the server,
+    // the HTTP listener does. Here, hold it open until these checks finish.
+    const keepAlive = setInterval(() => {}, 1_000);
+    let attempts = 0;
+    // Never answers; gives up only when its signal aborts, as real fetch does.
+    const stall = (signal: AbortSignal | null | undefined) =>
+      new Promise<never>((_, reject) => signal?.addEventListener("abort", () => reject(signal.reason), { once: true }));
+    try {
+      globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+        attempts++;
+        return stall(init?.signal);
+      }) as typeof fetch;
+      let t0 = Date.now();
+      let err: unknown;
+      try {
+        await createTtsToken(KEY, SPEECH_TOKEN_TTL_SECONDS, 300);
+      } catch (e) {
+        err = e;
+      }
+      assert(
+        "10b. a token service that never answers ends at the deadline with a 504",
+        err instanceof AssemblyAIError && err.status === 504 && Date.now() - t0 < 2_000 && attempts === 1,
+        `${String(err)} after ${Date.now() - t0} ms, ${attempts} attempts`
+      );
+
+      // Headers arrive, then the body stalls: the same deadline covers the read.
+      attempts = 0;
+      globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+        attempts++;
+        const signal = init?.signal;
+        const body = new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode('{"tok'));
+            signal?.addEventListener("abort", () => controller.error(signal.reason), { once: true });
+          },
+        });
+        return new Response(body, { status: 200, headers: { "Content-Type": "application/json" } });
+      }) as typeof fetch;
+      t0 = Date.now();
+      err = undefined;
+      try {
+        await createTtsToken(KEY, SPEECH_TOKEN_TTL_SECONDS, 300);
+      } catch (e) {
+        err = e;
+      }
+      assert(
+        "10b. a body that stalls mid-read also ends at the deadline with a 504",
+        err instanceof AssemblyAIError && err.status === 504 && Date.now() - t0 < 2_000,
+        `${String(err)} after ${Date.now() - t0} ms`
+      );
+
+      // A 5xx, then a deadline shorter than the backoff: no second attempt.
+      attempts = 0;
+      globalThis.fetch = (async () => {
+        attempts++;
+        return json(503, { error: "busy" });
+      }) as typeof fetch;
+      t0 = Date.now();
+      err = undefined;
+      try {
+        await createTtsToken(KEY, SPEECH_TOKEN_TTL_SECONDS, 300);
+      } catch (e) {
+        err = e;
+      }
+      assert(
+        "10b. the backoff counts against the deadline too",
+        err instanceof AssemblyAIError && err.status === 504 && attempts === 1 && Date.now() - t0 < 2_000,
+        `${String(err)} after ${Date.now() - t0} ms, ${attempts} attempts`
+      );
+    } finally {
+      globalThis.fetch = realFetch;
+      clearInterval(keepAlive);
+    }
+  }
 
   // 11. Logs
   await withClient(async (client) => {
@@ -432,25 +535,56 @@ async function run() {
       await speak(client, { text: secretText });
       resetMock([audioOk(new Uint8Array([1, 2, 3]))]);
       await speak(client, { text: secretText, delivery: "inline" });
-      resetMock([ttsError(422, "invalid_parameter", "text: bad")]);
+      // An API error that echoes the text back: in the message, and in a non-JSON body.
+      resetMock([ttsError(422, "invalid_parameter", `text: cannot speak "${secretText}"`)]);
+      await speak(client, { text: secretText, delivery: "inline" });
+      resetMock([new Response(`<html>Bad Gateway for ${secretText}</html>`, { status: 502 })]);
+      await speak(client, { text: secretText, delivery: "inline" });
+      resetMock([ttsError(401, "unauthorized", `unknown key for "${secretText}"`)]);
       await speak(client, { text: secretText, delivery: "inline" });
       resetMock([]);
       await speak(client, { text: "a".repeat(MAX_SPEECH_CHARS + 1) });
     });
     const events = logs.split("\n").filter(Boolean).map((l) => JSON.parse(l));
     assert(
-      "11. logs never hold the text, the token or the key",
+      "11. logs never hold the text, the token or the key, even when an API error echoes the text",
       !logs.includes("merger") && !logs.includes("TMP-TOKEN-zzz") && !logs.includes(KEY) && !logs.includes("aaaaaaaa"),
       logs
     );
     assert(
       "11. each call logs one event with the size, delivery and outcome",
-      events.length === 4 && events.every((e) => e.tool === "create_speech" && typeof e.chars === "number") &&
+      events.length === 6 && events.every((e) => e.tool === "create_speech" && typeof e.chars === "number") &&
         events[0].status === "success" && events[0].delivery === "file" &&
         events[1].status === "success" && events[1].billed_characters === 12 &&
-        events[2].status === "error" && events[2].code === "invalid_parameter" &&
-        events[3].status === "rejected" && events[3].reason === "text_too_long",
+        events[2].status === "error" && events[2].code === "invalid_parameter" && events[2].http_status === 422 &&
+        events[3].status === "error" && events[3].http_status === 502 &&
+        events[4].event === "assemblyai_rejected_key" && events[4].http_status === 401 &&
+        events[5].status === "rejected" && events[5].reason === "text_too_long",
       logs
+    );
+    const tokenLogs = await captureLogs(async () => {
+      resetMock([json(403, { error: "account disabled" })]);
+      await speak(client, { text: secretText });
+    });
+    assert(
+      "11. a token service error (it never sees the text) keeps its message in the log",
+      tokenLogs.includes("account disabled") && tokenLogs.includes('"http_status":403') && !tokenLogs.includes("merger"),
+      tokenLogs
+    );
+  });
+
+  // 12. Each file command saves to its own file, so split parts do not overwrite each other
+  await withClient(async (client) => {
+    const names = new Set<string>();
+    for (let i = 0; i < 20; i++) {
+      resetMock([tokenOk()]);
+      const res = await speak(client, { text: `Part ${i}.` });
+      names.add(String(res.structuredContent?.output_file));
+    }
+    assert(
+      "12. 20 calls give 20 different file names",
+      names.size === 20 && [...names].every((n) => /^speech-[0-9a-f]{8}\.mp3$/.test(n)),
+      [...names].join(" ")
     );
   });
 
