@@ -44,7 +44,9 @@ export function registerCreateUploadUrl(server: McpServer): void {
 
       const { token, expiresAt } = createUploadToken(apiKey);
       const headers = extra.requestInfo?.headers;
-      const uploadLink = `${publicOrigin(header(headers, "x-forwarded-host"), header(headers, "host"))}/upload/${token}`;
+      const origin = publicOrigin(header(headers, "x-forwarded-host"), header(headers, "host"));
+      const host = new URL(origin).host;
+      const uploadLink = `${origin}/upload/${token}`;
       // Plain curl, no --fail-with-body (curl 7.76+ only): error responses are JSON the agent can read.
       // Single quotes: the link comes from request headers and must stay a shell literal.
       const command = `curl -sS -X POST --data-binary @"/path/to/file" '${uploadLink.replaceAll("'", "'\\''")}'`;
@@ -66,6 +68,11 @@ export function registerCreateUploadUrl(server: McpServer): void {
               `If it prints {"error": ...} instead, follow the message. If it prints "Request Entity Too Large" ` +
               `or the error says the file is too large, the file is over 4.5 MB: compress it ` +
               `(e.g. ffmpeg -i in -ac 1 -b:a 32k out.mp3) or ask the user for a public URL. ` +
+              `If curl cannot connect at all (e.g. "Could not resolve host", "Connection refused", ` +
+              `or a 403 from a proxy saying the host is not allowed), your environment blocks ${host}: ` +
+              `do not retry or work around it. Tell the user to allow ${host} in their client's network ` +
+              `settings (claude.ai: Settings > Capabilities), or to give a public URL, or to run this ` +
+              `from a local client such as Claude Code. ` +
               `Do not show this link to anyone: it uploads into the user's account.`,
           },
         ],
