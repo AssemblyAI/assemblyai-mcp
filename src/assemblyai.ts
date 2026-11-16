@@ -189,7 +189,10 @@ export async function submitTranscript(
     if (HANDLED_KEYS.has(key as keyof TranscriptSubmitOptions)) continue;
     if (value !== undefined) payload[key] = value;
   }
-  return requestWithRetry<TranscriptRecord>(apiKey, "POST", "/v2/transcript", payload);
+  // retries=1: POST /v2/transcript is a billable, non-idempotent create —
+  // retrying it on a transient 5xx would queue a second transcription and
+  // double-charge, unlike the read-only GETs.
+  return requestWithRetry<TranscriptRecord>(apiKey, "POST", "/v2/transcript", payload, 1);
 }
 
 export async function getTranscript(

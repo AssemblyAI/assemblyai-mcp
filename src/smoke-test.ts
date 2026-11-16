@@ -55,10 +55,12 @@
  *   50. include_words falls back to top-level words when there are no utterances
  *   51. publicOrigin takes the first x-forwarded-host entry
  *   52. ChatGPT files: openai/fileParams + file schema; download_url is sent as audio_url
- *   53. submit_transcript refuses our own /upload/<token> link as audio_url, without echoing it
- *   54. create_upload_url says what to do when the network blocks the upload
- *   55. a non-JSON POST body gets a JSON-RPC parse error, not a hang; an oversized one 413 before parsing
- *   56. log fields are capped, so a huge caller value can't make a huge log line
+ *   53. submit_transcript's POST /v2/transcript is not retried on 5xx (billable, non-idempotent)
+ *   54. summarize_transcript's POST /v1/chat/completions is not retried on 5xx (billable, non-idempotent)
+ *   55. submit_transcript refuses our own /upload/<token> link as audio_url, without echoing it
+ *   56. create_upload_url says what to do when the network blocks the upload
+ *   57. a non-JSON POST body gets a JSON-RPC parse error, not a hang; an oversized one 413 before parsing
+ *   58. log fields are capped, so a huge caller value can't make a huge log line
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -1797,7 +1799,34 @@ async function run() {
     );
   });
 
-  // 53. Our own upload link is the mailbox, not the file: refuse it, don't echo the token.
+  // 53. submit_transcript's POST /v2/transcript is not retried on 5xx (billable, non-idempotent)
+  await withClientServer(async (client) => {
+    resetMock([jsonResponse(500, { error: "server error" })]);
+    const result = await callTool(
+      client,
+      "submit_transcript",
+      { audio_url: "https://example.com/x.mp3" },
+      "k"
+    );
+    assert(
+      "53. billable POST /v2/transcript is not retried on 5xx (exactly 1 call)",
+      calls.length === 1 && result.isError === true,
+      `calls=${calls.length} isError=${result.isError}`
+    );
+  });
+
+  // 54. summarize_transcript's POST /v1/chat/completions is not retried on 5xx (billable, non-idempotent)
+  await withClientServer(async (client) => {
+    resetMock([jsonResponse(500, { error: "server error" })]);
+    const result = await callTool(client, "summarize_transcript", { transcript_id: "txn-sum" }, "k");
+    assert(
+      "54. billable POST /v1/chat/completions is not retried on 5xx (exactly 1 call)",
+      calls.length === 1 && result.isError === true,
+      `calls=${calls.length} isError=${result.isError}`
+    );
+  });
+
+  // 55. Our own upload link is the mailbox, not the file: refuse it, don't echo the token.
   process.env.UPLOAD_TOKEN_SECRET = "test-secret-" + "s".repeat(32);
   await withClientServer(async (client) => {
     const link = "https://mcp.assemblyai.com/upload/tok-SECRET-abc123";
@@ -1813,13 +1842,13 @@ async function run() {
     }
     const text = res.content?.[0]?.text ?? "";
     assert(
-      "53. the /upload/<token> link is refused without calling AssemblyAI",
+      "55. the /upload/<token> link is refused without calling AssemblyAI",
       res.isError === true && calls.length === 0 && text.includes("upload_url") && text.includes("curl"),
       JSON.stringify(res)
     );
-    assert("53. the refusal does not echo the token", !text.includes("tok-SECRET-abc123"), text);
+    assert("55. the refusal does not echo the token", !text.includes("tok-SECRET-abc123"), text);
     assert(
-      "53. the refusal is logged as reason upload_link, without the link",
+      "55. the refusal is logged as reason upload_link, without the link",
       lines.some((l) => l.includes('"reason":"upload_link"')) && !lines.join("\n").includes("tok-SECRET"),
       lines.join("\n")
     );
@@ -1830,24 +1859,24 @@ async function run() {
     ]) {
       resetMock([jsonResponse(200, { id: "txn-ok", status: "queued" })]);
       const ok = await callTool(client, "submit_transcript", { audio_url: other }, "k");
-      assert(`53. ${label} is still accepted`, ok.isError !== true && calls.length === 1, JSON.stringify(ok));
+      assert(`55. ${label} is still accepted`, ok.isError !== true && calls.length === 1, JSON.stringify(ok));
     }
   });
 
-  // 54. A blocked network gets a clear next step, not retries or workarounds.
+  // 56. A blocked network gets a clear next step, not retries or workarounds.
   await withClientServer(async (client) => {
     resetMock([]);
     const res = await callTool(client, "create_upload_url", {}, "k");
     const text = res.content?.[0]?.text ?? "";
     assert(
-      "54. create_upload_url explains a blocked network: allow the host, public URL, or a local client",
+      "56. create_upload_url explains a blocked network: allow the host, public URL, or a local client",
       text.includes("Could not resolve host") && text.includes("mcp.assemblyai.com") &&
         text.includes("public URL") && text.includes("Claude Code") && text.includes("do not retry"),
       text
     );
   });
 
-  // 55. mcp-handler's req.json() rejects outside its try/catch: answer first.
+  // 57. mcp-handler's req.json() rejects outside its try/catch: answer first.
   {
     let reached = 0;
     const inner = async () => { reached++; return new Response("ok"); };
@@ -1857,21 +1886,21 @@ async function run() {
     const bad = await checked(post("not json"));
     const badBody = await bad.json();
     assert(
-      "55. a non-JSON body gets 400 with JSON-RPC error -32700",
+      "57. a non-JSON body gets 400 with JSON-RPC error -32700",
       bad.status === 400 && badBody?.error?.code === -32700 && badBody?.id === null && reached === 0,
       JSON.stringify(badBody)
     );
     const good = await checked(post('{"jsonrpc":"2.0","id":1,"method":"ping"}'));
-    assert("55. a JSON body is passed on, still readable", good.status === 200 && reached === 1);
+    assert("57. a JSON body is passed on, still readable", good.status === 200 && reached === 1);
     await checked(post("not json", "text/plain"));
     await checked(new Request("http://localhost/mcp", { method: "GET" }));
-    assert("55. other content types and GET are passed on unchanged", reached === 3);
+    assert("57. other content types and GET are passed on unchanged", reached === 3);
 
     // Oversized: refuse before buffering it all, with or without Content-Length.
     const big = "x".repeat(MAX_BODY_BYTES + 1);
     const declared = await checked(post(big));
     assert(
-      "55. a body over the limit gets 413 before it reaches the handler",
+      "57. a body over the limit gets 413 before it reaches the handler",
       declared.status === 413 && (await declared.json())?.error?.code === -32000 && reached === 3
     );
     let pulled = 0;
@@ -1892,15 +1921,15 @@ async function run() {
       } as RequestInit)
     );
     assert(
-      "55. a chunked body with no Content-Length stops being read once it passes the limit",
+      "57. a chunked body with no Content-Length stops being read once it passes the limit",
       chunked.status === 413 && pulled <= 8 && reached === 3,
       `status=${chunked.status} pulled=${pulled}`
     );
     const atLimit = await checked(post(JSON.stringify({ pad: "y".repeat(MAX_BODY_BYTES - 20) })));
-    assert("55. a JSON body just under the limit is passed on", atLimit.status === 200 && reached === 4);
+    assert("57. a JSON body just under the limit is passed on", atLimit.status === 200 && reached === 4);
   }
 
-  // 56. Caller values reach the logs (transcript_id); cap every string field.
+  // 58. Caller values reach the logs (transcript_id); cap every string field.
   {
     const lines: string[] = [];
     const originalLog = console.log;
@@ -1917,19 +1946,19 @@ async function run() {
     }
     const [first, second] = lines.map((l) => JSON.parse(l));
     assert(
-      "56. long fields are cut to the limit with a count of dropped chars",
+      "58. long fields are cut to the limit with a count of dropped chars",
       first.transcript_id.length < MAX_LOG_FIELD_CHARS + 30 && first.transcript_id.endsWith("…[+99744 chars]") &&
         first.nested.v.length < MAX_LOG_FIELD_CHARS + 30 && first.short === "ok",
       JSON.stringify(first).slice(0, 300)
     );
     assert(
-      "56. logError caps event fields, the error name, message and stack (long prose)",
+      "58. logError caps event fields, the error name, message and stack (long prose)",
       second.transcript_id.length < MAX_LOG_FIELD_CHARS + 30 && second.error.message.length < MAX_LOG_FIELD_CHARS + 30 &&
         second.error.name.length < MAX_LOG_FIELD_CHARS + 30 && second.error.stack.length < MAX_LOG_STACK_CHARS + 30 &&
         second.error.stack.includes("…[+"),
       JSON.stringify(second).slice(0, 300)
     );
-    assert("56. a capped log line stays small", lines.every((l) => l.length < 5_000), String(lines.map((l) => l.length)));
+    assert("58. a capped log line stays small", lines.every((l) => l.length < 5_000), String(lines.map((l) => l.length)));
   }
 
   globalThis.fetch = originalFetch;
