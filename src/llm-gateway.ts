@@ -36,12 +36,15 @@ export async function summarizeViaLlmGateway(
     transcript_id: options.transcript_id,
     max_tokens: options.maxTokens ?? 1000,
   };
+  // retries=1: POST /v1/chat/completions is a billable, non-idempotent LLM
+  // completion — retrying it on a transient 5xx would double-charge, unlike
+  // the read-only GETs.
   const data = await requestWithRetry<ChatCompletionResponse>(
     apiKey,
     "POST",
     "/v1/chat/completions",
     body,
-    3,
+    1,
     DEFAULT_LLM_GATEWAY_BASE_URL
   );
   const content = data.choices?.[0]?.message?.content;
