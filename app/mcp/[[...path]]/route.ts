@@ -1,5 +1,6 @@
 import { createMcpHandler, withMcpAuth } from "mcp-handler";
 
+import { ROUTE_BUDGET_MS, withRequestClock } from "../../../src/deadline";
 import { RESOURCE_METADATA_PATH, withOAuthExchange } from "../../../src/oauth";
 import { registerTools } from "../../../src/server";
 
@@ -15,7 +16,7 @@ const handler = createMcpHandler(
     streamableHttpEndpoint: "/mcp",
     sseEndpoint: "/mcp/sse",
     sseMessageEndpoint: "/mcp/message",
-    maxDuration: 60,
+    maxDuration: ROUTE_BUDGET_MS / 1000,
   }
 );
 
@@ -34,11 +35,15 @@ async function verifyToken(_req: Request, bearer?: string) {
   };
 }
 
-const authed = withOAuthExchange(
-  withMcpAuth(handler, verifyToken, {
-    required: true,
-    resourceMetadataPath: RESOURCE_METADATA_PATH,
-  })
+// The clock starts before the OAuth exchange: tools get what is left of the
+// 60 s budget after sign-in (see src/deadline.ts).
+const authed = withRequestClock(
+  withOAuthExchange(
+    withMcpAuth(handler, verifyToken, {
+      required: true,
+      resourceMetadataPath: RESOURCE_METADATA_PATH,
+    })
+  )
 );
 
 export { authed as GET, authed as POST, authed as DELETE };

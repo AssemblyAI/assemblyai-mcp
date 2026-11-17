@@ -15,6 +15,8 @@
  *  10. token service failures; one deadline covers every attempt, the backoff and the body read
  *  11. logs never hold the text, the token or the key, even when an API error echoes the text
  *  12. each file command saves to its own file name
+ *  13. inline audio is read only up to the size cap, never buffered whole
+ *  14. sign-in time counts: the tool works only in what is left of the 60 s request
  */
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
@@ -27,7 +29,15 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
 import { registerTools } from "./server";
 import { AssemblyAIError } from "./assemblyai";
-import { createTtsToken, INLINE_BIT_RATE, MAX_INLINE_SPEECH_CHARS, MAX_SPEECH_CHARS, SPEECH_TOKEN_TTL_SECONDS } from "./tts";
+import { withRequestClock } from "./deadline";
+import {
+  createTtsToken,
+  INLINE_BIT_RATE,
+  MAX_INLINE_AUDIO_BYTES,
+  MAX_INLINE_SPEECH_CHARS,
+  MAX_SPEECH_CHARS,
+  SPEECH_TOKEN_TTL_SECONDS,
+} from "./tts";
 
 interface FetchCall {
   url: string;
@@ -587,6 +597,116 @@ async function run() {
       [...names].join(" ")
     );
   });
+
+  // 13. Inline audio is read only up to the cap, never buffered whole
+  await withClient(async (client) => {
+    const CHUNK = 256 * 1024;
+    /** A body that makes chunks on demand and counts what was pulled. */
+    const endless = (limitChunks = Infinity) => {
+      const stats = { pulled: 0, cancelled: false };
+      const body = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (stats.pulled / CHUNK >= limitChunks) return controller.close();
+          stats.pulled += CHUNK;
+          controller.enqueue(new Uint8Array(CHUNK));
+        },
+        cancel() {
+          stats.cancelled = true;
+        },
+      });
+      return { body, stats };
+    };
+
+    // a) The declared size is over the cap: refused before reading the body.
+    let s = endless();
+    resetMock([audioOk(s.body as unknown as Uint8Array, { "Content-Length": String(MAX_INLINE_AUDIO_BYTES + 1) })]);
+    let res = await speak(client, { text: "Hello.", delivery: "inline" });
+    assert(
+      "13. a declared size over the cap is refused without reading the body, and says it was billed",
+      res.isError === true && textOf(res).includes(`${MAX_INLINE_AUDIO_BYTES + 1} bytes`) &&
+        textOf(res).includes("it was billed") && s.stats.pulled <= CHUNK && s.stats.cancelled,
+      `${textOf(res)} | pulled ${s.stats.pulled}, cancelled ${s.stats.cancelled}`
+    );
+
+    // b) No declared size and a body that never ends: stops just past the cap.
+    s = endless();
+    resetMock([audioOk(s.body as unknown as Uint8Array)]);
+    res = await speak(client, { text: "Hello.", delivery: "inline" });
+    assert(
+      "13. an endless body is cut just past the cap and cancelled",
+      res.isError === true && textOf(res).includes(`more than ${MAX_INLINE_AUDIO_BYTES} bytes`) &&
+        textOf(res).includes("it was billed") && s.stats.pulled <= MAX_INLINE_AUDIO_BYTES + 2 * CHUNK && s.stats.cancelled,
+      `${textOf(res)} | pulled ${s.stats.pulled}, cancelled ${s.stats.cancelled}`
+    );
+
+    // c) A body read in chunks, under the cap: returned whole.
+    s = endless(4);
+    resetMock([audioOk(s.body as unknown as Uint8Array)]);
+    res = await speak(client, { text: "Hello.", delivery: "inline" });
+    const audio = res.content?.find((c) => c.type === "audio");
+    assert(
+      "13. a chunked body under the cap comes back whole",
+      res.isError !== true && Buffer.from(audio?.data ?? "", "base64").byteLength === 4 * CHUNK,
+      textOf(res)
+    );
+  });
+
+  // 14. Sign-in time counts: the tool works only in what is left of the 60 s request
+  {
+    /** Call fn as if the request arrived `usedMs` ago (sign-in took that long). */
+    const afterSignIn = <T>(usedMs: number, fn: () => Promise<T>): Promise<T> => {
+      const realNow = Date.now;
+      Date.now = () => realNow() - usedMs;
+      try {
+        return withRequestClock(async (_: void) => fn())(undefined);
+      } finally {
+        Date.now = realNow;
+      }
+    };
+    const keepAlive = setInterval(() => {}, 1_000);
+    try {
+      await withClient(async (client) => {
+        resetMock([]);
+        let res = await afterSignIn(52_000, () => speak(client, { text: "Hello.", delivery: "inline" }));
+        assert(
+          "14. inline with 8 s left is refused before any request, and says nothing was billed",
+          res.isError === true && calls.length === 0 && textOf(res).includes("Nothing was billed"),
+          `${textOf(res)} | ${calls.length} calls`
+        );
+        res = await afterSignIn(56_000, () => speak(client, { text: "Hello." }));
+        assert(
+          "14. file delivery with 4 s left is refused before the token request",
+          res.isError === true && calls.length === 0 && textOf(res).includes("Call again once"),
+          `${textOf(res)} | ${calls.length} calls`
+        );
+        resetMock([tokenOk()]);
+        res = await afterSignIn(40_000, () => speak(client, { text: "Hello." }));
+        assert("14. file delivery with 20 s left still works", res.isError !== true && calls.length === 1, textOf(res));
+
+        // 44 s used: 16 s left, minus 5 s to return: speech gets 11 s, not 50 s.
+        const realFetch = globalThis.fetch;
+        globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) =>
+          new Promise<never>((_, reject) =>
+            init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true })
+          )) as typeof fetch;
+        const t0 = Date.now();
+        try {
+          res = await afterSignIn(44_000, () => speak(client, { text: "Hello.", delivery: "inline" }));
+        } finally {
+          globalThis.fetch = realFetch;
+        }
+        const took = Date.now() - t0;
+        assert(
+          "14. a slow speech call gets only the time left (11 s here), then a clear error",
+          res.isError === true && took >= 10_000 && took < 14_000 && textOf(res).includes("within 11 seconds") &&
+            textOf(res).includes("may have been billed"),
+          `${textOf(res)} | took ${took} ms`
+        );
+      });
+    } finally {
+      clearInterval(keepAlive);
+    }
+  }
 
   console.log(`\n${passed} passed, ${failed} failed`);
   finished = true;

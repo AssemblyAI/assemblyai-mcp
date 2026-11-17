@@ -36,8 +36,9 @@ export const MAX_INLINE_AUDIO_BYTES = 1_500_000;
 /** How long the token in a curl command stays valid. */
 export const SPEECH_TOKEN_TTL_SECONDS = 300;
 
-// Below the MCP route's 60 s maxDuration.
-const SPEECH_TIMEOUT_MS = 50_000;
+// Below the MCP route's 60 s maxDuration. The tool passes less when sign-in
+// already used part of the request's budget.
+export const SPEECH_TIMEOUT_MS = 50_000;
 
 /**
  * One deadline for the whole token request: every attempt, the backoff and the
@@ -124,19 +125,73 @@ async function ttsError(response: Response): Promise<TtsError> {
 }
 
 /**
+ * The audio is larger than the caller's cap. The speech was already made, so
+ * it was billed. `bytes` is the declared size, or, when the body had no
+ * Content-Length, the bytes read when we stopped (the real size is larger).
+ */
+export class AudioTooLargeError extends Error {
+  constructor(
+    readonly bytes: number,
+    readonly exact: boolean
+  ) {
+    super(`The audio is ${exact ? "" : "more than "}${bytes} bytes.`);
+    this.name = "AudioTooLargeError";
+  }
+}
+
+/** Read a body, but stop and cancel it once it passes `maxBytes`. */
+async function readCapped(response: Response, maxBytes: number): Promise<Buffer> {
+  const declared = numberHeader(response, "content-length");
+  if (declared !== undefined && declared > maxBytes) {
+    await response.body?.cancel().catch(() => {});
+    throw new AudioTooLargeError(declared, true);
+  }
+  if (!response.body) return Buffer.alloc(0);
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel().catch(() => {});
+      throw new AudioTooLargeError(maxBytes, false);
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks, total);
+}
+
+export interface SpeechLimits {
+  /** Deadline for the request and the body read. Default SPEECH_TIMEOUT_MS. */
+  timeoutMs?: number;
+  /** Stop reading past this many bytes (AudioTooLargeError). Default: no cap. */
+  maxBytes?: number;
+}
+
+/**
  * Synthesize the whole clip. Not retried: an error status costs nothing, and
  * the caller (an agent) can decide to call again.
  */
-export async function createSpeech(apiKey: string, options: SpeechOptions): Promise<SpeechResult> {
+export async function createSpeech(
+  apiKey: string,
+  options: SpeechOptions,
+  limits: SpeechLimits = {}
+): Promise<SpeechResult> {
   const response = await fetch(`${ttsBaseUrl()}/v1/speech`, {
     method: "POST",
     headers: { Authorization: apiKey, "Content-Type": "application/json" },
     body: JSON.stringify(speechRequestBody(options)),
-    signal: AbortSignal.timeout(SPEECH_TIMEOUT_MS),
+    // Also bounds the body read below.
+    signal: AbortSignal.timeout(limits.timeoutMs ?? SPEECH_TIMEOUT_MS),
   });
   if (!response.ok) throw await ttsError(response);
   return {
-    audio: Buffer.from(await response.arrayBuffer()),
+    audio:
+      limits.maxBytes === undefined
+        ? Buffer.from(await response.arrayBuffer())
+        : await readCapped(response, limits.maxBytes),
     mimeType: ((response.headers.get("content-type") ?? "audio/mpeg").split(";")[0] ?? "audio/mpeg").trim(),
     voiceId: response.headers.get("x-tts-voice-id") ?? undefined,
     language: response.headers.get("x-tts-language") ?? undefined,

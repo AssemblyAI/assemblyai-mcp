@@ -4,8 +4,10 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
 import { AssemblyAIError } from "../assemblyai";
+import { remainingMs } from "../deadline";
 import { log, logError, keyHash } from "../log";
 import {
+  AudioTooLargeError,
   createSpeech,
   createTtsToken,
   INLINE_BIT_RATE,
@@ -13,11 +15,20 @@ import {
   MAX_INLINE_SPEECH_CHARS,
   MAX_SPEECH_CHARS,
   SPEECH_LANGUAGES,
+  SPEECH_TIMEOUT_MS,
   SPEECH_TOKEN_TTL_SECONDS,
   speechRequestBody,
+  TOKEN_DEADLINE_MS,
   ttsBaseUrl,
   TtsError,
 } from "../tts";
+
+/** Kept free at the end of the request to encode and send the result. */
+export const RETURN_RESERVE_MS = 5_000;
+/** Below this much time, do not start speech: it could be billed and then lost. */
+export const MIN_SPEECH_MS = 10_000;
+/** Below this much time, do not ask for a token. */
+export const MIN_TOKEN_MS = 3_000;
 
 const VOICE_CATALOG = "https://www.assemblyai.com/dashboard/text-to-speech/voices";
 
@@ -165,25 +176,48 @@ export function registerCreateSpeech(server: McpServer): void {
         refuse("inline_wav", 'Inline audio is always MP3. Leave format out, or use delivery "file" for a WAV file.');
       }
 
+      // Sign-in (the OAuth key exchange) may have used part of the request's
+      // 60 s budget: work only in what is left, and keep time to return.
+      const budget = remainingMs() - RETURN_RESERVE_MS;
+      const minimum = delivery === "inline" ? MIN_SPEECH_MS : MIN_TOKEN_MS;
+      if (budget < minimum) {
+        refuse(
+          "no_time_left",
+          "Sign-in took most of this request's time, so the speech was not started. Nothing was billed. Call again once."
+        );
+      }
+
       try {
         if (delivery === "inline") {
-          const speech = await createSpeech(apiKey, {
-            text: args.text,
-            voice_id: args.voice_id,
-            language: args.language,
-            format: "mp3",
-            bit_rate: INLINE_BIT_RATE,
-          });
+          const timeoutMs = Math.min(SPEECH_TIMEOUT_MS, budget);
+          let speech;
+          try {
+            speech = await createSpeech(
+              apiKey,
+              { text: args.text, voice_id: args.voice_id, language: args.language, format: "mp3", bit_rate: INLINE_BIT_RATE },
+              // Stop reading at the cap: an oversized body is never held in memory.
+              { timeoutMs, maxBytes: MAX_INLINE_AUDIO_BYTES }
+            );
+          } catch (err) {
+            if (err instanceof AudioTooLargeError) {
+              // Already synthesized, so already billed: say so, and how to avoid it next time.
+              refuse(
+                "inline_too_large",
+                `${err.message} That is too large to return inline (it was billed). ` +
+                  'Use shorter parts, or delivery "file".'
+              );
+            }
+            if (err instanceof Error && err.name === "TimeoutError") {
+              refuse(
+                "speech_timeout",
+                `The speech service did not finish within ${Math.round(timeoutMs / 1000)} seconds. ` +
+                  "It may have been billed. Do not retry the same text; use shorter parts, or delivery \"file\"."
+              );
+            }
+            throw err;
+          }
           if (speech.audio.byteLength === 0) {
             refuse("no_speech", "The text has nothing to speak (for example only emoji or markup). Nothing was billed.");
-          }
-          if (speech.audio.byteLength > MAX_INLINE_AUDIO_BYTES) {
-            // Already synthesized, so already billed: say so, and how to avoid it next time.
-            refuse(
-              "inline_too_large",
-              `The audio is ${speech.audio.byteLength} bytes, too large to return inline (it was billed). ` +
-                'Use shorter parts, or delivery "file".'
-            );
           }
           const seconds = speech.durationMs !== undefined ? (speech.durationMs / 1000).toFixed(1) : undefined;
           log({
@@ -219,7 +253,7 @@ export function registerCreateSpeech(server: McpServer): void {
           };
         }
 
-        const token = await createTtsToken(apiKey, SPEECH_TOKEN_TTL_SECONDS);
+        const token = await createTtsToken(apiKey, SPEECH_TOKEN_TTL_SECONDS, Math.min(TOKEN_DEADLINE_MS, budget));
         // A new name per call: when long text is split into parts, each part's
         // command must not overwrite the one before (or a file of the user's).
         const outputFile = `speech-${randomBytes(4).toString("hex")}.${format}`;
