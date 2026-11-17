@@ -36,7 +36,7 @@ export const MAX_INLINE_AUDIO_BYTES = 1_500_000;
 /** How long the token in a curl command stays valid. */
 export const SPEECH_TOKEN_TTL_SECONDS = 300;
 
-// Below the MCP route's 60 s maxDuration. The tool passes less when sign-in
+// Below our 60 s request budget (src/deadline.ts). The tool passes less when sign-in
 // already used part of the request's budget.
 export const SPEECH_TIMEOUT_MS = 50_000;
 
@@ -226,7 +226,13 @@ export async function createTtsToken(
         lastError = new AssemblyAIError(await errorMessage(response), response.status);
         continue;
       }
-      if (!response.ok) throw new AssemblyAIError(await errorMessage(response), response.status);
+      if (!response.ok) {
+        const message = await errorMessage(response);
+        // The token host answers a bad key with 404 "Invalid API key". Report it as
+        // the 401 it is: an agent reads a 404 as a missing resource and may retry.
+        const status = response.status === 404 && /invalid api key/i.test(message) ? 401 : response.status;
+        throw new AssemblyAIError(message, status);
+      }
       const { token } = (await response.json()) as { token?: unknown };
       if (typeof token !== "string" || token.length === 0) {
         throw new AssemblyAIError("The token service returned no token.", 502);

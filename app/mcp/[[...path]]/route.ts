@@ -1,6 +1,6 @@
 import { createMcpHandler, withMcpAuth } from "mcp-handler";
 
-import { ROUTE_BUDGET_MS, withRequestClock } from "../../../src/deadline";
+import { withRequestClock } from "../../../src/deadline";
 import { withJsonBodyCheck } from "../../../src/json-body";
 import { RESOURCE_METADATA_PATH, withOAuthExchange } from "../../../src/oauth";
 import { registerTools } from "../../../src/server";
@@ -17,7 +17,8 @@ const handler = createMcpHandler(
     streamableHttpEndpoint: "/mcp",
     sseEndpoint: "/mcp/sse",
     sseMessageEndpoint: "/mcp/message",
-    maxDuration: ROUTE_BUDGET_MS / 1000,
+    // Bounds mcp-handler's SSE wait only; Vercel's limit is the project default.
+    maxDuration: 60,
   }
 );
 

@@ -440,6 +440,22 @@ async function run() {
       rejected.isError === true && textOf(rejected).includes("rejected the API key") && !textOf(rejected).includes("curl"),
       textOf(rejected)
     );
+    // The real token host answers a bad key with 404 "Invalid API key".
+    resetMock([json(404, { error: "Invalid API key" })]);
+    const rejected404 = await speak(client, { text: "Hi." });
+    assert(
+      "10. the token host's 404 for a bad key gets the same 401 message as inline",
+      rejected404.isError === true && textOf(rejected404).includes("rejected the API key (401)") &&
+        !textOf(rejected404).includes("404") && !textOf(rejected404).includes("curl"),
+      textOf(rejected404)
+    );
+    resetMock([json(404, { error: "Not found" })]);
+    const other404 = await speak(client, { text: "Hi." });
+    assert(
+      "10. any other token 404 keeps its status and message",
+      other404.isError === true && textOf(other404).includes("HTTP 404: Not found"),
+      textOf(other404)
+    );
     resetMock([json(200, {})]);
     const none = await speak(client, { text: "Hi." });
     assert("10. an answer with no token is an error, not a command without one", none.isError === true && !textOf(none).includes("curl"), textOf(none));
