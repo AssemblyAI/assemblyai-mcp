@@ -61,6 +61,10 @@
  *   56. create_upload_url says what to do when the network blocks the upload
  *   57. a non-JSON POST body gets a JSON-RPC parse error, not a hang; an oversized one 413 before parsing
  *   58. log fields are capped, so a huge caller value can't make a huge log line
+ *   59. create_upload_url's curl command sends Content-Type: application/octet-stream (Vercel rejects form-urlencoded binary)
+ *   60. su_summary renders summary_type "bullets" chapters (no "— undefined") and still renders "paragraph"
+ *   61. LLM Gateway 400s keep the reason from metadata.errors (understand_transcript, summarize_transcript)
+ *   62. next_step is in structuredContent for create_upload_url, submit_transcript and an unfinished get_transcript
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -70,6 +74,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { registerTools } from "./server";
 import { log, logError, MAX_LOG_FIELD_CHARS, MAX_LOG_STACK_CHARS } from "./log";
 import { MAX_BODY_BYTES, withJsonBodyCheck } from "./json-body";
+import { renderSuSummary } from "./transcript-sections";
 
 interface FetchCall {
   url: string;
@@ -1960,6 +1965,151 @@ async function run() {
     );
     assert("58. a capped log line stays small", lines.every((l) => l.length < 5_000), String(lines.map((l) => l.length)));
   }
+
+  // 59. Without a Content-Type, curl sends application/x-www-form-urlencoded and
+  // Vercel answers "Bad request" for most real audio files (over ~270 KB).
+  process.env.UPLOAD_TOKEN_SECRET = "test-secret-" + "s".repeat(32);
+  await withClientServer(async (client) => {
+    resetMock([]);
+    const res = await callTool(client, "create_upload_url", {}, "k");
+    const command = String(res.structuredContent?.command ?? "");
+    const text = res.content?.[0]?.text ?? "";
+    assert(
+      "59. the curl command sends Content-Type: application/octet-stream",
+      command.includes("-H 'Content-Type: application/octet-stream'") && text.includes(command),
+      command
+    );
+    assert(
+      "59. the guidance says what to do on \"Bad request\"",
+      text.includes('"Bad request"') && text.includes("Content-Type"),
+      text
+    );
+  });
+  delete process.env.UPLOAD_TOKEN_SECRET;
+
+  // 60. summary_type "bullets" sends `bullets`, not `text`.
+  {
+    const bulletLines = renderSuSummary([
+      { start: 0, end: 280000, headline: "Wildfire smoke", bullets: ["- Smoke reaches the US.", "Air quality drops."] },
+    ]);
+    const bulletText = bulletLines.join("\n");
+    assert(
+      "60. bullets chapters render each bullet, never \"undefined\"",
+      !bulletText.includes("undefined") &&
+        bulletText.includes("[0:00–4:40] Wildfire smoke") &&
+        bulletText.includes("  - Smoke reaches the US.") &&
+        bulletText.includes("  - Air quality drops."),
+      bulletText
+    );
+    const paraText = renderSuSummary([{ start: 0, end: 60000, headline: "Intro", text: "A short intro." }]).join("\n");
+    assert("60. paragraph chapters render as before", paraText.includes("[0:00–1:00] Intro — A short intro."), paraText);
+    const emptyText = renderSuSummary([{ start: 0, end: 1000, headline: "Empty" }]).join("\n");
+    assert("60. a chapter with no text or bullets renders the headline only", !emptyText.includes("undefined"), emptyText);
+  }
+  await withClientServer(async (client) => {
+    resetMock([
+      jsonResponse(200, {
+        speech_understanding: {
+          response: {
+            summarization: {
+              status: "success",
+              summary_type: "bullets",
+              summary: [{ start: 0, end: 5000, headline: "Topic", bullets: ["One point."] }],
+            },
+          },
+        },
+      }),
+    ]);
+    const res = await callTool(
+      client,
+      "understand_transcript",
+      { transcript_id: "txn-b", speech_understanding: { request: { summarization: { summary_type: "bullets" } } } },
+      "k"
+    );
+    const text = res.content?.[0]?.text ?? "";
+    assert(
+      "60. understand_transcript text shows the bullets",
+      !res.isError && text.includes("  - One point.") && !text.includes("undefined"),
+      text
+    );
+  });
+
+  // 61. The Gateway puts the reason in metadata.errors; message is only "invalid request body".
+  await withClientServer(async (client) => {
+    resetMock([
+      jsonResponse(400, {
+        metadata: { errors: ["target_language 'klingon' is invalid"] },
+        request_id: "r",
+        message: "invalid request body",
+        code: 400,
+      }),
+    ]);
+    const res = await callTool(
+      client,
+      "understand_transcript",
+      { transcript_id: "txn-k", speech_understanding: { request: { translation: { target_languages: ["klingon"] } } } },
+      "k"
+    );
+    const text = res.content?.[0]?.text ?? "";
+    assert(
+      "61. understand_transcript error includes the metadata.errors reason",
+      res.isError === true && text.includes("invalid request body") && text.includes("target_language 'klingon' is invalid"),
+      text
+    );
+  });
+  await withClientServer(async (client) => {
+    resetMock([
+      jsonResponse(400, {
+        metadata: { errors: ["one of messages or prompt required", "model nope is not supported"] },
+        message: "invalid request body",
+      }),
+    ]);
+    const res = await callTool(client, "summarize_transcript", { transcript_id: "txn-s" }, "k");
+    const text = res.content?.[0]?.text ?? "";
+    assert(
+      "61. summarize_transcript error includes every metadata.errors reason",
+      res.isError === true && text.includes("one of messages or prompt required") && text.includes("model nope is not supported"),
+      text
+    );
+  });
+
+  // 62. Claude Code shows the model only structuredContent: the next step must be there too.
+  process.env.UPLOAD_TOKEN_SECRET = "test-secret-" + "s".repeat(32);
+  await withClientServer(async (client) => {
+    resetMock([]);
+    const up = await callTool(client, "create_upload_url", {}, "k");
+    const upNext = String(up.structuredContent?.next_step ?? "");
+    assert(
+      "62. create_upload_url next_step says to pass the printed upload_url to submit_transcript",
+      upNext.includes("upload_url") && upNext.includes("submit_transcript") && upNext.includes("Bad request"),
+      upNext
+    );
+
+    resetMock([jsonResponse(200, { id: "txn-n", status: "queued" })]);
+    const sub = await callTool(client, "submit_transcript", { audio_url: "https://example.com/a.mp3" }, "k");
+    assert(
+      "62. submit_transcript next_step says to poll get_transcript",
+      String(sub.structuredContent?.next_step ?? "").includes("get_transcript"),
+      JSON.stringify(sub.structuredContent)
+    );
+
+    resetMock([jsonResponse(200, { id: "txn-n", status: "processing" })]);
+    const pending = await callTool(client, "get_transcript", { transcript_id: "txn-n" }, "k");
+    assert(
+      "62. get_transcript while processing has a next_step",
+      String(pending.structuredContent?.next_step ?? "").includes("get_transcript"),
+      JSON.stringify(pending.structuredContent)
+    );
+
+    resetMock([jsonResponse(200, { id: "txn-n", status: "completed", text: "hi" })]);
+    const done = await callTool(client, "get_transcript", { transcript_id: "txn-n" }, "k");
+    assert(
+      "62. a completed get_transcript has no next_step",
+      !("next_step" in (done.structuredContent ?? {})),
+      JSON.stringify(done.structuredContent)
+    );
+  });
+  delete process.env.UPLOAD_TOKEN_SECRET;
 
   globalThis.fetch = originalFetch;
 

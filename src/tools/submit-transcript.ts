@@ -534,6 +534,7 @@ export function registerSubmitTranscript(server: McpServer): void {
           structuredContent: {
             transcript_id: record.id,
             status: record.status,
+            next_step: "Call get_transcript with this transcript_id every ~3s until status is completed or error.",
           },
         };
       } catch (err) {

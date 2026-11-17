@@ -331,7 +331,11 @@ async function safeErrorMessage(response: Response): Promise<string> {
     const body = JSON.parse(text);
     for (const key of ["error", "message", "detail"] as const) {
       if (body && typeof body === "object" && body[key]) {
-        return `HTTP ${response.status}: ${body[key]}`;
+        // The LLM Gateway puts the real reason in metadata.errors and only a
+        // generic "invalid request body" in message. Keep the reason.
+        const reasons = gatewayErrorReasons(body);
+        const suffix = reasons.length > 0 ? ` (${reasons.join("; ")})` : "";
+        return `HTTP ${response.status}: ${body[key]}${suffix}`;
       }
     }
   } catch {
@@ -342,4 +346,14 @@ async function safeErrorMessage(response: Response): Promise<string> {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+/** String reasons from an LLM Gateway error body's metadata.errors, capped. */
+function gatewayErrorReasons(body: unknown): string[] {
+  const errors = (body as { metadata?: { errors?: unknown } })?.metadata?.errors;
+  if (!Array.isArray(errors)) return [];
+  return errors
+    .filter((e): e is string => typeof e === "string" && e.length > 0)
+    .slice(0, 10)
+    .map((e) => e.slice(0, 300));
 }
