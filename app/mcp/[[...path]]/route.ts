@@ -1,6 +1,7 @@
 import { createMcpHandler, withMcpAuth } from "mcp-handler";
 
 import { ROUTE_BUDGET_MS, withRequestClock } from "../../../src/deadline";
+import { withJsonBodyCheck } from "../../../src/json-body";
 import { RESOURCE_METADATA_PATH, withOAuthExchange } from "../../../src/oauth";
 import { registerTools } from "../../../src/server";
 
@@ -39,7 +40,7 @@ async function verifyToken(_req: Request, bearer?: string) {
 // 60 s budget after sign-in (see src/deadline.ts).
 const authed = withRequestClock(
   withOAuthExchange(
-    withMcpAuth(handler, verifyToken, {
+    withMcpAuth(withJsonBodyCheck(handler), verifyToken, {
       required: true,
       resourceMetadataPath: RESOURCE_METADATA_PATH,
     })
