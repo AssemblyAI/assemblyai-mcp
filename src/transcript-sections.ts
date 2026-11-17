@@ -100,11 +100,13 @@ export function renderSuSummary(chapters: SuChapter[]): string[] {
   const lines = ["", "--- su_summary (chaptered summary; start–end are m:ss) ---"];
   for (const c of chapters) {
     const head = `[${formatMs(c.start)}–${formatMs(c.end)}] ${c.headline}`;
-    const bullets = Array.isArray(c.bullets)
-      ? c.bullets.filter((b) => typeof b === "string" && b.trim() !== "")
-      : typeof c.bullets === "string" && c.bullets.trim() !== ""
-        ? [c.bullets]
-        : [];
+    // One string can hold several bullets, one on each line: split them, so
+    // every bullet stays indented under its chapter.
+    const raw = Array.isArray(c.bullets) ? c.bullets : typeof c.bullets === "string" ? [c.bullets] : [];
+    const bullets = raw
+      .filter((b): b is string => typeof b === "string")
+      .flatMap((b) => b.split(/\r?\n/))
+      .filter((b) => b.trim() !== "");
     if (bullets.length > 0) {
       lines.push(head);
       // The API may already prefix each bullet with "- " or "• ".

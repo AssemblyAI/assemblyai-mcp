@@ -62,8 +62,8 @@
  *   57. a non-JSON POST body gets a JSON-RPC parse error, not a hang; an oversized one 413 before parsing
  *   58. log fields are capped, so a huge caller value can't make a huge log line
  *   59. create_upload_url's curl command sends Content-Type: application/octet-stream (Vercel rejects form-urlencoded binary)
- *   60. su_summary renders summary_type "bullets" chapters (no "— undefined") and still renders "paragraph"
- *   61. LLM Gateway 400s keep the reason from metadata.errors (understand_transcript, summarize_transcript)
+ *   60. su_summary renders summary_type "bullets" chapters (no "— undefined"), splits multiline bullet strings, still renders "paragraph"
+ *   61. LLM Gateway 400s give the caller the reason from metadata.errors, but the logs do not get it (it can echo input)
  *   62. next_step is in structuredContent for create_upload_url, submit_transcript and an unfinished get_transcript
  */
 
@@ -2001,6 +2001,14 @@ async function run() {
         bulletText.includes("  - Air quality drops."),
       bulletText
     );
+    const multiText = renderSuSummary([
+      { start: 0, end: 1000, headline: "Multi", bullets: "- First\n- Second\r\n\n- Third" },
+    ]).join("\n");
+    assert(
+      "60. a multiline bullet string renders each bullet indented under its chapter",
+      multiText.includes("  - First\n  - Second\n  - Third") && !/\n- /.test(multiText),
+      multiText
+    );
     const paraText = renderSuSummary([{ start: 0, end: 60000, headline: "Intro", text: "A short intro." }]).join("\n");
     assert("60. paragraph chapters render as before", paraText.includes("[0:00–1:00] Intro — A short intro."), paraText);
     const emptyText = renderSuSummary([{ start: 0, end: 1000, headline: "Empty" }]).join("\n");
@@ -2044,13 +2052,26 @@ async function run() {
         code: 400,
       }),
     ]);
-    const res = await callTool(
-      client,
-      "understand_transcript",
-      { transcript_id: "txn-k", speech_understanding: { request: { translation: { target_languages: ["klingon"] } } } },
-      "k"
-    );
+    const logged: string[] = [];
+    const originalLog = console.log;
+    console.log = (line: string) => logged.push(String(line));
+    let res: ToolResult;
+    try {
+      res = await callTool(
+        client,
+        "understand_transcript",
+        { transcript_id: "txn-k", speech_understanding: { request: { translation: { target_languages: ["klingon"] } } } },
+        "k"
+      );
+    } finally {
+      console.log = originalLog;
+    }
     const text = res.content?.[0]?.text ?? "";
+    assert(
+      "61. the error is logged, but without the metadata.errors reason (it can echo caller input)",
+      logged.some((l) => l.includes("invalid request body")) && !logged.some((l) => l.includes("klingon")),
+      logged.join("\n").slice(0, 500)
+    );
     assert(
       "61. understand_transcript error includes the metadata.errors reason",
       res.isError === true && text.includes("invalid request body") && text.includes("target_language 'klingon' is invalid"),
