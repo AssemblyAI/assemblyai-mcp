@@ -61,6 +61,7 @@
  *   56. create_upload_url says what to do when the network blocks the upload
  *   57. a non-JSON POST body gets a JSON-RPC parse error, not a hang; an oversized one 413 before parsing
  *   58. log fields are capped, so a huge caller value can't make a huge log line
+ *   59. submit_transcript accepts speech_models: ['assemblyai-stt-3-7'] and sends it unchanged
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -1960,6 +1961,28 @@ async function run() {
     );
     assert("58. a capped log line stays small", lines.every((l) => l.length < 5_000), String(lines.map((l) => l.length)));
   }
+
+  // 59. submit_transcript accepts speech_models: ['assemblyai-stt-3-7'] and sends it unchanged
+  await withClientServer(async (client) => {
+    resetMock([jsonResponse(200, { id: "txn-59", status: "queued" })]);
+    const result = await callTool(
+      client,
+      "submit_transcript",
+      { audio_url: "https://example.com/x.mp3", speech_models: ["assemblyai-stt-3-7"] },
+      "k"
+    );
+    assert(
+      "59. speech_models: ['assemblyai-stt-3-7'] is accepted",
+      result.isError !== true,
+      JSON.stringify(result.content)
+    );
+    const body = JSON.parse(calls[0]?.body ?? "{}");
+    assert(
+      "59. assemblyai-stt-3-7 is sent to AssemblyAI unchanged",
+      JSON.stringify(body.speech_models) === JSON.stringify(["assemblyai-stt-3-7"]),
+      JSON.stringify(body)
+    );
+  });
 
   globalThis.fetch = originalFetch;
 
