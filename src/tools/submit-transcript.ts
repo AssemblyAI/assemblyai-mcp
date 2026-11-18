@@ -504,9 +504,22 @@ export function registerSubmitTranscript(server: McpServer): void {
       }
 
       try {
-        if (!args.redact_pii && (args.redact_pii_policies || args.redact_pii_sub)) {
+        // Every redact_pii_* option needs the master flag: a model that sets
+        // one without it gets the same refusal, not an option sent silently.
+        const needsRedactPii = (
+          [
+            "redact_pii_policies",
+            "redact_pii_sub",
+            "redact_pii_audio",
+            "redact_pii_audio_quality",
+            "redact_pii_audio_options",
+            "redact_pii_return_unredacted",
+            "redact_static_entities",
+          ] as const
+        ).filter((k) => args[k]);
+        if (!args.redact_pii && needsRedactPii.length > 0) {
           throw new Error(
-            "redact_pii_policies/redact_pii_sub require redact_pii: true. Set redact_pii to enable redaction."
+            `${needsRedactPii.join(", ")} require redact_pii: true. Set redact_pii to enable redaction.`
           );
         }
         const { audio_url: _url, file: _file, summarization: _ignored, ...rest } = args;

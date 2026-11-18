@@ -35,6 +35,7 @@
  *   30. delete_transcript 404 → already deleted or not found message
  *   31. renderSpeechUnderstanding: mapping-only custom_formatting, failed-feature marker, empty action_items note
  *   32. submit_transcript rejects redact_pii_policies/redact_pii_sub without redact_pii, no fetch
+ *   32b. every redact_pii_* option is refused without redact_pii; passes through with it
  *   33. understand_transcript's /v1/understanding is not retried on 5xx (billable, non-idempotent)
  *   34. submit_transcript punctuate:false/format_text:false pass through explicitly
  *   35. submit_transcript rejects speech_models: [] before calling AssemblyAI
@@ -520,6 +521,7 @@ async function run() {
         speech_threshold: 0.5,
         content_safety: true,
         content_safety_confidence: 60,
+        redact_pii: true,
         redact_pii_return_unredacted: true,
         multichannel: true,
         disfluencies: true,
@@ -1134,6 +1136,55 @@ async function run() {
       "32. redact_pii_policies without redact_pii rejected before calling AssemblyAI",
       result.isError === true && text.includes("redact_pii: true") && calls.length === 0,
       `isError=${result.isError} text=${text} calls=${calls.length}`
+    );
+  });
+
+  // 32b. The rest of the redact_pii_* family gets the same refusal (they used
+  // to pass straight through without redact_pii — issue #30). With the flag
+  // set they pass through unchanged.
+  await withClientServer(async (client) => {
+    for (const option of [
+      { redact_pii_audio: true },
+      { redact_pii_audio_quality: "wav" },
+      { redact_pii_audio_options: { return_redacted_no_speech_audio: true } },
+      { redact_pii_return_unredacted: true },
+      { redact_static_entities: { INTERNAL: ["secret"] } },
+      { redact_pii_sub: "hash" },
+    ]) {
+      resetMock([]);
+      const res = await callTool(
+        client,
+        "submit_transcript",
+        { audio_url: "https://example.com/x.mp3", ...option },
+        "k"
+      );
+      const text = (res.content?.[0]?.text ?? "").toLowerCase();
+      assert(
+        `32b. ${Object.keys(option)[0]} without redact_pii rejected before calling AssemblyAI`,
+        res.isError === true && text.includes("redact_pii: true") && calls.length === 0,
+        `isError=${res.isError} text=${text} calls=${calls.length}`
+      );
+    }
+    resetMock([jsonResponse(200, { id: "txn-pii", status: "queued" })]);
+    const ok = await callTool(
+      client,
+      "submit_transcript",
+      {
+        audio_url: "https://example.com/x.mp3",
+        redact_pii: true,
+        redact_pii_audio: true,
+        redact_static_entities: { INTERNAL: ["secret"] },
+      },
+      "k"
+    );
+    const sent = JSON.parse(calls[0]?.body ?? "{}") as Record<string, unknown>;
+    assert(
+      "32b. redact_pii_* options still pass through with redact_pii: true",
+      ok.isError !== true &&
+        sent.redact_pii === true &&
+        sent.redact_pii_audio === true &&
+        (sent.redact_static_entities as Record<string, string[]>)?.INTERNAL?.[0] === "secret",
+      calls[0]?.body ?? "no call"
     );
   });
 
