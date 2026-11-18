@@ -70,6 +70,7 @@
  *   63. next_step is in structuredContent for create_upload_url, submit_transcript and an unfinished get_transcript
  *   64. a transcript_id that could leave /v2/transcript/ ("..", ".", "a/b", "%2e%2e", "") is refused before any fetch,
  *       by every transcript tool and by the API helpers themselves (issue #73)
+ *   66. requestWithRetry doesn't back off after its last attempt, and a hung upstream is cut at the call's budget
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -77,6 +78,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
 import { registerTools } from "./server";
+import { AssemblyAIError, requestWithRetry } from "./assemblyai";
 import { log, logError, MAX_LOG_FIELD_CHARS, MAX_LOG_STACK_CHARS } from "./log";
 import { MAX_BODY_BYTES, withJsonBodyCheck } from "./json-body";
 import { renderSuSummary } from "./transcript-sections";
@@ -2291,6 +2293,40 @@ async function run() {
     }
   }
   delete process.env.UPLOAD_TOKEN_SECRET;
+  // 66. no backoff after the last attempt: a single-attempt 5xx fails right away
+  {
+    resetMock([jsonResponse(500, { error: "boom" })]);
+    const started = Date.now();
+    const err = await requestWithRetry("k", "POST", "/v2/transcript", { a: 1 }, 1).catch((e) => e);
+    const elapsed = Date.now() - started;
+    assert(
+      "66. a single-attempt 5xx throws without sleeping a backoff first",
+      err instanceof AssemblyAIError && err.status === 500 && elapsed < 500 && calls.length === 1,
+      `elapsed=${elapsed}ms calls=${calls.length} err=${String(err)}`
+    );
+  }
+
+  // 66. a hung upstream is aborted at the call's budget instead of hanging
+  {
+    globalThis.fetch = ((_input: RequestInfo | URL, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(init.signal?.reason));
+      })) as typeof fetch;
+    // AbortSignal.timeout's timer is unref'd; keep this script alive until it fires.
+    const keepAlive = setTimeout(() => {}, 5_000);
+    const started = Date.now();
+    const err = await requestWithRetry("k", "GET", "/v2/transcript/hung", undefined, 3, undefined, 150).catch(
+      (e) => e
+    );
+    const elapsed = Date.now() - started;
+    clearTimeout(keepAlive);
+    installMockFetch();
+    assert(
+      "66. a hung GET is cut at the budget with a 504, without waiting out the backoffs",
+      err instanceof AssemblyAIError && err.status === 504 && elapsed < 1_000,
+      `elapsed=${elapsed}ms err=${String(err)}`
+    );
+  }
 
   globalThis.fetch = originalFetch;
 
