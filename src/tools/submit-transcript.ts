@@ -281,13 +281,14 @@ export function registerSubmitTranscript(server: McpServer): void {
           .optional()
           .describe("Fail transcription if detected-language confidence is below this (0–1)."),
         speech_models: z
-          .array(z.enum(["universal-3-5-pro", "universal-2"]))
+          .array(z.enum(["assemblyai-stt-3-7", "universal-3-5-pro", "universal-2"]))
           .min(1)
           .optional()
           .describe(
             "Priority-ordered model list; first supported model runs, falls back to next. " +
               "Default ['universal-3-5-pro','universal-2'] is right for almost all cases. " +
-              "Must not be empty — omit the field entirely to use the default."
+              "Must not be empty — omit the field entirely to use the default. " +
+              "'assemblyai-stt-3-7' is the newest model; it takes priority wherever it appears and keeps disfluencies (filler words) by default."
           ),
         temperature: z
           .number()

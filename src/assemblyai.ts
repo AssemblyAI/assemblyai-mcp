@@ -67,7 +67,7 @@ export interface TranscriptSubmitOptions {
   };
   language_confidence_threshold?: number;
   // Models
-  speech_models?: Array<"universal-3-5-pro" | "universal-2">;
+  speech_models?: Array<"universal-3-5-pro" | "universal-2" | "assemblyai-stt-3-7">;
   temperature?: number;
   // Diarization
   speaker_options?: { min_speakers_expected?: number; max_speakers_expected?: number };
@@ -172,7 +172,7 @@ export async function submitTranscript(
 ): Promise<TranscriptRecord> {
   const payload: Record<string, unknown> = {
     audio_url: options.audio_url,
-    // The v2 API only accepts universal-3-5-pro and universal-2. Pin the
+    // The v2 API accepts universal-3-5-pro, universal-2, and assemblyai-stt-3-7. Pin the
     // priority list unless the caller overrides, so model selection doesn't
     // drift with API-side defaults.
     speech_models: options.speech_models ?? ["universal-3-5-pro", "universal-2"],
