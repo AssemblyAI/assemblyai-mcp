@@ -22,7 +22,7 @@
  *  10. the protected resource metadata names the authorization server and scopes
  */
 
-import { GET as resourceMetadata } from "../app/.well-known/oauth-protected-resource/route";
+import { GET as resourceMetadata, OPTIONS as resourceOptions } from "../app/.well-known/oauth-protected-resource/route";
 import {
   clearExchangeCache,
   type ExchangeDeps,
@@ -405,6 +405,17 @@ async function run() {
         JSON.stringify(body.scopes_supported) === JSON.stringify(["aai:api", "offline_access"]) &&
         body.resource === "https://mcp.example.com/mcp",
       JSON.stringify(body)
+    );
+    assert(
+      "10. metadata response carries CORS headers",
+      res.headers.get("access-control-allow-origin") === "*",
+      res.headers.get("access-control-allow-origin") ?? undefined
+    );
+    const optRes = resourceOptions();
+    assert(
+      "10. metadata OPTIONS preflight answers 204 with CORS headers",
+      optRes.status === 204 && optRes.headers.get("access-control-allow-origin") === "*",
+      String(optRes.status)
     );
   }
 

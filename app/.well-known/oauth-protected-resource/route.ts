@@ -21,7 +21,23 @@ export function GET(req: Request) {
       resource_documentation: "https://www.assemblyai.com/docs/mcp-server",
     },
     {
-      headers: { "Cache-Control": "public, max-age=3600" },
+      headers: {
+        "Cache-Control": "public, max-age=3600",
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, OPTIONS",
+        "Access-Control-Allow-Headers": "Authorization, Content-Type",
+      },
     }
   );
+}
+
+export function OPTIONS() {
+  return new Response(null, {
+    status: 204,
+    headers: {
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "GET, OPTIONS",
+      "Access-Control-Allow-Headers": "Authorization, Content-Type",
+    },
+  });
 }
