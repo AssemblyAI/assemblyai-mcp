@@ -1332,6 +1332,31 @@ async function run() {
     );
   });
 
+  // 42b. safeErrorMessage extracts message from OpenAI-format error { error: { message } } and metadata.errors
+  await withClientServer(async (client) => {
+    resetMock([
+      jsonResponse(400, {
+        error: { message: "Invalid model specified in gateway", type: "invalid_request_error" },
+      }),
+    ]);
+    const result1 = await callTool(client, "summarize_transcript", { transcript_id: "txn-ai" }, "k");
+    const text1 = result1.content?.[0]?.text ?? "";
+    assert(
+      "42b. extracts nested error.message without [object Object]",
+      result1.isError === true && text1.includes("Invalid model specified in gateway") && !text1.includes("[object Object]"),
+      text1
+    );
+
+    resetMock([jsonResponse(400, { metadata: { errors: ["Custom prompt exceeds maximum length"] } })]);
+    const result2 = await callTool(client, "summarize_transcript", { transcript_id: "txn-ai" }, "k");
+    const text2 = result2.content?.[0]?.text ?? "";
+    assert(
+      "42b. extracts metadata.errors",
+      result2.isError === true && text2.includes("Custom prompt exceeds maximum length"),
+      text2
+    );
+  });
+
   // 43. every tool has a title and read-only/destructive annotations (required by the
   //     Anthropic and OpenAI directories); delete is destructive, reads are read-only
   await withClientServer(async (client) => {
