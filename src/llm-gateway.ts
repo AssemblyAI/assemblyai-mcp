@@ -30,9 +30,12 @@ export async function summarizeViaLlmGateway(
   apiKey: string,
   options: SummarizeOptions
 ): Promise<string> {
+  const promptContent = options.prompt.includes("{{ transcript }}")
+    ? options.prompt
+    : `${options.prompt}\n\n{{ transcript }}`;
   const body = {
     model: options.model ?? LLM_GATEWAY_MODEL,
-    messages: [{ role: "user", content: `${options.prompt}\n\n{{ transcript }}` }],
+    messages: [{ role: "user", content: promptContent }],
     transcript_id: options.transcript_id,
     max_tokens: options.maxTokens ?? 1000,
   };

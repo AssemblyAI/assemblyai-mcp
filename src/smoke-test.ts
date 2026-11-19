@@ -484,6 +484,25 @@ async function run() {
     assert("14. returns summary content", text.includes("point one"), text);
   });
 
+  // 14b. summarize_transcript does not duplicate {{ transcript }} if custom_prompt already includes it
+  await withClientServer(async (client) => {
+    resetMock([jsonResponse(200, { choices: [{ message: { content: "custom summary" } }] })]);
+    await callTool(
+      client,
+      "summarize_transcript",
+      { transcript_id: "txn-ai", style: "custom", custom_prompt: "Summarize: {{ transcript }}" },
+      "k"
+    );
+    const body = JSON.parse(calls[0]?.body ?? "{}");
+    const content = body.messages?.[0]?.content ?? "";
+    const occurrences = (content.match(/\{\{ transcript \}\}/g) ?? []).length;
+    assert(
+      "14b. prompt does not duplicate {{ transcript }} tag when already present",
+      occurrences === 1 && content === "Summarize: {{ transcript }}",
+      content
+    );
+  });
+
   // 15. summarize_transcript with style=custom but no custom_prompt → error, no gateway call
   await withClientServer(async (client) => {
     resetMock([]);
