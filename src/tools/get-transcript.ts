@@ -10,6 +10,8 @@ import {
   renderTranslatedUtterances,
   renderSpeechUnderstanding,
   renderContentSafety,
+  renderContentSafetyEvidence,
+  renderEntityEvidence,
   renderTopics,
   renderHighlights,
   renderUnredactedText,
@@ -261,6 +263,7 @@ function formatTranscript(s: ShapedTranscript): string {
     for (const e of s.entities) {
       lines.push(`${e.entity_type}: ${e.text}`);
     }
+    lines.push(...renderEntityEvidence(s.entities));
   }
 
   if (s.summary) {
@@ -280,6 +283,9 @@ function formatTranscript(s: ShapedTranscript): string {
   }
   if (s.content_safety_labels?.summary && Object.keys(s.content_safety_labels.summary).length > 0) {
     lines.push(...renderContentSafety(s.content_safety_labels));
+  }
+  if (s.content_safety_labels) {
+    lines.push(...renderContentSafetyEvidence(s.content_safety_labels));
   }
   if (s.iab_categories_result?.summary && Object.keys(s.iab_categories_result.summary).length > 0) {
     lines.push(...renderTopics(s.iab_categories_result));
