@@ -660,6 +660,41 @@ async function run() {
     );
   });
 
+  // 19b. speakers_expected passes through at top level and normalizes from speaker_options
+  await withClientServer(async (client) => {
+    resetMock([jsonResponse(200, { id: "txn-spk1", status: "queued" })]);
+    await callTool(
+      client,
+      "submit_transcript",
+      {
+        audio_url: "https://example.com/x.mp3",
+        speaker_labels: true,
+        speakers_expected: 3,
+      },
+      "k"
+    );
+    const body1 = JSON.parse(calls[0]?.body ?? "{}");
+    assert("19b. top-level speakers_expected passes through", body1.speakers_expected === 3, JSON.stringify(body1));
+
+    resetMock([jsonResponse(200, { id: "txn-spk2", status: "queued" })]);
+    await callTool(
+      client,
+      "submit_transcript",
+      {
+        audio_url: "https://example.com/x.mp3",
+        speaker_labels: true,
+        speaker_options: { speakers_expected: 4 },
+      },
+      "k"
+    );
+    const body2 = JSON.parse(calls[0]?.body ?? "{}");
+    assert(
+      "19b. nested speaker_options.speakers_expected normalizes to top level",
+      body2.speakers_expected === 4,
+      JSON.stringify(body2)
+    );
+  });
+
   // 20. inline speech_understanding passes through with the request wrapper
   await withClientServer(async (client) => {
     resetMock([jsonResponse(200, { id: "txn-su", status: "queued" })]);

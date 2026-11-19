@@ -407,10 +407,17 @@ export function registerSubmitTranscript(server: McpServer): void {
           })
           .optional()
           .describe("Options refining language_detection."),
+        speakers_expected: z
+          .number()
+          .int()
+          .min(1)
+          .optional()
+          .describe("Exact number of speakers expected in the audio. Use with speaker_labels=true."),
         speaker_options: z
           .looseObject({
             min_speakers_expected: z.number().int().min(1).optional(),
             max_speakers_expected: z.number().int().min(1).optional(),
+            speakers_expected: z.number().int().min(1).optional(),
           })
           .optional()
           .describe("Diarization hints; use with speaker_labels=true."),

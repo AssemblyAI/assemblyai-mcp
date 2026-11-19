@@ -70,7 +70,8 @@ export interface TranscriptSubmitOptions {
   speech_models?: Array<"universal-3-5-pro" | "universal-2">;
   temperature?: number;
   // Diarization
-  speaker_options?: { min_speakers_expected?: number; max_speakers_expected?: number };
+  speakers_expected?: number;
+  speaker_options?: { min_speakers_expected?: number; max_speakers_expected?: number; speakers_expected?: number };
   // Guardrails
   filter_profanity?: boolean;
   speech_threshold?: number;
@@ -188,6 +189,9 @@ export async function submitTranscript(
   for (const [key, value] of Object.entries(options)) {
     if (HANDLED_KEYS.has(key as keyof TranscriptSubmitOptions)) continue;
     if (value !== undefined) payload[key] = value;
+  }
+  if (payload.speakers_expected === undefined && options.speaker_options?.speakers_expected !== undefined) {
+    payload.speakers_expected = options.speaker_options.speakers_expected;
   }
   // retries=1: POST /v2/transcript is a billable, non-idempotent create —
   // retrying it on a transient 5xx would queue a second transcription and
