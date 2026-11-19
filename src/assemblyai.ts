@@ -145,7 +145,7 @@ export interface TranscriptRecord {
   /** Echo of the request param — signals a redacted audio file exists. */
   redact_pii_audio?: boolean;
   // Not yet observed in a live response — verify via test:live before relying on it (see PR #1 review).
-  metadata?: { domain_used?: string | null; warnings?: Array<{ message: string }> };
+  metadata?: { domain_used?: string | null; warnings?: Array<string | { message: string }> };
 }
 
 /**

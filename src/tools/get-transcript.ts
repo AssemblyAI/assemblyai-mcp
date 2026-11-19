@@ -154,7 +154,7 @@ interface ShapedTranscript {
   redacted_audio_url?: string;
   redacted_audio_pending?: boolean;
   redacted_audio_error?: string;
-  metadata?: { domain_used?: string | null; warnings?: Array<{ message: string }> };
+  metadata?: { domain_used?: string | null; warnings?: Array<string | { message: string }> };
 }
 
 function shape(record: TranscriptRecord, redactedAudioUrl?: string, includeWords = false): ShapedTranscript {
