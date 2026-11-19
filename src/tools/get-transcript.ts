@@ -139,6 +139,7 @@ interface ShapedTranscript {
   speech_model_used?: string;
   audio_duration?: number;
   speakers?: Array<TranslatedUtterance & { words?: WordTiming[] }>;
+  utterances?: Array<TranslatedUtterance & { words?: WordTiming[] }>;
   /** Only with include_words on a transcript without utterances (no speaker_labels). */
   words?: WordTiming[];
   summary?: string;
@@ -171,7 +172,9 @@ function shape(record: TranscriptRecord, redactedAudioUrl?: string, includeWords
   // != null (not !== undefined): an explicit `null` from the API means
   // "no data", same as the field being absent — don't leak it downstream.
   if (record.utterances != null && record.utterances.length > 0) {
-    out.speakers = includeWords ? record.utterances : record.utterances.map(({ words: _words, ...u }) => u);
+    const speakers = includeWords ? record.utterances : record.utterances.map(({ words: _words, ...u }) => u);
+    out.speakers = speakers;
+    out.utterances = speakers;
   } else if (includeWords && record.words != null && record.words.length > 0) {
     // No speaker_labels: utterances are null and the words only exist at the top level.
     out.words = record.words;
