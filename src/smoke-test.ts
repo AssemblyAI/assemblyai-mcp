@@ -57,7 +57,8 @@
  *   52. ChatGPT files: openai/fileParams + file schema; download_url is sent as audio_url
  *   53. submit_transcript's POST /v2/transcript is not retried on 5xx (billable, non-idempotent)
  *   54. summarize_transcript's POST /v1/chat/completions is not retried on 5xx (billable, non-idempotent)
- *   55. submit_transcript refuses our own /upload/<token> link as audio_url, without echoing it
+ *   55. submit_transcript refuses our own /upload/<token> link as audio_url, without echoing it —
+ *       including respellings (trailing-dot host, doubled slashes, uppercase path, explicit port)
  *   56. create_upload_url says what to do when the network blocks the upload
  *   57. a non-JSON POST body gets a JSON-RPC parse error, not a hang; an oversized one 413 before parsing
  *   58. log fields are capped, so a huge caller value can't make a huge log line
@@ -1861,6 +1862,38 @@ async function run() {
       const ok = await callTool(client, "submit_transcript", { audio_url: other }, "k");
       assert(`55. ${label} is still accepted`, ok.isError !== true && calls.length === 1, JSON.stringify(ok));
     }
+    // Respellings of the same link must be refused too: the harm is the token
+    // reaching a transcript record, not whether the route would answer (issue #29).
+    for (const [label, variant] of [
+      ["trailing-dot host", "https://mcp.assemblyai.com./upload/tok-SECRET-abc123"],
+      ["doubled leading slash", "https://mcp.assemblyai.com//upload/tok-SECRET-abc123"],
+      ["empty path segment", "https://mcp.assemblyai.com/upload//tok-SECRET-abc123"],
+      ["uppercase path", "https://mcp.assemblyai.com/UPLOAD/tok-SECRET-abc123"],
+      ["explicit port", "https://mcp.assemblyai.com:8080/upload/tok-SECRET-abc123"],
+    ]) {
+      resetMock([]);
+      const res = await callTool(client, "submit_transcript", { audio_url: variant }, "k");
+      const variantText = res.content?.[0]?.text ?? "";
+      assert(
+        `55. the ${label} variant of the upload link is refused`,
+        res.isError === true && calls.length === 0 && !variantText.includes("tok-SECRET"),
+        `isError=${res.isError} calls=${calls.length} text=${variantText}`
+      );
+    }
+    // The file channel is a loose object any client can fill — the link must be
+    // refused there too (the check used to run only for source "audio_url").
+    resetMock([]);
+    const viaFile = await callTool(
+      client,
+      "submit_transcript",
+      { file: { download_url: "https://mcp.assemblyai.com/upload/tok-SECRET-abc123", file_id: "x" } },
+      "k"
+    );
+    assert(
+      "55. the upload link passed via file.download_url is refused",
+      viaFile.isError === true && calls.length === 0 && !(viaFile.content?.[0]?.text ?? "").includes("tok-SECRET"),
+      `isError=${viaFile.isError} calls=${calls.length}`
+    );
   });
 
   // 56. A blocked network gets a clear next step, not retries or workarounds.

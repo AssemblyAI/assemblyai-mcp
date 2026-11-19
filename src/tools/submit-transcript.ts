@@ -80,7 +80,7 @@ function validateAudioUrl(audioUrl: string): void {
   }
 }
 
-const UPLOAD_LINK_PATH = /^\/upload\/[^/]+\/?$/;
+const UPLOAD_LINK_PATH = /^\/upload\/[^/]+\/?$/i;
 
 /**
  * The link `create_upload_url` hands out receives files (POST/PUT); it is not
@@ -92,7 +92,17 @@ const UPLOAD_LINK_PATH = /^\/upload\/[^/]+\/?$/;
 function isOwnUploadLink(audioUrl: string, ownHosts: ReadonlySet<string>): boolean {
   try {
     const parsed = new URL(audioUrl);
-    return ownHosts.has(parsed.host.toLowerCase()) && UPLOAD_LINK_PATH.test(parsed.pathname);
+    // Canonicalize before comparing: the harm is the link reaching a
+    // transcript record, not whether the route would answer it — so a
+    // trailing-dot FQDN, an explicit port, doubled slashes or a differently
+    // cased path must all still match (issue #29).
+    const hostname = parsed.hostname.replace(/\.+$/, "").toLowerCase();
+    const path = parsed.pathname.replace(/\/{2,}/g, "/");
+    if (!UPLOAD_LINK_PATH.test(path)) return false;
+    for (const own of ownHosts) {
+      if (hostname === own.replace(/:\d+$/, "").replace(/\.+$/, "")) return true;
+    }
+    return false;
   } catch {
     return false;
   }
@@ -480,10 +490,12 @@ export function registerSubmitTranscript(server: McpServer): void {
       try {
         ({ url: audioUrl, source } = pickAudioUrl(args.audio_url, fileUrl));
         validateAudioUrl(audioUrl);
-        if (source === "audio_url" && isOwnUploadLink(audioUrl, ownHostsOf(extra.requestInfo?.headers))) {
-          // Do not echo the link: its token can upload into the user's account.
+        // Whichever param carried it — `file.download_url` is a loose object any
+        // client can fill, not only ChatGPT — the resolved URL must not be our
+        // upload link. Do not echo it: its token can upload into the user's account.
+        if (isOwnUploadLink(audioUrl, ownHostsOf(extra.requestInfo?.headers))) {
           throw new AudioSourceError(
-            "audio_url is the upload link from create_upload_url, not the uploaded file. " +
+            "That is the upload link from create_upload_url, not the uploaded file. " +
               "Run the curl command it gave you with the file path, then pass the `upload_url` " +
               "that the command prints as audio_url.",
             "upload_link",
