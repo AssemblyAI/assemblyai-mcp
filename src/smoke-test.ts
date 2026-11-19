@@ -389,6 +389,18 @@ async function run() {
     );
   });
 
+  // 8b. get_transcript 429 → rate-limit message with a longer-than-usual backoff
+  await withClientServer(async (client) => {
+    resetMock([jsonResponse(429, { error: "rate limit exceeded" })]);
+    const result = await callTool(client, "get_transcript", { transcript_id: "txn-rl" }, "k");
+    const text = (result.content?.[0]?.text ?? "").toLowerCase();
+    assert(
+      "8b. 429 → rate limit message with a longer backoff than the ~3s poll",
+      result.isError === true && text.includes("rate limit") && text.includes("60"),
+      `isError=${result.isError} text=${text}`
+    );
+  });
+
   // 9. submit_transcript sentiment_analysis → payload flag + pinned speech_models
   await withClientServer(async (client) => {
     resetMock([jsonResponse(200, { id: "txn-s", status: "queued" })]);
