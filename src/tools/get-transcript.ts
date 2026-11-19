@@ -21,6 +21,7 @@ import {
   type AutoHighlightsResult,
   type TranslatedUtterance,
 } from "../transcript-sections";
+import { transcriptIdSchema } from "../transcript-id";
 
 export function registerGetTranscript(server: McpServer): void {
   server.registerTool(
@@ -40,9 +41,7 @@ export function registerGetTranscript(server: McpServer): void {
         openWorldHint: false,
       },
       inputSchema: {
-        transcript_id: z
-          .string()
-          .describe("The transcript id returned by submit_transcript."),
+        transcript_id: transcriptIdSchema("The transcript id returned by submit_transcript."),
         include_words: z
           .boolean()
           .optional()

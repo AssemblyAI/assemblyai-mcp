@@ -6,6 +6,7 @@ import { speechUnderstandingSchema } from "../speech-understanding-schema";
 import { renderTranslations, renderTranslatedUtterances, renderSpeechUnderstanding } from "../transcript-sections";
 import { log, keyHash } from "../log";
 import { handleToolError } from "../tool-errors";
+import { transcriptIdSchema } from "../transcript-id";
 
 export function registerUnderstandTranscript(server: McpServer): void {
   server.registerTool(
@@ -26,9 +27,7 @@ export function registerUnderstandTranscript(server: McpServer): void {
         openWorldHint: false,
       },
       inputSchema: {
-        transcript_id: z
-          .string()
-          .describe("The id of a completed transcript (from submit_transcript / get_transcript)."),
+        transcript_id: transcriptIdSchema("The id of a completed transcript (from submit_transcript / get_transcript)."),
         speech_understanding: speechUnderstandingSchema.describe(
           "Feature requests, e.g. { request: { translation: { target_languages: ['es'] } } }. " +
             "Multiple features may be combined in one call."

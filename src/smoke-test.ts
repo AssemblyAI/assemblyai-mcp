@@ -68,6 +68,8 @@
  *   61. su_summary renders summary_type "bullets" chapters (no "— undefined"), splits multiline bullet strings, still renders "paragraph"
  *   62. LLM Gateway 400s give the caller the reason from metadata.errors, but the logs do not get it (it can echo input)
  *   63. next_step is in structuredContent for create_upload_url, submit_transcript and an unfinished get_transcript
+ *   64. a transcript_id that could leave /v2/transcript/ ("..", ".", "a/b", "%2e%2e", "") is refused before any fetch,
+ *       by every transcript tool and by the API helpers themselves (issue #73)
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -2249,6 +2251,45 @@ async function run() {
       JSON.stringify(done.structuredContent)
     );
   });
+
+  // 64. encodeURIComponent leaves "." alone, so ".." would become /v2/ (issue #73).
+  const badIds = ["..", ".", "a/b", "%2e%2e", "", "abc?x=1", "../upload"];
+  await withClientServer(async (client) => {
+    for (const tool of ["get_transcript", "delete_transcript", "understand_transcript", "summarize_transcript"]) {
+      for (const id of badIds) {
+        resetMock([jsonResponse(200, { id: "x", status: "completed", text: "hi" })]);
+        const args: Record<string, unknown> = { transcript_id: id };
+        if (tool === "understand_transcript") args.speech_understanding = { sentiment_analysis: true };
+        if (tool === "summarize_transcript") args.style = "bullets";
+        const r = await callTool(client, tool, args, "k");
+        assert(
+          `64. ${tool} refuses transcript_id ${JSON.stringify(id)} with no fetch`,
+          r.isError === true && calls.length === 0,
+          `isError=${r.isError} calls=${calls.map((c) => c.method + " " + c.url).join(", ")}`
+        );
+      }
+    }
+    resetMock([jsonResponse(200, { id: "5551722-f677-48a6-9287-39c0aafd9ac1", status: "completed", text: "hi" })]);
+    const ok = await callTool(client, "get_transcript", { transcript_id: "5551722-f677-48a6-9287-39c0aafd9ac1" }, "k");
+    assert(
+      "64. a normal transcript id still works",
+      ok.isError !== true && (calls[0]?.url ?? "").endsWith("/v2/transcript/5551722-f677-48a6-9287-39c0aafd9ac1"),
+      JSON.stringify(ok.content)
+    );
+  });
+  {
+    const { getTranscript, deleteTranscript, getRedactedAudio } = await import("./assemblyai");
+    for (const [name, fn] of [["getTranscript", getTranscript], ["deleteTranscript", deleteTranscript], ["getRedactedAudio", getRedactedAudio]] as const) {
+      resetMock([jsonResponse(200, {})]);
+      let threw = false;
+      try {
+        await fn("k", "..");
+      } catch {
+        threw = true;
+      }
+      assert(`64. ${name}("..") throws with no fetch`, threw && calls.length === 0);
+    }
+  }
   delete process.env.UPLOAD_TOKEN_SECRET;
 
   globalThis.fetch = originalFetch;
