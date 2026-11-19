@@ -2290,6 +2290,46 @@ async function run() {
       assert(`64. ${name}("..") throws with no fetch`, threw && calls.length === 0);
     }
   }
+  // #83. Feature statuses must be visible to text-only clients.
+  await withClientServer(async (client) => {
+    const id = "55517222-f677-48a6-9287-39c0aafd9ac1";
+    for (const status of ["unavailable", "error", "success", undefined]) {
+      for (const populated of [false, true]) {
+        const features = {
+          content_safety_labels: { status, summary: populated ? { violence: 0.9 } : {} },
+          iab_categories_result: { status, summary: populated ? { Technology: 0.8 } : {} },
+          auto_highlights_result: { status, results: populated ? [{ count: 2, rank: 1, text: "key phrase" }] : [] },
+        };
+        resetMock([jsonResponse(200, { id, status: "completed", ...features })]);
+        const result = await callTool(client, "get_transcript", { transcript_id: id }, "k");
+        const text = result.content?.[0]?.text ?? "";
+        for (const [feature, header, line] of [
+          ["content_safety", "--- content_safety (label: confidence 0–1) ---", "violence: 0.90"],
+          ["topics", "--- topics (IAB categories; relevance 0–1; top 10) ---", "Technology: 0.80"],
+          ["highlights", "--- highlights (key phrases; count = occurrences) ---", '2× "key phrase"'],
+        ] as const) {
+          const unavailable = status !== undefined && status !== "success";
+          assert(`#83 ${feature} ${status} populated=${populated}: correct text`,
+            !result.isError && (unavailable ? text.includes(`(${feature}: ${status})`) && !text.includes(header)
+              : populated ? text.includes(header + "\n" + line) && !text.includes(`(${feature}:`)
+                : !text.includes(header) && !text.includes(`(${feature}:`)), text);
+        }
+        assert(`#83 ${status} populated=${populated}: structured data unchanged`,
+          Object.entries(features).every(([key, value]) =>
+            JSON.stringify(result.structuredContent?.[key]) === JSON.stringify(value)));
+      }
+    }
+    for (const value of [undefined, null]) {
+      resetMock([jsonResponse(200, { id, status: "completed", content_safety_labels: value,
+        iab_categories_result: value, auto_highlights_result: value })]);
+      const result = await callTool(client, "get_transcript", { transcript_id: id }, "k");
+      assert(`#83 ${value}: absent features remain silent`,
+        result.content?.[0]?.text === `status=completed transcript_id=${id}` &&
+        !("content_safety_labels" in (result.structuredContent ?? {})) &&
+        !("iab_categories_result" in (result.structuredContent ?? {})) &&
+        !("auto_highlights_result" in (result.structuredContent ?? {})));
+    }
+  });
   delete process.env.UPLOAD_TOKEN_SECRET;
 
   globalThis.fetch = originalFetch;

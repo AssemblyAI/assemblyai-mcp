@@ -44,15 +44,18 @@ export interface SpeechUnderstandingResponse {
 }
 
 export interface ContentSafetyLabels {
+  status?: string;
   summary?: Record<string, number>;
   severity_score_summary?: Record<string, { low?: number; medium?: number; high?: number }>;
 }
 
 export interface IabCategoriesResult {
+  status?: string;
   summary?: Record<string, number>;
 }
 
 export interface AutoHighlightsResult {
+  status?: string;
   results?: Array<{ count: number; rank: number; text: string }>;
 }
 
@@ -214,6 +217,9 @@ function formatScore(value: unknown): string {
 }
 
 export function renderContentSafety(labels: ContentSafetyLabels): string[] {
+  if (labels.status !== undefined && labels.status !== "success") {
+    return ["", `(content_safety: ${labels.status})`];
+  }
   const lines = ["", "--- content_safety (label: confidence 0–1) ---"];
   for (const [label, confidence] of Object.entries(labels.summary ?? {})) {
     const sev = labels.severity_score_summary?.[label];
@@ -226,6 +232,9 @@ export function renderContentSafety(labels: ContentSafetyLabels): string[] {
 }
 
 export function renderTopics(result: IabCategoriesResult): string[] {
+  if (result.status !== undefined && result.status !== "success") {
+    return ["", `(topics: ${result.status})`];
+  }
   const lines = ["", "--- topics (IAB categories; relevance 0–1; top 10) ---"];
   const entries = Object.entries(result.summary ?? {})
     .sort((a, b) => b[1] - a[1])
@@ -235,6 +244,9 @@ export function renderTopics(result: IabCategoriesResult): string[] {
 }
 
 export function renderHighlights(result: AutoHighlightsResult): string[] {
+  if (result.status !== undefined && result.status !== "success") {
+    return ["", `(highlights: ${result.status})`];
+  }
   const lines = ["", "--- highlights (key phrases; count = occurrences) ---"];
   const results = [...(result.results ?? [])].sort((a, b) => b.rank - a.rank);
   for (const r of results) lines.push(`${r.count}× "${r.text}"`);
