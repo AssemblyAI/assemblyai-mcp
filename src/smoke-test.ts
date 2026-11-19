@@ -314,6 +314,13 @@ async function run() {
       /\d+:\d{2}/.test(text5b),
       `payload: ${text5b}`
     );
+    assert(
+      "5b. structuredContent provides both speakers and utterances",
+      Array.isArray(result.structuredContent?.speakers) &&
+        Array.isArray(result.structuredContent?.utterances) &&
+        result.structuredContent?.utterances === result.structuredContent?.speakers,
+      JSON.stringify(result.structuredContent)
+    );
   });
 
   // Language metadata must reach both structured and text-only MCP clients.

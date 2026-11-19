@@ -187,7 +187,7 @@ export function registerSubmitTranscript(server: McpServer): void {
           .default(false)
           .describe(
             "Enable speaker diarization. Required if the user wants to know who said what, " +
-              "when speakers change, or per-speaker timestamps. Adds an `utterances` block " +
+              "when speakers change, or per-speaker timestamps. Adds an `utterances` / `speakers` block " +
               "to the eventual get_transcript response with start/end times per speaker."
           ),
         sentiment_analysis: z
