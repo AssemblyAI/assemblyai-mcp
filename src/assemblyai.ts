@@ -303,7 +303,8 @@ export async function requestWithRetry<T>(
 ): Promise<T> {
   let lastError: unknown;
   for (let attempt = 0; attempt < retries; attempt++) {
-    let response: Response;
+    let response: Response | undefined;
+    let text: string;
     try {
       response = await fetch(`${baseUrl}${path}`, {
         method,
@@ -314,23 +315,35 @@ export async function requestWithRetry<T>(
         },
         body: body ? JSON.stringify(body) : undefined,
       });
+      // fetch resolves at the headers: a dropped connection can still fail
+      // while reading either a successful body or an HTTP error body.
+      text = await response.text();
     } catch (err) {
+      // A known 4xx remains non-retryable, even if its body was interrupted.
+      if (response && response.status >= 400 && response.status < 500) {
+        throw new AssemblyAIError(
+          `HTTP ${response.status}: failed to read AssemblyAI error response: ${String(err)}`,
+          502
+        );
+      }
       lastError = err;
       await sleep(2 ** attempt * 1000);
       continue;
     }
 
     if (response.status >= 500) {
-      lastError = await errorFromResponse(response);
+      lastError = errorFromText(response.status, text);
       await sleep(2 ** attempt * 1000);
       continue;
     }
 
     if (response.status >= 400) {
-      throw await errorFromResponse(response);
+      throw errorFromText(response.status, text);
     }
 
-    return (await response.json()) as T;
+    // Parsing happens after the transport catch: complete but malformed JSON
+    // is not a transient body-stream failure and must not replay the request.
+    return JSON.parse(text) as T;
   }
 
   if (lastError instanceof AssemblyAIError) throw lastError;
@@ -342,6 +355,10 @@ export async function requestWithRetry<T>(
 
 async function errorFromResponse(response: Response): Promise<AssemblyAIError> {
   const text = await response.text();
+  return errorFromText(response.status, text);
+}
+
+function errorFromText(status: number, text: string): AssemblyAIError {
   try {
     const body = JSON.parse(text);
     for (const key of ["error", "message", "detail"] as const) {
@@ -351,8 +368,8 @@ async function errorFromResponse(response: Response): Promise<AssemblyAIError> {
         // from the message (see AssemblyAIError.detail).
         const reasons = gatewayErrorReasons(body);
         return new AssemblyAIError(
-          `HTTP ${response.status}: ${body[key]}`,
-          response.status,
+          `HTTP ${status}: ${body[key]}`,
+          status,
           undefined,
           reasons.length > 0 ? reasons.join("; ") : undefined
         );
@@ -361,7 +378,7 @@ async function errorFromResponse(response: Response): Promise<AssemblyAIError> {
   } catch {
     // not JSON
   }
-  return new AssemblyAIError(`HTTP ${response.status}: ${text.slice(0, 500)}`, response.status);
+  return new AssemblyAIError(`HTTP ${status}: ${text.slice(0, 500)}`, status);
 }
 
 function sleep(ms: number): Promise<void> {
