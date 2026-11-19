@@ -100,6 +100,11 @@ export function registerGetTranscript(server: McpServer): void {
         const shaped = shape(record, redactedAudioUrl, args.include_words === true);
         if (redactedAudioPending) shaped.redacted_audio_pending = true;
         if (redactedAudioError) shaped.redacted_audio_error = redactedAudioError;
+        if (shaped.status === "queued" || shaped.status === "processing") {
+          shaped.next_step = "Not finished yet. Call get_transcript again with the same transcript_id in ~3 seconds.";
+        } else if (redactedAudioPending) {
+          shaped.next_step = "The redacted audio is not ready yet. Call get_transcript again shortly to get redacted_audio_url.";
+        }
         log({
           event: "tool_call",
           tool: "get_transcript",
@@ -154,6 +159,8 @@ interface ShapedTranscript {
   redacted_audio_url?: string;
   redacted_audio_pending?: boolean;
   redacted_audio_error?: string;
+  /** What to do next, when there is something to do. Claude Code shows the model only structuredContent. */
+  next_step?: string;
   metadata?: { domain_used?: string | null; warnings?: Array<{ message: string }> };
 }
 

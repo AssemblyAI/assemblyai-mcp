@@ -29,12 +29,19 @@ export const DEFAULT_REDACT_PII_POLICIES = [
 export class AssemblyAIError extends Error {
   status: number;
   transcriptId: string | undefined;
+  /**
+   * The reasons from an LLM Gateway error body (metadata.errors). They can
+   * echo caller input, so they are not part of `message`, which goes to the
+   * logs. handleToolError adds them only to the error the caller gets.
+   */
+  detail: string | undefined;
 
-  constructor(message: string, status: number, transcriptId?: string) {
+  constructor(message: string, status: number, transcriptId?: string, detail?: string) {
     super(message);
     this.name = "AssemblyAIError";
     this.status = status;
     this.transcriptId = transcriptId;
+    this.detail = detail;
   }
 }
 
@@ -268,7 +275,7 @@ export async function uploadFile(
     signal: AbortSignal.timeout(UPLOAD_TIMEOUT_MS),
   });
   if (!response.ok) {
-    throw new AssemblyAIError(await safeErrorMessage(response), response.status);
+    throw await errorFromResponse(response);
   }
   return (await response.json()) as { upload_url: string };
 }
@@ -301,19 +308,13 @@ export async function requestWithRetry<T>(
     }
 
     if (response.status >= 500) {
-      lastError = new AssemblyAIError(
-        await safeErrorMessage(response),
-        response.status
-      );
+      lastError = await errorFromResponse(response);
       await sleep(2 ** attempt * 1000);
       continue;
     }
 
     if (response.status >= 400) {
-      throw new AssemblyAIError(
-        await safeErrorMessage(response),
-        response.status
-      );
+      throw await errorFromResponse(response);
     }
 
     return (await response.json()) as T;
@@ -326,21 +327,40 @@ export async function requestWithRetry<T>(
   );
 }
 
-async function safeErrorMessage(response: Response): Promise<string> {
+async function errorFromResponse(response: Response): Promise<AssemblyAIError> {
   const text = await response.text();
   try {
     const body = JSON.parse(text);
     for (const key of ["error", "message", "detail"] as const) {
       if (body && typeof body === "object" && body[key]) {
-        return `HTTP ${response.status}: ${body[key]}`;
+        // The LLM Gateway puts the real reason in metadata.errors and only a
+        // generic "invalid request body" in message. Keep the reason, apart
+        // from the message (see AssemblyAIError.detail).
+        const reasons = gatewayErrorReasons(body);
+        return new AssemblyAIError(
+          `HTTP ${response.status}: ${body[key]}`,
+          response.status,
+          undefined,
+          reasons.length > 0 ? reasons.join("; ") : undefined
+        );
       }
     }
   } catch {
     // not JSON
   }
-  return `HTTP ${response.status}: ${text.slice(0, 500)}`;
+  return new AssemblyAIError(`HTTP ${response.status}: ${text.slice(0, 500)}`, response.status);
 }
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+/** String reasons from an LLM Gateway error body's metadata.errors, capped. */
+function gatewayErrorReasons(body: unknown): string[] {
+  const errors = (body as { metadata?: { errors?: unknown } })?.metadata?.errors;
+  if (!Array.isArray(errors)) return [];
+  return errors
+    .filter((e): e is string => typeof e === "string" && e.length > 0)
+    .slice(0, 10)
+    .map((e) => e.slice(0, 300));
 }

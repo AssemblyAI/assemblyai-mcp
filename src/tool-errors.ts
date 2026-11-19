@@ -49,5 +49,10 @@ export function handleToolError(err: unknown, ctx: ToolErrorContext): never {
     throw new Error(ctx.rateLimitMessage);
   }
   logError({ ...payload, event: ctx.errorEvent }, err);
+  // Gateway reasons can echo caller input: log without them (above), and
+  // give them only to the caller, so the agent can fix its request.
+  if (err instanceof AssemblyAIError && err.detail) {
+    throw new AssemblyAIError(`${err.message} (${err.detail})`, err.status, err.transcriptId);
+  }
   throw err;
 }
