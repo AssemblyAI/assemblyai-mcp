@@ -13,6 +13,7 @@ import type {
   IabCategoriesResult,
   AutoHighlightsResult,
 } from "./transcript-sections";
+import { isValidTranscriptId } from "./transcript-id";
 
 const DEFAULT_BASE_URL =
   process.env.ASSEMBLYAI_BASE_URL ?? "https://api.assemblyai.com";
@@ -203,6 +204,18 @@ export async function submitTranscript(
   return requestWithRetry<TranscriptRecord>(apiKey, "POST", "/v2/transcript", payload, 1);
 }
 
+/**
+ * `/v2/transcript/<id>`, refusing an id that could leave that path ("..",
+ * "/", "%2e" and the like; issue #73). The tool schemas already check the id;
+ * this guards every other caller.
+ */
+function transcriptPath(transcriptId: string): string {
+  if (!isValidTranscriptId(transcriptId)) {
+    throw new AssemblyAIError("Invalid transcript_id: use the id returned by submit_transcript.", 400);
+  }
+  return `/v2/transcript/${transcriptId}`;
+}
+
 export async function getTranscript(
   apiKey: string,
   transcriptId: string
@@ -210,7 +223,7 @@ export async function getTranscript(
   return requestWithRetry<TranscriptRecord>(
     apiKey,
     "GET",
-    `/v2/transcript/${encodeURIComponent(transcriptId)}`
+    transcriptPath(transcriptId)
   );
 }
 
@@ -230,7 +243,7 @@ export async function getRedactedAudio(
   return requestWithRetry<RedactedAudioResponse>(
     apiKey,
     "GET",
-    `/v2/transcript/${encodeURIComponent(transcriptId)}/redacted-audio`,
+    `${transcriptPath(transcriptId)}/redacted-audio`,
     undefined,
     1
   );
@@ -247,7 +260,7 @@ export async function deleteTranscript(
   return requestWithRetry<TranscriptRecord>(
     apiKey,
     "DELETE",
-    `/v2/transcript/${encodeURIComponent(transcriptId)}`,
+    transcriptPath(transcriptId),
     undefined,
     1
   );
