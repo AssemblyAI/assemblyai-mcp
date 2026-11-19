@@ -37,7 +37,7 @@ export function handleToolError(err: unknown, ctx: ToolErrorContext): never {
     logError({ ...payload, event: "assemblyai_rejected_key" }, err);
     throw new Error(
       "AssemblyAI rejected the API key (401). " +
-        "Check the Bearer token configured in your MCP client connection."
+        "Check the Bearer token configured in your MCP client connection (or re-authenticate if connected via Claude.ai)."
     );
   }
   if (err instanceof AssemblyAIError && err.status === 404 && ctx.notFoundMessage) {
