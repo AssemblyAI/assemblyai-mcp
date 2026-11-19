@@ -120,11 +120,15 @@ export function registerGetTranscript(server: McpServer): void {
         };
       } catch (err) {
         // No notFoundMessage: a 404 here stays the raw AssemblyAIError, unchanged from before.
+        // rateLimitMessage matters most here: this is the tool agents are told to
+        // poll every ~3s, so a bare 429 makes them poll faster, not back off.
         handleToolError(err, {
           tool: "get_transcript",
           apiKey,
           start,
           transcriptId: args.transcript_id,
+          rateLimitMessage:
+            "Rate limited by AssemblyAI. Wait ~60 seconds before calling get_transcript again — much longer than the usual ~3 seconds.",
           errorEvent: "tool_error",
         });
       }
