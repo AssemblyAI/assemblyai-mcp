@@ -61,10 +61,11 @@
  *   56. create_upload_url says what to do when the network blocks the upload
  *   57. a non-JSON POST body gets a JSON-RPC parse error, not a hang; an oversized one 413 before parsing
  *   58. log fields are capped, so a huge caller value can't make a huge log line
- *   59. create_upload_url's curl command sends Content-Type: application/octet-stream (Vercel rejects form-urlencoded binary)
- *   60. su_summary renders summary_type "bullets" chapters (no "— undefined"), splits multiline bullet strings, still renders "paragraph"
- *   61. LLM Gateway 400s give the caller the reason from metadata.errors, but the logs do not get it (it can echo input)
- *   62. next_step is in structuredContent for create_upload_url, submit_transcript and an unfinished get_transcript
+ *   59. submit_transcript accepts speech_models: ['assemblyai-stt-3-7'] and sends it unchanged
+ *   60. create_upload_url's curl command sends Content-Type: application/octet-stream (Vercel rejects form-urlencoded binary)
+ *   61. su_summary renders summary_type "bullets" chapters (no "— undefined"), splits multiline bullet strings, still renders "paragraph"
+ *   62. LLM Gateway 400s give the caller the reason from metadata.errors, but the logs do not get it (it can echo input)
+ *   63. next_step is in structuredContent for create_upload_url, submit_transcript and an unfinished get_transcript
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -220,8 +221,8 @@ async function run() {
     );
     const body1 = JSON.parse(calls[0]?.body ?? "{}");
     assert(
-      "1. every submission pins speech_models to universal-3-5-pro + universal-2",
-      JSON.stringify(body1.speech_models) === JSON.stringify(["universal-3-5-pro", "universal-2"]),
+      "1. every submission pins speech_models to assemblyai-stt-3-7 + universal-2",
+      JSON.stringify(body1.speech_models) === JSON.stringify(["assemblyai-stt-3-7", "universal-2"]),
       JSON.stringify(body1)
     );
   });
@@ -262,7 +263,7 @@ async function run() {
         id: "txn-9",
         status: "completed",
         text: "hello world",
-        speech_model_used: "universal-3-5-pro",
+        speech_model_used: "assemblyai-stt-3-7",
         audio_duration: 5,
       }),
     ]);
@@ -277,7 +278,7 @@ async function run() {
     );
     assert(
       "5. get_transcript surfaces speech_model_used in structuredContent",
-      result.structuredContent?.speech_model_used === "universal-3-5-pro"
+      result.structuredContent?.speech_model_used === "assemblyai-stt-3-7"
     );
     const text5 = result.content?.[0]?.text ?? "";
     assert(
@@ -287,7 +288,7 @@ async function run() {
     );
     assert(
       "5. get_transcript text payload includes speech_model_used",
-      text5.includes("speech_model_used=universal-3-5-pro"),
+      text5.includes("speech_model_used=assemblyai-stt-3-7"),
       `payload: ${text5}`
     );
   });
@@ -398,8 +399,8 @@ async function run() {
     const body = JSON.parse(calls[0]?.body ?? "{}");
     assert("9. sentiment_analysis flag set in payload", body.sentiment_analysis === true, JSON.stringify(body));
     assert(
-      "9. speech_models pinned to universal-3-5-pro + universal-2",
-      JSON.stringify(body.speech_models) === JSON.stringify(["universal-3-5-pro", "universal-2"]),
+      "9. speech_models pinned to assemblyai-stt-3-7 + universal-2",
+      JSON.stringify(body.speech_models) === JSON.stringify(["assemblyai-stt-3-7", "universal-2"]),
       JSON.stringify(body)
     );
   });
@@ -817,7 +818,7 @@ async function run() {
         iab_categories_result: { summary: { "NewsAndPolitics>Weather": 0.99 } },
         auto_highlights_result: { results: [{ count: 1, rank: 0.12, text: "wildfire smoke" }, { count: 3, rank: 0.08, text: "air quality" }] },
         unredacted_text: "Jane Doe reported the fire.",
-        metadata: { domain_used: null, warnings: [{ message: "'ur' is not supported in universal-3-5-pro" }] },
+        metadata: { domain_used: null, warnings: [{ message: "'ur' is not supported in assemblyai-stt-3-7" }] },
       }),
     ]);
     const result = await callTool(client, "get_transcript", { transcript_id: "txn-g1" }, "k");
@@ -1966,7 +1967,29 @@ async function run() {
     assert("58. a capped log line stays small", lines.every((l) => l.length < 5_000), String(lines.map((l) => l.length)));
   }
 
-  // 59. Without a Content-Type, curl sends application/x-www-form-urlencoded and
+  // 59. submit_transcript accepts speech_models: ['assemblyai-stt-3-7'] and sends it unchanged
+  await withClientServer(async (client) => {
+    resetMock([jsonResponse(200, { id: "txn-59", status: "queued" })]);
+    const result = await callTool(
+      client,
+      "submit_transcript",
+      { audio_url: "https://example.com/x.mp3", speech_models: ["assemblyai-stt-3-7"] },
+      "k"
+    );
+    assert(
+      "59. speech_models: ['assemblyai-stt-3-7'] is accepted",
+      result.isError !== true,
+      JSON.stringify(result.content)
+    );
+    const body = JSON.parse(calls[0]?.body ?? "{}");
+    assert(
+      "59. assemblyai-stt-3-7 is sent to AssemblyAI unchanged",
+      JSON.stringify(body.speech_models) === JSON.stringify(["assemblyai-stt-3-7"]),
+      JSON.stringify(body)
+    );
+  });
+
+  // 60. Without a Content-Type, curl sends application/x-www-form-urlencoded and
   // Vercel answers "Bad request" for most real audio files (over ~270 KB).
   process.env.UPLOAD_TOKEN_SECRET = "test-secret-" + "s".repeat(32);
   await withClientServer(async (client) => {
@@ -1975,26 +1998,26 @@ async function run() {
     const command = String(res.structuredContent?.command ?? "");
     const text = res.content?.[0]?.text ?? "";
     assert(
-      "59. the curl command sends Content-Type: application/octet-stream",
+      "60. the curl command sends Content-Type: application/octet-stream",
       command.includes("-H 'Content-Type: application/octet-stream'") && text.includes(command),
       command
     );
     assert(
-      "59. the guidance says what to do on \"Bad request\"",
+      "60. the guidance says what to do on \"Bad request\"",
       text.includes('"Bad request"') && text.includes("Content-Type"),
       text
     );
   });
   delete process.env.UPLOAD_TOKEN_SECRET;
 
-  // 60. summary_type "bullets" sends `bullets`, not `text`.
+  // 61. summary_type "bullets" sends `bullets`, not `text`.
   {
     const bulletLines = renderSuSummary([
       { start: 0, end: 280000, headline: "Wildfire smoke", bullets: ["- Smoke reaches the US.", "Air quality drops."] },
     ]);
     const bulletText = bulletLines.join("\n");
     assert(
-      "60. bullets chapters render each bullet, never \"undefined\"",
+      "61. bullets chapters render each bullet, never \"undefined\"",
       !bulletText.includes("undefined") &&
         bulletText.includes("[0:00–4:40] Wildfire smoke") &&
         bulletText.includes("  - Smoke reaches the US.") &&
@@ -2005,14 +2028,14 @@ async function run() {
       { start: 0, end: 1000, headline: "Multi", bullets: "- First\n- Second\r\n\n- Third" },
     ]).join("\n");
     assert(
-      "60. a multiline bullet string renders each bullet indented under its chapter",
+      "61. a multiline bullet string renders each bullet indented under its chapter",
       multiText.includes("  - First\n  - Second\n  - Third") && !/\n- /.test(multiText),
       multiText
     );
     const paraText = renderSuSummary([{ start: 0, end: 60000, headline: "Intro", text: "A short intro." }]).join("\n");
-    assert("60. paragraph chapters render as before", paraText.includes("[0:00–1:00] Intro — A short intro."), paraText);
+    assert("61. paragraph chapters render as before", paraText.includes("[0:00–1:00] Intro — A short intro."), paraText);
     const emptyText = renderSuSummary([{ start: 0, end: 1000, headline: "Empty" }]).join("\n");
-    assert("60. a chapter with no text or bullets renders the headline only", !emptyText.includes("undefined"), emptyText);
+    assert("61. a chapter with no text or bullets renders the headline only", !emptyText.includes("undefined"), emptyText);
   }
   await withClientServer(async (client) => {
     resetMock([
@@ -2036,13 +2059,13 @@ async function run() {
     );
     const text = res.content?.[0]?.text ?? "";
     assert(
-      "60. understand_transcript text shows the bullets",
+      "61. understand_transcript text shows the bullets",
       !res.isError && text.includes("  - One point.") && !text.includes("undefined"),
       text
     );
   });
 
-  // 61. The Gateway puts the reason in metadata.errors; message is only "invalid request body".
+  // 62. The Gateway puts the reason in metadata.errors; message is only "invalid request body".
   await withClientServer(async (client) => {
     resetMock([
       jsonResponse(400, {
@@ -2068,12 +2091,12 @@ async function run() {
     }
     const text = res.content?.[0]?.text ?? "";
     assert(
-      "61. the error is logged, but without the metadata.errors reason (it can echo caller input)",
+      "62. the error is logged, but without the metadata.errors reason (it can echo caller input)",
       logged.some((l) => l.includes("invalid request body")) && !logged.some((l) => l.includes("klingon")),
       logged.join("\n").slice(0, 500)
     );
     assert(
-      "61. understand_transcript error includes the metadata.errors reason",
+      "62. understand_transcript error includes the metadata.errors reason",
       res.isError === true && text.includes("invalid request body") && text.includes("target_language 'klingon' is invalid"),
       text
     );
@@ -2088,20 +2111,20 @@ async function run() {
     const res = await callTool(client, "summarize_transcript", { transcript_id: "txn-s" }, "k");
     const text = res.content?.[0]?.text ?? "";
     assert(
-      "61. summarize_transcript error includes every metadata.errors reason",
+      "62. summarize_transcript error includes every metadata.errors reason",
       res.isError === true && text.includes("one of messages or prompt required") && text.includes("model nope is not supported"),
       text
     );
   });
 
-  // 62. Claude Code shows the model only structuredContent: the next step must be there too.
+  // 63. Claude Code shows the model only structuredContent: the next step must be there too.
   process.env.UPLOAD_TOKEN_SECRET = "test-secret-" + "s".repeat(32);
   await withClientServer(async (client) => {
     resetMock([]);
     const up = await callTool(client, "create_upload_url", {}, "k");
     const upNext = String(up.structuredContent?.next_step ?? "");
     assert(
-      "62. create_upload_url next_step says to pass the printed upload_url to submit_transcript",
+      "63. create_upload_url next_step says to pass the printed upload_url to submit_transcript",
       upNext.includes("upload_url") && upNext.includes("submit_transcript") && upNext.includes("Bad request"),
       upNext
     );
@@ -2109,7 +2132,7 @@ async function run() {
     resetMock([jsonResponse(200, { id: "txn-n", status: "queued" })]);
     const sub = await callTool(client, "submit_transcript", { audio_url: "https://example.com/a.mp3" }, "k");
     assert(
-      "62. submit_transcript next_step says to poll get_transcript",
+      "63. submit_transcript next_step says to poll get_transcript",
       String(sub.structuredContent?.next_step ?? "").includes("get_transcript"),
       JSON.stringify(sub.structuredContent)
     );
@@ -2117,7 +2140,7 @@ async function run() {
     resetMock([jsonResponse(200, { id: "txn-n", status: "processing" })]);
     const pending = await callTool(client, "get_transcript", { transcript_id: "txn-n" }, "k");
     assert(
-      "62. get_transcript while processing has a next_step",
+      "63. get_transcript while processing has a next_step",
       String(pending.structuredContent?.next_step ?? "").includes("get_transcript"),
       JSON.stringify(pending.structuredContent)
     );
@@ -2125,7 +2148,7 @@ async function run() {
     resetMock([jsonResponse(200, { id: "txn-n", status: "completed", text: "hi" })]);
     const done = await callTool(client, "get_transcript", { transcript_id: "txn-n" }, "k");
     assert(
-      "62. a completed get_transcript has no next_step",
+      "63. a completed get_transcript has no next_step",
       !("next_step" in (done.structuredContent ?? {})),
       JSON.stringify(done.structuredContent)
     );

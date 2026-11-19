@@ -58,7 +58,7 @@ export interface TranscriptSubmitOptions {
   // Verbatim/formatting toggles — both default true server-side.
   punctuate?: boolean;
   format_text?: boolean;
-  // Prompting (Universal-3.5 Pro)
+  // Prompting (AssemblyAI-STT-3.7)
   prompt?: string;
   keyterms_prompt?: string[];
   // Language
@@ -74,7 +74,8 @@ export interface TranscriptSubmitOptions {
   };
   language_confidence_threshold?: number;
   // Models
-  speech_models?: Array<"universal-3-5-pro" | "universal-2">;
+  // universal-3-5-pro is deprecated but still accepted.
+  speech_models?: Array<"assemblyai-stt-3-7" | "universal-2" | "universal-3-5-pro">;
   temperature?: number;
   // Diarization
   speaker_options?: { min_speakers_expected?: number; max_speakers_expected?: number };
@@ -179,10 +180,10 @@ export async function submitTranscript(
 ): Promise<TranscriptRecord> {
   const payload: Record<string, unknown> = {
     audio_url: options.audio_url,
-    // The v2 API only accepts universal-3-5-pro and universal-2. Pin the
-    // priority list unless the caller overrides, so model selection doesn't
-    // drift with API-side defaults.
-    speech_models: options.speech_models ?? ["universal-3-5-pro", "universal-2"],
+    // AssemblyAI-STT-3.7 for every language it supports, Universal-2 for the
+    // rest. Pin the priority list unless the caller overrides, so model
+    // selection doesn't drift with API-side defaults.
+    speech_models: options.speech_models ?? ["assemblyai-stt-3-7", "universal-2"],
   };
   if (options.speaker_labels) payload.speaker_labels = true;
   if (options.sentiment_analysis) payload.sentiment_analysis = true;

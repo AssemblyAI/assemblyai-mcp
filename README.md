@@ -87,7 +87,8 @@ names, grouped roughly as:
 - **Language** — `language_code`, `language_codes`, `language_detection`,
   `language_detection_options`, `language_confidence_threshold`
 - **Models** — `speech_models` (defaults to the pinned
-  `["universal-3-5-pro", "universal-2"]` priority list), `temperature`
+  `["assemblyai-stt-3-7", "universal-2"]` priority list; `universal-3-5-pro` is
+  deprecated but still accepted), `temperature`
 - **Diarization** — `speaker_labels`, `speaker_options`
 - **Guardrails** — `redact_pii` (+ `redact_pii_policies`, `redact_pii_sub`,
   `redact_pii_audio`, `redact_pii_return_unredacted`,
