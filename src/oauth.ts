@@ -262,6 +262,25 @@ export async function exchangeAccessToken(
   }
 }
 
+/** `promise`, or a rejection with the signal's reason once it aborts. */
+function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      }
+    );
+  });
+}
+
 /** The exchange itself: one POST to AssemblyAI. */
 async function exchangeUpstream(
   accessToken: string,
@@ -269,14 +288,18 @@ async function exchangeUpstream(
   now: number,
   deps: ExchangeDeps
 ): Promise<ExchangeOutcome> {
+  // One deadline for the whole exchange, service token included: a stalled
+  // OIDC lookup must not hold a concurrency slot past it.
+  const deadline = AbortSignal.timeout(deps.timeoutMs);
   let serviceToken: string;
   try {
-    serviceToken = await deps.serviceToken();
+    serviceToken = await untilAborted(deps.serviceToken(), deadline);
   } catch (error) {
+    const timedOut = error instanceof Error && error.name === "TimeoutError";
     log({
       event: "oauth_exchange_unavailable",
       level: "error",
-      reason: "no_service_token",
+      reason: timedOut ? "service_token_timeout" : "no_service_token",
       detail: scrubForLog(error instanceof Error ? error.message : String(error)),
     });
     return { kind: "unavailable", detail: "This server could not authenticate to AssemblyAI" };
@@ -293,7 +316,7 @@ async function exchangeUpstream(
       },
       // Also aborts reading the body below: a stalled body parses as no key
       // (503), like a stalled connection.
-      signal: AbortSignal.timeout(deps.timeoutMs),
+      signal: deadline,
     });
   } catch (error) {
     const timedOut = error instanceof Error && error.name === "TimeoutError";

@@ -24,7 +24,8 @@
  *  12. a refused token is answered from memory on repeat, for a minute, then exchanged again
  *  13. one client IP gets at most MAX_EXCHANGES_PER_IP_PER_MINUTE upstream exchanges a minute → 429;
  *      other IPs and cached keys are not affected, and the window resets
- *  14. at most MAX_CONCURRENT_EXCHANGES exchanges are in flight at once → 429 for the rest
+ *  14. at most MAX_CONCURRENT_EXCHANGES exchanges are in flight at once → 429 for the rest;
+ *      14b. timed-out exchanges free their slots; 14c. so does a stalled service-token lookup
  */
 
 import { GET as resourceMetadata } from "../app/.well-known/oauth-protected-resource/route";
@@ -515,7 +516,54 @@ async function run() {
     const keepAlive = setTimeout(() => undefined, 5_000);
     const done = await Promise.all(pending);
     clearTimeout(keepAlive);
-    assert("14. the stalled ones end as 503 and free their slots", done.every((r) => r.status === 503));
+    assert("14. the stalled exchanges end as 503", done.every((r) => r.status === 503));
+  }
+
+  {
+    // 14b. The slots come back: after the stalled exchanges end, a new one
+    // reaches AssemblyAI instead of getting 429 (fails without inFlight--).
+    clearExchangeCache();
+    const c = MAX_CONCURRENT_EXCHANGES;
+    const responses: Array<Response | "stall"> = [...Array.from({ length: c }, () => "stall" as const), keyResponse("key-after-stall")];
+    const { deps, exchanges } = stub(responses, { timeoutMs: 200 });
+    const { handler } = recorder();
+    const wrapped = withOAuthExchange(handler, deps);
+    const keepAlive = setTimeout(() => undefined, 5_000);
+    await Promise.all(Array.from({ length: c }, (_, i) => wrapped(fromIp(accessToken(undefined, `slot${i}`), `10.3.0.${i}`))));
+    clearTimeout(keepAlive);
+    const next = await wrapped(fromIp(accessToken(undefined, "after-stall"), "10.4.0.1"));
+    assert("14b. after stalled exchanges time out, a new exchange reaches AssemblyAI", next.status === 200 && exchanges.length === c + 1, `${next.status} ${exchanges.length}`);
+  }
+
+  {
+    // 14c. A stalled service-token lookup is bound by the same deadline and
+    // frees its slot, so it can't fill every slot for good.
+    clearExchangeCache();
+    const c = MAX_CONCURRENT_EXCHANGES;
+    let stall = true;
+    const { deps, exchanges } = stub([keyResponse("key-after-oidc")], {
+      timeoutMs: 200,
+      serviceToken: () => (stall ? new Promise<string>(() => undefined) : Promise.resolve("vercel-oidc-token")),
+    });
+    const { handler } = recorder();
+    const wrapped = withOAuthExchange(handler, deps);
+    // Race a timer: without the deadline these never settle, and the test
+    // must fail rather than let Node exit quietly with nothing pending.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const hung = new Promise<"hung">((resolve) => (timer = setTimeout(() => resolve("hung"), 2_000)));
+    const stalled = await Promise.race([
+      Promise.all(Array.from({ length: c }, (_, i) => wrapped(fromIp(accessToken(undefined, `oidc${i}`), `10.5.0.${i}`)))),
+      hung,
+    ]);
+    clearTimeout(timer);
+    assert(
+      "14c. a stalled service-token lookup ends as 503 at the deadline",
+      stalled !== "hung" && stalled.every((r) => r.status === 503) && exchanges.length === 0,
+      stalled === "hung" ? "still pending after 2 s" : undefined
+    );
+    stall = false;
+    const next = await wrapped(fromIp(accessToken(undefined, "oidc-ok"), "10.6.0.1"));
+    assert("14c. and frees its slot: the next exchange reaches AssemblyAI", next.status === 200 && exchanges.length === 1, `${next.status} ${exchanges.length}`);
   }
 
   console.log(`\n${passed} passed, ${failed} failed`);
