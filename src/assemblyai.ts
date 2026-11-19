@@ -329,9 +329,31 @@ async function safeErrorMessage(response: Response): Promise<string> {
   const text = await response.text();
   try {
     const body = JSON.parse(text);
-    for (const key of ["error", "message", "detail"] as const) {
-      if (body && typeof body === "object" && body[key]) {
-        return `HTTP ${response.status}: ${body[key]}`;
+    if (body && typeof body === "object") {
+      // 1. Nested OpenAI format from LLM Gateway: { error: { message: "..." } }
+      if (typeof body.error === "object" && body.error && typeof body.error.message === "string") {
+        return `HTTP ${response.status}: ${body.error.message}`;
+      }
+      // 2. Direct string message: { error: "..." }, { message: "..." }, { detail: "..." }
+      for (const key of ["error", "message", "detail"] as const) {
+        if (typeof body[key] === "string" && body[key]) {
+          return `HTTP ${response.status}: ${body[key]}`;
+        }
+      }
+      // 3. Array of errors: { errors: [...] }
+      if (Array.isArray(body.errors) && body.errors.length > 0) {
+        const first = body.errors[0];
+        const msg = typeof first === "string" ? first : (first?.message ?? JSON.stringify(first));
+        return `HTTP ${response.status}: ${msg}`;
+      }
+      // 4. AssemblyAI metadata errors: { metadata: { errors: [...] } }
+      if (body.metadata && typeof body.metadata === "object") {
+        const metaErrors = (body.metadata as Record<string, unknown>).errors;
+        if (Array.isArray(metaErrors) && metaErrors.length > 0) {
+          const first = metaErrors[0];
+          const msg = typeof first === "string" ? first : (first?.message ?? JSON.stringify(first));
+          return `HTTP ${response.status}: ${msg}`;
+        }
       }
     }
   } catch {
