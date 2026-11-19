@@ -11,6 +11,7 @@ import {
   createSpeech,
   createTtsToken,
   INLINE_BIT_RATE,
+  KNOWN_VOICES,
   MAX_INLINE_AUDIO_BYTES,
   MAX_INLINE_SPEECH_CHARS,
   MAX_SPEECH_CHARS,
@@ -38,6 +39,19 @@ class Refusal extends Error {}
 /** A POSIX shell literal: nothing inside single quotes is expanded. */
 function shellQuote(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+/**
+ * A PowerShell literal. In single quotes only the quote marks are special,
+ * and PowerShell also reads the Unicode single quotes as quote marks.
+ */
+function powershellQuote(value: string): string {
+  return `'${value.replace(/['\u2018\u2019\u201A\u201B]/g, "$&$&")}'`;
+}
+
+/** SSML is not supported: the tags would be spoken, and billed. */
+function looksLikeSsml(text: string): boolean {
+  return /^\s*<speak[\s>/]/i.test(text);
 }
 
 /** The API counts Unicode code points, not UTF-16 units. */
@@ -96,7 +110,11 @@ export function registerCreateSpeech(server: McpServer): void {
         text: z
           .string()
           .min(1)
-          .max(MAX_SPEECH_CHARS * 2)
+          .max(
+            MAX_SPEECH_CHARS * 2,
+            `text is too long: the limit is ${MAX_SPEECH_CHARS} characters with delivery "file" and ` +
+              `${MAX_INLINE_SPEECH_CHARS} with "inline". Split it at sentence ends and call once per part.`
+          )
           .describe(
             `The text to speak, as it should be said. Up to ${MAX_SPEECH_CHARS} characters with delivery "file", ` +
               `${MAX_INLINE_SPEECH_CHARS} with "inline".`
@@ -172,6 +190,13 @@ export function registerCreateSpeech(server: McpServer): void {
               : `Split it at sentence ends into parts of at most ${limit} characters and call once per part.`)
         );
       }
+      if (looksLikeSsml(args.text)) {
+        refuse(
+          "ssml",
+          "text starts with <speak>: SSML is not supported, and the tags would be spoken and billed. " +
+            "Remove all markup and pass only the words to speak. Nothing was billed."
+        );
+      }
       if (delivery === "inline" && format === "wav") {
         refuse("inline_wav", 'Inline audio is always MP3. Leave format out, or use delivery "file" for a WAV file.');
       }
@@ -229,6 +254,9 @@ export function registerCreateSpeech(server: McpServer): void {
             billed_characters: speech.billedCharacters ?? null,
             duration_ms: speech.durationMs ?? null,
           });
+          const inlineNextStep =
+            "The audio is attached to this result as MP3. Do not call create_speech again for the same text: each call bills again. " +
+            "If the user cannot play it, their app does not show audio from tools; tell them, and offer delivery \"file\" from a client with a shell.";
           return {
             content: [
               { type: "audio" as const, data: speech.audio.toString("base64"), mimeType: speech.mimeType },
@@ -249,6 +277,7 @@ export function registerCreateSpeech(server: McpServer): void {
               language: speech.language ?? args.language ?? null,
               duration_ms: speech.durationMs ?? null,
               billed_characters: speech.billedCharacters ?? chars,
+              next_step: inlineNextStep,
             },
           };
         }
@@ -266,6 +295,33 @@ export function registerCreateSpeech(server: McpServer): void {
           `curl -sS -o ${shellQuote(outputFile)} -w '%{http_code}\\n' ` +
           `-H ${shellQuote(`Authorization: ${token}`)} -H 'Content-Type: application/json' ` +
           `-d ${shellQuote(body)} ${shellQuote(`${ttsBaseUrl()}/v1/speech`)}`;
+        // PowerShell (Windows): curl is an alias of Invoke-WebRequest there, and
+        // PowerShell 5.1 strips the double quotes of an argument to a native
+        // program. So call curl.exe, and send the JSON from a file, not -d.
+        const bodyFile = outputFile.replace(/\.\w+$/, ".json");
+        const commandPowershell =
+          `[IO.File]::WriteAllText((Join-Path $PWD ${powershellQuote(bodyFile)}), ${powershellQuote(body)}); ` +
+          `curl.exe -sS -o ${powershellQuote(outputFile)} -w '%{http_code}\\n' ` +
+          `-H ${powershellQuote(`Authorization: ${token}`)} -H 'Content-Type: application/json' ` +
+          `--data-binary ${powershellQuote(`@${bodyFile}`)} ${powershellQuote(`${ttsBaseUrl()}/v1/speech`)}; ` +
+          `Remove-Item ${powershellQuote(bodyFile)}`;
+        // Not refused: the catalog is much larger than the voices we know.
+        const unknownVoice = args.voice_id !== undefined && !(args.voice_id in KNOWN_VOICES);
+        const voiceWarning = unknownVoice
+          ? `voice_id "${args.voice_id}" is not one of the voices this tool knows. Use it only if the user gave it to you; ` +
+            "if not, call again without voice_id instead of running the command. "
+          : "";
+        // Claude Code shows the model only structuredContent, so the rules go here too.
+        const nextStep =
+          voiceWarning +
+          "Each run bills again. Run it once: run `command` as it is (in Windows PowerShell, run `command_powershell` instead), " +
+          "and do not run it again to retry or to check; it keeps working until it expires. " +
+          `It prints the HTTP status. 200: ${outputFile} is the audio; tell the user where it is. ` +
+          `Any other status: nothing is billed, and ${outputFile} holds a JSON error; read its \`message\`, delete the file, and follow the message. ` +
+          "401 means the command expired: call create_speech again. " +
+          `If curl cannot connect (e.g. "Could not resolve host"), your environment blocks ${new URL(ttsBaseUrl()).host}: ` +
+          'tell the user to allow that host, or use delivery "inline". ' +
+          "Do not show the command to the user or anyone else: it can create speech on the user's account until it expires.";
         const expiresAt = new Date(Date.now() + SPEECH_TOKEN_TTL_SECONDS * 1000).toISOString();
         log({ ...base, event: "tool_call", status: "success", latencyMs: Date.now() - start });
         return {
@@ -273,12 +329,15 @@ export function registerCreateSpeech(server: McpServer): void {
             {
               type: "text" as const,
               text:
-                `Speech command created (valid for ${SPEECH_TOKEN_TTL_SECONDS / 60} minutes). Run it once, as it is:\n\n${command}\n\n` +
+                `Speech command created (valid for ${SPEECH_TOKEN_TTL_SECONDS / 60} minutes). Run it once, as it is. Each run bills again:\n\n${command}\n\n` +
+                voiceWarning +
                 `It saves the audio as ${outputFile} in the current directory (change the -o path if the user wants another place) ` +
                 `and prints the HTTP status. 200: ${outputFile} is the audio, and ${chars} characters are billed to the user's ` +
                 `AssemblyAI account; tell the user where the file is. Any other status: nothing is billed, and ${outputFile} ` +
                 "holds a JSON error instead of audio; read its `message`, delete the file, and follow the message. " +
+                "Do not run it again to retry or to check: it keeps working until it expires, and each run bills again. " +
                 "401 means the command expired: call create_speech again. " +
+                "In Windows PowerShell, run `command_powershell` from the structured result instead. " +
                 `If curl cannot connect at all (e.g. "Could not resolve host"), your environment blocks ` +
                 `${new URL(ttsBaseUrl()).host}: do not retry or work around it; tell the user to allow that host, ` +
                 'or use delivery "inline". ' +
@@ -288,11 +347,13 @@ export function registerCreateSpeech(server: McpServer): void {
           structuredContent: {
             delivery: "file",
             command,
+            command_powershell: commandPowershell,
             output_file: outputFile,
             expires_at: expiresAt,
             characters: chars,
             voice_id: args.voice_id ?? null,
             language: args.language ?? null,
+            next_step: nextStep,
           },
         };
       } catch (err) {

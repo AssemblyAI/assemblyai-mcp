@@ -51,6 +51,24 @@ const TOKEN_BACKOFF_MS = 1_000;
 
 export const SPEECH_LANGUAGES = ["english", "spanish", "german", "italian", "portuguese", "french"] as const;
 export type SpeechLanguage = (typeof SPEECH_LANGUAGES)[number];
+
+/**
+ * The library voices the docs list (docs/tts/voices), with their language.
+ * Not the whole catalog: it has thousands of voices, plus the user's cloned
+ * voices, and the API has no endpoint to list them. So a voice ID that is not
+ * here is not refused; the tool only warns that it is not a known voice.
+ */
+export const KNOWN_VOICES: Readonly<Record<string, SpeechLanguage>> = {
+  "aai-aaliyah": "english", "aai-abdiel": "english", "aai-annabelle": "english", "aai-april": "english",
+  "aai-audrey": "english", "aai-buford": "english", "aai-carrie": "english", "aai-cloyd": "english",
+  "aai-dorsey": "english", "aai-ernest": "english", "aai-ewald": "english", "aai-gunnar": "english",
+  "aai-hailey": "english", "aai-kyla": "english", "aai-lilla": "english", "aai-nancy": "english",
+  "aai-percival": "english", "aai-peter": "english", "aai-sara": "english", "aai-steven": "english",
+  "aai-titus": "english", "aai-troy": "english", "aai-yasmin": "english",
+  "aai-antonioluis": "spanish", "aai-constanza": "spanish", "aai-malvina": "spanish", "aai-oriol": "spanish",
+  "aai-gunther": "german", "aai-jorg": "german", "aai-magdalena": "german",
+  "aai-giada": "italian", "aai-donatien": "french", "aai-benicio": "portuguese", "aai-nelson": "portuguese",
+};
 export type SpeechFormat = "mp3" | "wav";
 
 export class TtsError extends AssemblyAIError {

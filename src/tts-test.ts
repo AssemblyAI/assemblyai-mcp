@@ -17,6 +17,11 @@
  *  12. each file command saves to its own file name
  *  13. inline audio is read only up to the size cap, never buffered whole
  *  14. sign-in time counts: the tool works only in what is left of the 60 s request
+ *  15. the guidance is in structuredContent.next_step (Claude Code shows the model only that)
+ *  16. a voice_id that is not a known voice gets a warning, not a refusal
+ *  17. SSML (text that starts with <speak>) is refused before any request
+ *  18. text over the schema bound gets the real limit (5,000), not 10,000
+ *  19. command_powershell uses curl.exe and keeps the text a PowerShell literal
  */
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
@@ -723,6 +728,155 @@ async function run() {
       clearInterval(keepAlive);
     }
   }
+
+  // 15. next_step: the rules reach the model in clients that show only structuredContent
+  await withClient(async (client) => {
+    resetMock([tokenOk()]);
+    const res = await speak(client, { text: "Hello there." });
+    const next = String(res.structuredContent?.next_step ?? "");
+    assert(
+      "15. file next_step says each run bills again, run it once, 401 = expired, do not show the command",
+      next.includes("Each run bills again. Run it once") && next.includes("401 means the command expired") &&
+        next.includes("Do not show the command") && next.includes("command_powershell") &&
+        next.includes(String(res.structuredContent?.output_file)) && !next.includes("TMP-TOKEN-abc") && !next.includes(KEY),
+      next
+    );
+    assert(
+      "15. the text block also says each run bills again",
+      textOf(res).includes("Each run bills again") && textOf(res).includes("each run bills again"),
+      textOf(res)
+    );
+    assert("15. a known voice (none given) has no voice warning", !next.includes("not one of the voices"), next);
+
+    resetMock([audioOk(new Uint8Array([1, 2, 3]))]);
+    const inline = await speak(client, { text: "Hello there.", delivery: "inline" });
+    const inlineNext = String(inline.structuredContent?.next_step ?? "");
+    assert(
+      "15. inline next_step says not to call again because each call bills again",
+      inline.isError !== true && inlineNext.includes("each call bills again") && inlineNext.includes("Do not call create_speech again"),
+      inlineNext
+    );
+  });
+
+  // 16. Voice check: the catalog has thousands of voices and no list endpoint, so warn, do not refuse
+  await withClient(async (client) => {
+    resetMock([tokenOk()]);
+    let res = await speak(client, { text: "Hello.", voice_id: "aai-nobody" });
+    let next = String(res.structuredContent?.next_step ?? "");
+    assert(
+      "16. an unknown voice still gets a command, with a warning first in next_step and in the text",
+      res.isError !== true && calls.length === 1 && next.startsWith('voice_id "aai-nobody" is not one of the voices') &&
+        textOf(res).includes('voice_id "aai-nobody" is not one of the voices'),
+      next
+    );
+    resetMock([tokenOk()]);
+    res = await speak(client, { text: "Hallo.", voice_id: "aai-magdalena", language: "german" });
+    next = String(res.structuredContent?.next_step ?? "");
+    assert("16. a known library voice has no warning", res.isError !== true && !next.includes("not one of the voices"), next);
+  });
+
+  // 17. SSML is not supported: refuse it before a token or a speech request
+  await withClient(async (client) => {
+    for (const text of ['<speak>Hello <break time="1s"/> world</speak>', '  \n<SPEAK version="1.1">Hi</SPEAK>', "<speak/>"]) {
+      for (const delivery of ["file", "inline"]) {
+        resetMock([tokenOk(), audioOk(new Uint8Array([1]))]);
+        const res = await speak(client, { text, delivery });
+        assert(
+          `17. SSML ${JSON.stringify(text.slice(0, 12))} with ${delivery} is refused with no request`,
+          res.isError === true && calls.length === 0 && textOf(res).includes("SSML is not supported") &&
+            textOf(res).includes("Nothing was billed"),
+          `${textOf(res)} | ${calls.length} calls`
+        );
+      }
+    }
+    resetMock([tokenOk()]);
+    const res = await speak(client, { text: "<speaker notes> are not SSML." });
+    assert("17. text that only starts like <speaker is not refused", res.isError !== true, textOf(res));
+  });
+
+  // 18. Over the schema bound, the message gives the real limit
+  await withClient(async (client) => {
+    resetMock([]);
+    let res = await speak(client, { text: "a".repeat(MAX_SPEECH_CHARS * 2 + 1) });
+    assert(
+      "18. 10,001 characters: the error gives the 5,000 limit, not 10,000, and nothing is requested",
+      res.isError === true && calls.length === 0 && textOf(res).includes(`the limit is ${MAX_SPEECH_CHARS} characters`) &&
+        !textOf(res).includes(String(MAX_SPEECH_CHARS * 2)),
+      textOf(res)
+    );
+    res = await speak(client, { text: "a".repeat(MAX_SPEECH_CHARS + 1) });
+    assert(
+      "18. 5,001 characters: the handler gives the 5,000 limit",
+      res.isError === true && calls.length === 0 && textOf(res).includes(`the limit with delivery "file" is ${MAX_SPEECH_CHARS}`),
+      textOf(res)
+    );
+    const { tools } = await client.listTools();
+    const schema = tools.find((t) => t.name === "create_speech")?.inputSchema as
+      | { properties?: Record<string, { maxLength?: number }> }
+      | undefined;
+    assert(
+      "18. the published input schema is unchanged (text maxLength is still 10,000)",
+      schema?.properties?.text?.maxLength === MAX_SPEECH_CHARS * 2,
+      JSON.stringify(schema?.properties?.text)
+    );
+  });
+
+  // 19. PowerShell: curl.exe, the JSON body from a file, every value a single-quoted literal
+  await withClient(async (client) => {
+    const hostile = `It's ‘curly’ $(Get-Date) $env:PATH \`n "quoted" é 😀; Remove-Item -Recurse ~`;
+    resetMock([tokenOk("tok'en")]);
+    const res = await speak(client, { text: hostile });
+    const ps = String(res.structuredContent?.command_powershell ?? "");
+    const outputFile = String(res.structuredContent?.output_file ?? "");
+    const bodyFile = outputFile.replace(/\.mp3$/, ".json");
+    // Split into PowerShell single-quoted literals ('' is one ') and bare words.
+    const words: string[] = [];
+    const rest: string[] = [];
+    const quote = /['‘’‚‛]/;
+    for (let i = 0; i < ps.length; ) {
+      if (quote.test(ps[i]!)) {
+        let value = "";
+        i++;
+        for (;;) {
+          if (i >= ps.length) throw new Error("unterminated PowerShell literal");
+          if (quote.test(ps[i]!)) {
+            if (i + 1 < ps.length && quote.test(ps[i + 1]!)) {
+              value += ps[i];
+              i += 2;
+              continue;
+            }
+            i++;
+            break;
+          }
+          value += ps[i++];
+        }
+        words.push(value);
+      } else {
+        rest.push(ps[i++]!);
+      }
+    }
+    let body: { text?: string } = {};
+    try {
+      body = JSON.parse(words[1] ?? "");
+    } catch {
+      // the assertion below reports it
+    }
+    assert(
+      "19. the literals are: body file, JSON body (exact text), out file, -w, token header, content type, @body file, URL, body file",
+      words.length === 9 && words[0] === bodyFile && body.text === hostile && words[2] === outputFile &&
+        words[3] === "%{http_code}\\n" && words[4] === "Authorization: tok'en" &&
+        words[5] === "Content-Type: application/json" && words[6] === `@${bodyFile}` &&
+        words[7] === "https://tts.us.assemblyai.com/v1/speech" && words[8] === bodyFile,
+      JSON.stringify(words)
+    );
+    const bare = rest.join("").replace(/\s+/g, " ").trim();
+    assert(
+      "19. outside the literals there is only fixed code: WriteAllText, curl.exe (not the curl alias), Remove-Item",
+      bare === "[IO.File]::WriteAllText((Join-Path $PWD ), ); curl.exe -sS -o -w -H -H --data-binary ; Remove-Item",
+      bare
+    );
+    assert("19. the PowerShell command never holds the API key", !ps.includes(KEY));
+  });
 
   console.log(`\n${passed} passed, ${failed} failed`);
   finished = true;
