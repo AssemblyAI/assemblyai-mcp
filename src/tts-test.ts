@@ -22,6 +22,8 @@
  *  17. SSML (text that starts with <speak>) is refused before any request
  *  18. text over the schema bound gets the real limit (5,000), not 10,000
  *  19. command_powershell uses curl.exe and keeps the text a PowerShell literal
+ *  20. a known voice with another language is refused with no request; matching or unknown voices are not
+ *  21. voice IDs like "constructor" are not taken as known voices (own-property check)
  */
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
@@ -876,6 +878,49 @@ async function run() {
       bare
     );
     assert("19. the PowerShell command never holds the API key", !ps.includes(KEY));
+  });
+
+  // 20. A known voice speaks one language: another language is refused before any request
+  await withClient(async (client) => {
+    for (const delivery of ["file", "inline"]) {
+      resetMock([tokenOk(), audioOk(new Uint8Array([1]))]);
+      const res = await speak(client, { text: "Hallo, wie geht es dir?", voice_id: "aai-carrie", language: "german", delivery });
+      const text = textOf(res);
+      assert(
+        `20. aai-carrie (english) with language "german" and ${delivery} is refused with no request`,
+        res.isError === true && calls.length === 0 && text.includes('voice_id "aai-carrie" speaks english, but language is "german"') &&
+          text.includes("aai-magdalena") && text.includes("aai-jorg") && text.includes("Nothing was billed"),
+        `${text} | ${calls.length} calls`
+      );
+    }
+    resetMock([tokenOk()]);
+    let res = await speak(client, { text: "Hallo.", voice_id: "aai-jorg", language: "german" });
+    assert("20. a known voice with its own language is not refused", res.isError !== true && calls.length === 1, textOf(res));
+    resetMock([tokenOk()]);
+    res = await speak(client, { text: "Hello.", voice_id: "aai-carrie" });
+    assert("20. a known voice with no language is not refused", res.isError !== true && calls.length === 1, textOf(res));
+    resetMock([tokenOk()]);
+    res = await speak(client, { text: "Hallo.", voice_id: "my-cloned-voice", language: "german" });
+    const next = String(res.structuredContent?.next_step ?? "");
+    assert(
+      "20. an unknown voice with a language is not refused (it may speak any language), only warned",
+      res.isError !== true && calls.length === 1 && next.includes("not one of the voices"),
+      textOf(res)
+    );
+  });
+
+  // 21. Names from the object prototype are not known voices
+  await withClient(async (client) => {
+    for (const voice_id of ["constructor", "toString", "__proto__"]) {
+      resetMock([tokenOk()]);
+      const res = await speak(client, { text: "Hello.", voice_id, language: "german" });
+      const next = String(res.structuredContent?.next_step ?? "");
+      assert(
+        `21. voice_id "${voice_id}" gets the unknown-voice warning, not a crash or a mismatch refusal`,
+        res.isError !== true && next.startsWith(`voice_id "${voice_id}" is not one of the voices`),
+        `${textOf(res)} | ${next.slice(0, 120)}`
+      );
+    }
   });
 
   console.log(`\n${passed} passed, ${failed} failed`);

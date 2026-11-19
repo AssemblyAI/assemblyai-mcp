@@ -16,6 +16,7 @@ import {
   MAX_INLINE_SPEECH_CHARS,
   MAX_SPEECH_CHARS,
   SPEECH_LANGUAGES,
+  type SpeechLanguage,
   SPEECH_TIMEOUT_MS,
   SPEECH_TOKEN_TTL_SECONDS,
   speechRequestBody,
@@ -47,6 +48,21 @@ function shellQuote(value: string): string {
  */
 function powershellQuote(value: string): string {
   return `'${value.replace(/['\u2018\u2019\u201A\u201B]/g, "$&$&")}'`;
+}
+
+/**
+ * The language of a known library voice, or undefined. An own-property check:
+ * `in` would also match names such as "constructor" from the object prototype.
+ */
+function knownVoiceLanguage(voiceId: string): SpeechLanguage | undefined {
+  return Object.hasOwn(KNOWN_VOICES, voiceId) ? KNOWN_VOICES[voiceId] : undefined;
+}
+
+/** The known library voices of one language. */
+function voicesFor(language: SpeechLanguage): string[] {
+  return Object.entries(KNOWN_VOICES)
+    .filter(([, lang]) => lang === language)
+    .map(([id]) => id);
 }
 
 /** SSML is not supported: the tags would be spoken, and billed. */
@@ -200,6 +216,19 @@ export function registerCreateSpeech(server: McpServer): void {
       if (delivery === "inline" && format === "wav") {
         refuse("inline_wav", 'Inline audio is always MP3. Leave format out, or use delivery "file" for a WAV file.');
       }
+      // A known library voice speaks one language. With another language the API
+      // still bills, and the audio has the wrong accent. Unknown voices (cloned or
+      // from the larger catalog) may speak any language, so they are not checked.
+      const voiceLanguage = args.voice_id !== undefined ? knownVoiceLanguage(args.voice_id) : undefined;
+      if (voiceLanguage !== undefined && args.language !== undefined && voiceLanguage !== args.language) {
+        refuse(
+          "voice_language_mismatch",
+          `voice_id "${args.voice_id}" speaks ${voiceLanguage}, but language is "${args.language}". ` +
+            `For ${args.language} text, leave voice_id out for the default ${args.language} voice, or use one of: ` +
+            `${voicesFor(args.language).join(", ")}. ` +
+            `For ${voiceLanguage} text, set language to "${voiceLanguage}" or leave it out. Nothing was billed.`
+        );
+      }
 
       // Sign-in (the OAuth key exchange) may have used part of the request's
       // 60 s budget: work only in what is left, and keep time to return.
@@ -306,7 +335,7 @@ export function registerCreateSpeech(server: McpServer): void {
           `--data-binary ${powershellQuote(`@${bodyFile}`)} ${powershellQuote(`${ttsBaseUrl()}/v1/speech`)}; ` +
           `Remove-Item ${powershellQuote(bodyFile)}`;
         // Not refused: the catalog is much larger than the voices we know.
-        const unknownVoice = args.voice_id !== undefined && !(args.voice_id in KNOWN_VOICES);
+        const unknownVoice = args.voice_id !== undefined && voiceLanguage === undefined;
         const voiceWarning = unknownVoice
           ? `voice_id "${args.voice_id}" is not one of the voices this tool knows. Use it only if the user gave it to you; ` +
             "if not, call again without voice_id instead of running the command. "
