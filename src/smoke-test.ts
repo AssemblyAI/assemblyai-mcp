@@ -858,6 +858,26 @@ async function run() {
     );
   });
 
+  // 24b. warnings as string array (as returned by live API)
+  await withClientServer(async (client) => {
+    resetMock([
+      jsonResponse(200, {
+        id: "txn-g2",
+        status: "completed",
+        text: "hi",
+        audio_duration: 3,
+        metadata: { domain_used: null, warnings: ["Universal-3 Pro fallback"] },
+      }),
+    ]);
+    const result = await callTool(client, "get_transcript", { transcript_id: "txn-g2" }, "k");
+    const text = result.content?.[0]?.text ?? "";
+    assert(
+      "24b. warnings section renders string array without undefined",
+      text.includes("--- warnings") && text.includes("- Universal-3 Pro fallback") && !text.includes("undefined"),
+      text
+    );
+  });
+
   // 25. redacted audio: second fetch when redact_pii_audio, graceful when not ready
   await withClientServer(async (client) => {
     resetMock([

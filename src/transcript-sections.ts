@@ -228,8 +228,11 @@ export function renderRedactedAudio(url: string): string[] {
   return ["", "--- redacted_audio ---", url, "(link expires ~24 hours after transcription)"];
 }
 
-export function renderWarnings(warnings: Array<{ message: string }>): string[] {
+export function renderWarnings(warnings: Array<string | { message?: string }>): string[] {
   const lines = ["", "--- warnings (processing notes from AssemblyAI) ---"];
-  for (const w of warnings) lines.push(`- ${w.message}`);
+  for (const w of warnings) {
+    const text = typeof w === "string" ? w : (w?.message ?? String(w));
+    if (text) lines.push(`- ${text}`);
+  }
   return lines;
 }
