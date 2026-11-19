@@ -24,7 +24,13 @@ async function handle(req: Request, { params }: { params: Promise<{ token: strin
   // Vercel caps bodies at 4.5 MB, but other hosts don't: check the declared
   // size first, then stop reading once the body passes the limit.
   if (Number(req.headers.get("content-length")) > MAX_UPLOAD_BYTES) return tooLarge();
-  const data = await readCapped(req, MAX_UPLOAD_BYTES);
+  let data: ArrayBuffer | undefined;
+  try {
+    data = await readCapped(req, MAX_UPLOAD_BYTES);
+  } catch (err) {
+    logError({ event: "upload_read_error", keyHash: keyHash(apiKey), status: "error" }, err);
+    return json(400, { error: "Upload interrupted or aborted by client." });
+  }
   if (!data) return tooLarge();
   if (data.byteLength === 0) {
     return json(400, { error: 'The request body is empty. Send the file with curl --data-binary @"/path/to/file".' });

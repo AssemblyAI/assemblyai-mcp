@@ -1536,6 +1536,18 @@ async function run() {
     const hung = await POST(new Request("https://mcp.assemblyai.com/upload/x", { method: "POST", body }), ctx(uploadToken));
     assert("48. an upstream timeout answers 502", hung.status === 502, String(hung.status));
 
+    resetMock([]);
+    const abortedStream = new ReadableStream<Uint8Array>({
+      pull() {
+        throw new DOMException("The user aborted a request.", "AbortError");
+      },
+    });
+    const aborted = await POST(
+      new Request("https://mcp.assemblyai.com/upload/x", { method: "POST", body: abortedStream, duplex: "half" } as RequestInit),
+      ctx(uploadToken)
+    );
+    assert("48. an aborted client stream answers 400", aborted.status === 400, String(aborted.status));
+
     // With uploads turned off, even a once-valid link gets a 404 that doesn't point at the missing tool.
     delete process.env.UPLOAD_TOKEN_SECRET;
     resetMock([]);
