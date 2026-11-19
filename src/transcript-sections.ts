@@ -46,6 +46,11 @@ export interface SpeechUnderstandingResponse {
 export interface ContentSafetyLabels {
   summary?: Record<string, number>;
   severity_score_summary?: Record<string, { low?: number; medium?: number; high?: number }>;
+  results?: Array<{
+    text?: string;
+    timestamp?: { start?: number; end?: number };
+    labels?: Array<{ label: string; confidence: number }>;
+  }>;
 }
 
 export interface IabCategoriesResult {
@@ -53,7 +58,7 @@ export interface IabCategoriesResult {
 }
 
 export interface AutoHighlightsResult {
-  results?: Array<{ count: number; rank: number; text: string }>;
+  results?: Array<{ count: number; rank: number; text: string; timestamps?: Array<{ start?: number; end?: number }> }>;
 }
 
 export function formatMs(ms: number): string {
@@ -61,6 +66,35 @@ export function formatMs(ms: number): string {
   const m = Math.floor(totalSec / 60);
   const s = totalSec % 60;
   return `${m}:${s.toString().padStart(2, "0")}`;
+}
+
+/** Add precise evidence without changing the legacy m:ss rendering. API
+ * payloads are not runtime-validated, so never fabricate a malformed range. */
+export function formatTimestampRange(start: unknown, end: unknown): string | undefined {
+  if (typeof start !== "number" || typeof end !== "number" ||
+      !Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end < start) return undefined;
+  return `${formatMs(start)}–${formatMs(end)} (start=${start}ms end=${end}ms from audio start)`;
+}
+
+export function renderEntityEvidence(entities: Array<{ text: string; entity_type: string; start: number; end: number }>): string[] {
+  const evidence: string[] = [];
+  for (const e of entities) {
+    const range = formatTimestampRange(e.start, e.end);
+    if (range) evidence.push(`${e.entity_type}: ${e.text} @ ${range}`);
+  }
+  return evidence.length ? ["", "--- entity_evidence ---", ...evidence] : [];
+}
+
+export function renderContentSafetyEvidence(labels: ContentSafetyLabels): string[] {
+  const evidence: string[] = [];
+  for (const r of Array.isArray(labels.results) ? labels.results : []) {
+    const range = formatTimestampRange(r?.timestamp?.start, r?.timestamp?.end);
+    if (!range) continue;
+    const categories = (Array.isArray(r.labels) ? r.labels : [])
+      .map((label) => `${label.label}: ${formatScore(label.confidence)}`).join(", ");
+    evidence.push(`${range}${categories ? ` [${categories}]` : ""}${r.text ? `: ${r.text}` : ""}`);
+  }
+  return evidence.length ? ["", "--- content_safety_evidence ---", ...evidence] : [];
 }
 
 export function renderTranslations(translatedTexts: Record<string, string>): string[] {
@@ -238,6 +272,14 @@ export function renderHighlights(result: AutoHighlightsResult): string[] {
   const lines = ["", "--- highlights (key phrases; count = occurrences) ---"];
   const results = [...(result.results ?? [])].sort((a, b) => b.rank - a.rank);
   for (const r of results) lines.push(`${r.count}× "${r.text}"`);
+  const evidence: string[] = [];
+  for (const r of results) {
+    for (const timestamp of Array.isArray(r.timestamps) ? r.timestamps : []) {
+      const range = formatTimestampRange(timestamp?.start, timestamp?.end);
+      if (range) evidence.push(`"${r.text}" @ ${range}`);
+    }
+  }
+  if (evidence.length) lines.push("", "--- highlight_evidence ---", ...evidence);
   return lines;
 }
 
