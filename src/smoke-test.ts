@@ -61,11 +61,13 @@
  *   56. create_upload_url says what to do when the network blocks the upload
  *   57. a non-JSON POST body gets a JSON-RPC parse error, not a hang; an oversized one 413 before parsing
  *   58. log fields are capped, so a huge caller value can't make a huge log line
+ *   59. Content-Type is matched by media-type essence: Application/JSON initializes; non-JSON types get 415
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { createMcpHandler } from "mcp-handler";
 
 import { registerTools } from "./server";
 import { log, logError, MAX_LOG_FIELD_CHARS, MAX_LOG_STACK_CHARS } from "./log";
@@ -1892,16 +1894,22 @@ async function run() {
     );
     const good = await checked(post('{"jsonrpc":"2.0","id":1,"method":"ping"}'));
     assert("57. a JSON body is passed on, still readable", good.status === 200 && reached === 1);
-    await checked(post("not json", "text/plain"));
+    const plain = await checked(post("not json", "text/plain"));
+    const plainBody = await plain.json();
+    assert(
+      "57. a non-JSON Content-Type gets 415 and does not reach the handler",
+      plain.status === 415 && plainBody?.error?.code === -32000 && plainBody?.error?.message === "Unsupported Media Type: Content-Type must be application/json" && reached === 1,
+      JSON.stringify(plainBody)
+    );
     await checked(new Request("http://localhost/mcp", { method: "GET" }));
-    assert("57. other content types and GET are passed on unchanged", reached === 3);
+    assert("57. GET is passed on unchanged", reached === 2);
 
     // Oversized: refuse before buffering it all, with or without Content-Length.
     const big = "x".repeat(MAX_BODY_BYTES + 1);
     const declared = await checked(post(big));
     assert(
       "57. a body over the limit gets 413 before it reaches the handler",
-      declared.status === 413 && (await declared.json())?.error?.code === -32000 && reached === 3
+      declared.status === 413 && (await declared.json())?.error?.code === -32000 && reached === 2
     );
     let pulled = 0;
     const chunk = new Uint8Array(1024 * 1024).fill(120);
@@ -1922,11 +1930,72 @@ async function run() {
     );
     assert(
       "57. a chunked body with no Content-Length stops being read once it passes the limit",
-      chunked.status === 413 && pulled <= 8 && reached === 3,
+      chunked.status === 413 && pulled <= 8 && reached === 2,
       `status=${chunked.status} pulled=${pulled}`
     );
     const atLimit = await checked(post(JSON.stringify({ pad: "y".repeat(MAX_BODY_BYTES - 20) })));
-    assert("57. a JSON body just under the limit is passed on", atLimit.status === 200 && reached === 4);
+    assert("57. a JSON body just under the limit is passed on", atLimit.status === 200 && reached === 3);
+  }
+
+  // 59. Content-Type essence (#70): case and parameters still initialize; other types are 415.
+  {
+    const initBody = JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: {
+        protocolVersion: "2025-03-26",
+        capabilities: {},
+        clientInfo: { name: "repro", version: "0" },
+      },
+    });
+    const mcp = withJsonBodyCheck(createMcpHandler(() => {}, {}, {
+      streamableHttpEndpoint: "/mcp",
+      sseEndpoint: "/mcp/sse",
+      sseMessageEndpoint: "/mcp/message",
+    }));
+    const call = (contentType: string, body: string) =>
+      mcp(new Request("http://localhost/mcp", {
+        method: "POST",
+        headers: { "content-type": contentType, accept: "application/json, text/event-stream" },
+        body,
+      }));
+    const expectInit = async (contentType: string) => {
+      const start = performance.now();
+      const res = await call(contentType, initBody);
+      const text = await res.text();
+      const ms = Math.round(performance.now() - start);
+      assert(
+        `59. ${contentType} initializes`,
+        res.status === 200 && text.includes('"protocolVersion":"2025-03-26"') && text.includes('"id":1') && !text.includes("Parse error") && ms < 1000,
+        `status=${res.status} ms=${ms} body=${text}`
+      );
+    };
+    await expectInit("application/json");
+    await expectInit("Application/JSON");
+    await expectInit("application/json; charset=utf-8");
+
+    const expect415 = async (contentType: string) => {
+      const res = await call(contentType, initBody);
+      const body = await res.json();
+      assert(
+        `59. ${contentType} is 415`,
+        res.status === 415 && body?.error?.code === -32000 && body?.error?.message === "Unsupported Media Type: Content-Type must be application/json" && body?.id === null,
+        JSON.stringify(body)
+      );
+    };
+    await expect415("text/plain; a=application/json");
+    await expect415("application/json-patch+json");
+
+    const start = performance.now();
+    const bad = await call("application/json", "not json");
+    const badBody = await bad.json();
+    const ms = Math.round(performance.now() - start);
+    assert(
+      "59. invalid JSON is a 400 parse error, not a hang",
+      bad.status === 400 && badBody?.error?.code === -32700 && badBody?.error?.message === "Parse error: the request body is not valid JSON." && badBody?.id === null && ms < 1000,
+      `status=${bad.status} ms=${ms} body=${JSON.stringify(badBody)}`
+    );
   }
 
   // 58. Caller values reach the logs (transcript_id); cap every string field.

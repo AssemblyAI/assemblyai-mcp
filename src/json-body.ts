@@ -11,6 +11,35 @@ function rpcError(status: number, code: number, message: string): Response {
 const tooLarge = () =>
   rpcError(413, -32000, `Payload Too Large: Request body must not exceed ${MAX_BODY_BYTES} bytes`);
 
+const unsupported = () =>
+  rpcError(415, -32000, "Unsupported Media Type: Content-Type must be application/json");
+
+/**
+ * Same rule as `@modelcontextprotocol/sdk` `isJsonContentType`: the media-type
+ * essence (type/subtype, case-insensitive, parameters ignored). A comma in the
+ * parameter tail means joined duplicate headers, which is ambiguous.
+ * Not a substring search: `text/plain; a=application/json` and
+ * `application/json-patch+json` are not `application/json`.
+ */
+function isApplicationJson(header: string | null): boolean {
+  if (header === "application/json") return true;
+  if (!header) return false;
+  const semi = header.indexOf(";");
+  const essence = (semi === -1 ? header : header.slice(0, semi)).trim().toLowerCase();
+  if (essence === "") return false;
+  const tail = semi === -1 ? "" : header.slice(semi);
+  if (tail.split(",").length > 1) return false;
+  return essence === "application/json";
+}
+
+/** mcp-handler chooses req.json() vs req.text() from this header, so it has to be exact. */
+function jsonRequest(req: Request, text: string): Request {
+  const headers = new Headers(req.headers);
+  headers.set("content-type", "application/json");
+  headers.delete("content-length");
+  return new Request(req.url, { method: req.method, headers, body: text, signal: req.signal });
+}
+
 /**
  * Read at most MAX_BODY_BYTES of the body. Returns undefined, and stops
  * reading, as soon as the body is larger: Content-Length can be missing or
@@ -49,16 +78,22 @@ export function withJsonBodyCheck(
   handler: (req: Request) => Promise<Response>,
 ): (req: Request) => Promise<Response> {
   return async (req) => {
-    const contentType = req.headers.get("content-type") ?? "";
-    if (req.method === "POST" && contentType.includes("application/json")) {
-      const text = await readCapped(req.clone());
-      if (text === undefined) return tooLarge();
-      try {
-        JSON.parse(text);
-      } catch {
-        return rpcError(400, -32700, "Parse error: the request body is not valid JSON.");
-      }
+    if (req.method !== "POST") return handler(req);
+    const contentType = req.headers.get("content-type");
+    if (!isApplicationJson(contentType)) {
+      // No Content-Type: mcp-handler reads text, which does not throw on
+      // prose. A declared non-JSON type must be 415 here. Passing it through
+      // lets mcp-handler's substring check call req.json() outside its try.
+      if (contentType === null) return handler(req);
+      return unsupported();
     }
-    return handler(req);
+    const text = await readCapped(req);
+    if (text === undefined) return tooLarge();
+    try {
+      JSON.parse(text);
+    } catch {
+      return rpcError(400, -32700, "Parse error: the request body is not valid JSON.");
+    }
+    return handler(jsonRequest(req, text));
   };
 }
