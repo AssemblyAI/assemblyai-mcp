@@ -216,8 +216,8 @@ async function run() {
     );
     const body1 = JSON.parse(calls[0]?.body ?? "{}");
     assert(
-      "1. every submission pins speech_models to universal-3-5-pro + universal-2",
-      JSON.stringify(body1.speech_models) === JSON.stringify(["universal-3-5-pro", "universal-2"]),
+      "1. every submission pins speech_models to assemblyai-stt-3-7 + universal-2",
+      JSON.stringify(body1.speech_models) === JSON.stringify(["assemblyai-stt-3-7", "universal-2"]),
       JSON.stringify(body1)
     );
   });
@@ -258,7 +258,7 @@ async function run() {
         id: "txn-9",
         status: "completed",
         text: "hello world",
-        speech_model_used: "universal-3-5-pro",
+        speech_model_used: "assemblyai-stt-3-7",
         audio_duration: 5,
       }),
     ]);
@@ -273,7 +273,7 @@ async function run() {
     );
     assert(
       "5. get_transcript surfaces speech_model_used in structuredContent",
-      result.structuredContent?.speech_model_used === "universal-3-5-pro"
+      result.structuredContent?.speech_model_used === "assemblyai-stt-3-7"
     );
     const text5 = result.content?.[0]?.text ?? "";
     assert(
@@ -283,7 +283,7 @@ async function run() {
     );
     assert(
       "5. get_transcript text payload includes speech_model_used",
-      text5.includes("speech_model_used=universal-3-5-pro"),
+      text5.includes("speech_model_used=assemblyai-stt-3-7"),
       `payload: ${text5}`
     );
   });
@@ -394,8 +394,8 @@ async function run() {
     const body = JSON.parse(calls[0]?.body ?? "{}");
     assert("9. sentiment_analysis flag set in payload", body.sentiment_analysis === true, JSON.stringify(body));
     assert(
-      "9. speech_models pinned to universal-3-5-pro + universal-2",
-      JSON.stringify(body.speech_models) === JSON.stringify(["universal-3-5-pro", "universal-2"]),
+      "9. speech_models pinned to assemblyai-stt-3-7 + universal-2",
+      JSON.stringify(body.speech_models) === JSON.stringify(["assemblyai-stt-3-7", "universal-2"]),
       JSON.stringify(body)
     );
   });
@@ -813,7 +813,7 @@ async function run() {
         iab_categories_result: { summary: { "NewsAndPolitics>Weather": 0.99 } },
         auto_highlights_result: { results: [{ count: 1, rank: 0.12, text: "wildfire smoke" }, { count: 3, rank: 0.08, text: "air quality" }] },
         unredacted_text: "Jane Doe reported the fire.",
-        metadata: { domain_used: null, warnings: [{ message: "'ur' is not supported in universal-3-5-pro" }] },
+        metadata: { domain_used: null, warnings: [{ message: "'ur' is not supported in assemblyai-stt-3-7" }] },
       }),
     ]);
     const result = await callTool(client, "get_transcript", { transcript_id: "txn-g1" }, "k");

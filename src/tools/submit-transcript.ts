@@ -250,7 +250,7 @@ export function registerSubmitTranscript(server: McpServer): void {
           .optional()
           .describe(
             "Contextual DESCRIPTION of the audio (domain, scenario, or details — e.g. " +
-              "'Cardiology consultation about chest pain'). Improves accuracy on Universal-3.5 Pro. " +
+              "'Cardiology consultation about chest pain'). Improves accuracy on AssemblyAI-STT-3.7. " +
               "NOT instructions: formatting/behavioral commands are ignored."
           ),
         keyterms_prompt: z
@@ -258,7 +258,7 @@ export function registerSubmitTranscript(server: McpServer): void {
           .optional()
           .describe(
             "Names/brands/domain terms to boost recognition (exact spelling). " +
-              "Up to 1000 terms on universal-3-5-pro, 200 on universal-2. Complementary with prompt."
+              "Up to 1000 terms on assemblyai-stt-3-7, 200 on universal-2. Complementary with prompt."
           ),
         language_code: z
           .string()
@@ -268,7 +268,9 @@ export function registerSubmitTranscript(server: McpServer): void {
           .array(z.string())
           .optional()
           .describe(
-            "Languages for code-switching audio (must include 'en'), e.g. ['en','es']. universal-3-5-pro only."
+            "Languages for code-switching audio, e.g. ['en','es']. On assemblyai-stt-3-7, any number of supported languages " +
+              "(English not required); on universal-2, at most two, one of them 'en'. " +
+              "Don't combine with language_code or language_detection."
           ),
         language_detection: z
           .boolean()
@@ -281,21 +283,21 @@ export function registerSubmitTranscript(server: McpServer): void {
           .optional()
           .describe("Fail transcription if detected-language confidence is below this (0–1)."),
         speech_models: z
-          .array(z.enum(["assemblyai-stt-3-7", "universal-3-5-pro", "universal-2"]))
+          .array(z.enum(["assemblyai-stt-3-7", "universal-2", "universal-3-5-pro"]))
           .min(1)
           .optional()
           .describe(
-            "Priority-ordered model list; first supported model runs, falls back to next. " +
-              "Default ['universal-3-5-pro','universal-2'] is right for almost all cases. " +
-              "Must not be empty — omit the field entirely to use the default. " +
-              "'assemblyai-stt-3-7' is the newest model; it takes priority wherever it appears and keeps disfluencies (filler words) by default."
+            "Priority-ordered model list. Default ['assemblyai-stt-3-7','universal-2'] (AssemblyAI-STT-3.7, with Universal-2 " +
+              "for languages 3.7 doesn't support) is right for almost all cases. 'assemblyai-stt-3-7' runs for every " +
+              "language it supports wherever it appears in the list, and keeps disfluencies (filler words) by default. " +
+              "'universal-3-5-pro' is deprecated. Must not be empty — omit the field entirely to use the default."
           ),
         temperature: z
           .number()
           .min(0)
           .max(1)
           .optional()
-          .describe("Sampling randomness 0–1. universal-3-5-pro only. Leave unset normally."),
+          .describe("Sampling randomness 0–1. Leave unset normally."),
         filter_profanity: z
           .boolean()
           .optional()
@@ -348,7 +350,10 @@ export function registerSubmitTranscript(server: McpServer): void {
         disfluencies: z
           .boolean()
           .optional()
-          .describe("Keep filler words ('um', 'uh') in the transcript."),
+          .describe(
+            "Keep filler words ('um', 'uh') in the transcript. Defaults to true with assemblyai-stt-3-7 (the default model), " +
+              "which also keeps repetitions and false starts; set false for a cleaner transcript."
+          ),
         audio_start_from: z
           .number()
           .int()
@@ -399,7 +404,7 @@ export function registerSubmitTranscript(server: McpServer): void {
           .looseObject({
             expected_languages: z.array(z.string()).optional().describe("Restrict detection to these codes."),
             fallback_language: z.string().optional().describe("Fallback code if detection fails."),
-            code_switching: z.boolean().optional().describe("Detect language switches (universal-2 only)."),
+            code_switching: z.boolean().optional().describe("Detect language switches (universal-2 only; assemblyai-stt-3-7 code-switches natively)."),
             code_switching_confidence_threshold: z.number().min(0).max(1).optional(),
             localization: z
               .array(z.string())
