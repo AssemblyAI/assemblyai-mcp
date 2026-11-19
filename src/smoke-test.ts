@@ -1441,6 +1441,13 @@ async function run() {
       !String(res.structuredContent?.command ?? "").includes("--fail-with-body"),
       String(res.structuredContent?.command)
     );
+    assert(
+      "46. windows_command uses curl.exe, double quotes, and windows path",
+      String(res.structuredContent?.windows_command ?? "").startsWith("curl.exe") &&
+        String(res.structuredContent?.windows_command ?? "").endsWith(`"${url}"`) &&
+        String(res.structuredContent?.windows_command ?? "").includes(`--data-binary "@C:\\path\\to\\file"`),
+      String(res.structuredContent?.windows_command)
+    );
   });
 
   // 47. upload tokens: valid round-trips; expired, tampered or other-secret tokens are refused

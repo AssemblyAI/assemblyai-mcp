@@ -50,6 +50,9 @@ export function registerCreateUploadUrl(server: McpServer): void {
       // Plain curl, no --fail-with-body (curl 7.76+ only): error responses are JSON the agent can read.
       // Single quotes: the link comes from request headers and must stay a shell literal.
       const command = `curl -sS -X POST --data-binary @"/path/to/file" '${uploadLink.replaceAll("'", "'\\''")}'`;
+      // Windows: PowerShell aliases curl to Invoke-WebRequest and treats @" as a here-string;
+      // cmd.exe treats single quotes literally. Use curl.exe with double quotes for Windows terminals.
+      const windowsCommand = `curl.exe -sS -X POST --data-binary "@C:\\path\\to\\file" "${uploadLink.replaceAll('"', '\\"')}"`;
       log({
         event: "tool_call",
         tool: "create_upload_url",
@@ -62,8 +65,9 @@ export function registerCreateUploadUrl(server: McpServer): void {
           {
             type: "text" as const,
             text:
-              `Upload link created (expires in ${UPLOAD_TTL_MS / 60000} minutes, files up to 4.5 MB). ` +
-              `Replace /path/to/file and run:\n\n${command}\n\n` +
+              `Upload link created (expires in ${UPLOAD_TTL_MS / 60000} minutes, files up to 4.5 MB).\n\n` +
+              `On macOS/Linux, replace /path/to/file and run:\n${command}\n\n` +
+              `On Windows (PowerShell or Command Prompt), replace C:\\path\\to\\file and run:\n${windowsCommand}\n\n` +
               `It prints {"upload_url": "..."}. Pass that printed upload_url (not this link) as audio_url to submit_transcript. ` +
               `If it prints {"error": ...} instead, follow the message. If it prints "Request Entity Too Large" ` +
               `or the error says the file is too large, the file is over 4.5 MB: compress it ` +
@@ -82,6 +86,7 @@ export function registerCreateUploadUrl(server: McpServer): void {
           expires_at: new Date(expiresAt).toISOString(),
           max_bytes: MAX_UPLOAD_BYTES,
           command,
+          windows_command: windowsCommand,
         },
       };
     }
