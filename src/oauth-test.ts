@@ -406,6 +406,18 @@ async function run() {
         body.resource === "https://mcp.example.com/mcp",
       JSON.stringify(body)
     );
+
+    const forwardedRes = resourceMetadata(
+      new Request("http://localhost:3000/.well-known/oauth-protected-resource", {
+        headers: { "x-forwarded-host": "mcp.assemblyai.com" },
+      })
+    );
+    const forwardedBody = (await forwardedRes.json()) as Record<string, unknown>;
+    assert(
+      "10b. uses x-forwarded-host for resource metadata when behind reverse proxy",
+      forwardedBody.resource === "https://mcp.assemblyai.com/mcp",
+      JSON.stringify(forwardedBody)
+    );
   }
 
   console.log(`\n${passed} passed, ${failed} failed`);
