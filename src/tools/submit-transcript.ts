@@ -97,7 +97,10 @@ function isOwnUploadLink(audioUrl: string, ownHosts: ReadonlySet<string>): boole
     // trailing-dot FQDN, an explicit port, doubled slashes or a differently
     // cased path must all still match (issue #29).
     const hostname = parsed.hostname.replace(/\.+$/, "").toLowerCase();
-    const path = parsed.pathname.replace(/\/{2,}/g, "/");
+    // URL keeps the path percent-encoded, but Next.js decodes it when routing:
+    // /upload%2F<t> and /uploa%64/<t> are the same live link to it. Decode
+    // before matching; an undecodable path can't route to the handler anyway.
+    const path = decodeURIComponent(parsed.pathname).replace(/\/{2,}/g, "/");
     if (!UPLOAD_LINK_PATH.test(path)) return false;
     for (const own of ownHosts) {
       if (hostname === own.replace(/:\d+$/, "").replace(/\.+$/, "")) return true;

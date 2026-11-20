@@ -1941,6 +1941,9 @@ async function run() {
       ["empty path segment", "https://mcp.assemblyai.com/upload//tok-SECRET-abc123"],
       ["uppercase path", "https://mcp.assemblyai.com/UPLOAD/tok-SECRET-abc123"],
       ["explicit port", "https://mcp.assemblyai.com:8080/upload/tok-SECRET-abc123"],
+      ["encoded slash", "https://mcp.assemblyai.com/upload%2Ftok-SECRET-abc123"],
+      ["encoded path letter", "https://mcp.assemblyai.com/uploa%64/tok-SECRET-abc123"],
+      ["all slashes encoded", "https://mcp.assemblyai.com/%2Fupload%2Ftok-SECRET-abc123"],
     ]) {
       resetMock([]);
       const res = await callTool(client, "submit_transcript", { audio_url: variant }, "k");
