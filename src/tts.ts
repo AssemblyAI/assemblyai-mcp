@@ -219,8 +219,20 @@ export async function createSpeech(
 }
 
 /**
- * A short-lived token that can only call Streaming TTS. It goes into the curl
- * command we hand out, so the API key itself never does.
+ * What the token handed out by create_speech may call. `product: "tts"` alone
+ * does not keep the token off other products: the LLM Gateway accepts it
+ * (issue #108). The token goes into agent-visible output, so deny the Gateway
+ * explicitly.
+ */
+export const TTS_TOKEN_ACCESS = {
+  tts: { enabled: true },
+  llm_gateway: { enabled: false },
+} as const;
+
+/**
+ * A short-lived token for Streaming TTS, with the LLM Gateway denied (see
+ * TTS_TOKEN_ACCESS). It goes into the curl command we hand out, so the API key
+ * itself never does.
  */
 export async function createTtsToken(
   apiKey: string,
@@ -237,7 +249,7 @@ export async function createTtsToken(
         method: "POST",
         // No `Bearer ` prefix: AssemblyAI expects the raw key.
         headers: { Authorization: apiKey, "Content-Type": "application/json" },
-        body: JSON.stringify({ product: "tts", expires_in_seconds: expiresInSeconds }),
+        body: JSON.stringify({ product: "tts", expires_in_seconds: expiresInSeconds, access: TTS_TOKEN_ACCESS }),
         signal,
       });
       if (response.status >= 500) {
