@@ -20,6 +20,13 @@
  *   6b. a refusal whose detail isn't printable ASCII still answers its challenge
  *   9. no Bearer at all reaches the handler (withMcpAuth answers it)
  *  10. the protected resource metadata names the authorization server and scopes
+ *  11. plainly fake tokens (unsigned, no exp, expired, junk) are refused with no upstream call (issue #44)
+ *  12. a refused token is answered from memory on repeat, for a minute, then exchanged again
+ *  13. one client IP gets at most MAX_EXCHANGES_PER_IP_PER_MINUTE upstream exchanges a minute → 429;
+ *      other IPs and cached keys are not affected, and the window resets;
+ *      13b. exchanges that return a key do not count, so many members behind one IP all sign in
+ *  14. at most MAX_CONCURRENT_EXCHANGES exchanges are in flight at once → 429 for the rest;
+ *      14b. timed-out exchanges free their slots; 14c. so does a stalled service-token lookup
  */
 
 import { GET as resourceMetadata } from "../app/.well-known/oauth-protected-resource/route";
@@ -27,6 +34,8 @@ import {
   clearExchangeCache,
   type ExchangeDeps,
   looksLikeAccessToken,
+  MAX_CONCURRENT_EXCHANGES,
+  MAX_EXCHANGES_PER_IP_PER_MINUTE,
   OAUTH_ISSUER,
   withOAuthExchange,
 } from "./oauth";
@@ -406,6 +415,185 @@ async function run() {
         body.resource === "https://mcp.example.com/mcp",
       JSON.stringify(body)
     );
+  }
+
+
+  /** A request from a given client IP, as Vercel's x-forwarded-for gives it. */
+  const fromIp = (bearer: string, ip: string) => {
+    const req = mcpRequest(bearer);
+    const headers = new Headers(req.headers);
+    headers.set("x-forwarded-for", `${ip}, 10.0.0.1`);
+    return new Request(req.url, { method: "POST", headers, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }) });
+  };
+  const b64 = (o: unknown) => Buffer.from(JSON.stringify(o)).toString("base64url");
+
+  {
+    clearExchangeCache();
+    const { deps, exchanges } = stub([]);
+    const { handler, seen } = recorder();
+    const wrapped = withOAuthExchange(handler, deps);
+    const fakes: Record<string, string> = {
+      "aaa.bbb.ccc (not JSON)": "aaa.bbb.ccc",
+      "alg none": `${b64({ alg: "none" })}.${b64({ exp: NOW / 1000 + 3600 })}.c2ln`,
+      "no alg": `${b64({})}.${b64({ exp: NOW / 1000 + 3600 })}.c2ln`,
+      "no exp": `${b64({ alg: "RS256" })}.${b64({ sub: "x" })}.c2ln`,
+      "string exp": `${b64({ alg: "RS256" })}.${b64({ exp: "9999999999" })}.c2ln`,
+      "claims are null": `${b64({ alg: "RS256" })}.${b64(null)}.c2ln`,
+      expired: accessToken(NOW - 10 * 60 * 1000, "old"),
+    };
+    for (const [name, token] of Object.entries(fakes)) {
+      const res = await wrapped(fromIp(token, "203.0.113.9"));
+      assert(
+        `11. ${name} → 401 challenge, no upstream call`,
+        res.status === 401 && (res.headers.get("WWW-Authenticate") ?? "").includes('error="invalid_token"'),
+        String(res.status)
+      );
+    }
+    assert("11. none of them reached AssemblyAI or the handler", exchanges.length === 0 && seen.length === 0, String(exchanges.length));
+  }
+
+  {
+    clearExchangeCache();
+    const { deps, exchanges, advance } = stub([
+      Response.json({ detail: "Invalid access token" }, { status: 401 }),
+      Response.json({ detail: "Invalid access token" }, { status: 401 }),
+    ]);
+    const { handler } = recorder();
+    const wrapped = withOAuthExchange(handler, deps);
+    const token = accessToken(undefined, "revoked");
+    const first = await wrapped(mcpRequest(token));
+    const second = await wrapped(mcpRequest(token));
+    assert("12. a refused token, sent twice, is exchanged once", first.status === 401 && second.status === 401 && exchanges.length === 1);
+    advance(61 * 1000);
+    await wrapped(mcpRequest(token));
+    assert("12. after a minute it is exchanged again", exchanges.length === 2);
+  }
+
+  {
+    clearExchangeCache();
+    const n = MAX_EXCHANGES_PER_IP_PER_MINUTE;
+    const refusal = () => Response.json({ detail: "Invalid access token" }, { status: 401 });
+    // n flood + 1 other IP + 1 after the window, then the good token's key, then fillers.
+    const responses = [...Array.from({ length: n + 2 }, refusal), keyResponse("key-after-window"), ...Array.from({ length: n }, refusal)];
+    const { deps, exchanges, advance } = stub(responses);
+    const { handler } = recorder();
+    const wrapped = withOAuthExchange(handler, deps);
+    const statuses: number[] = [];
+    for (let i = 0; i < n + 5; i++) statuses.push((await wrapped(fromIp(accessToken(undefined, `flood${i}`), "198.51.100.7"))).status);
+    const limited = statuses.slice(n);
+    assert(
+      `13. ${n} unique tokens from one IP reach AssemblyAI; the rest get 429 with no call`,
+      exchanges.length === n && statuses.slice(0, n).every((s) => s === 401) && limited.every((s) => s === 429),
+      `exchanges=${exchanges.length} statuses=${statuses.join(",")}`
+    );
+    const blocked = await wrapped(fromIp(accessToken(undefined, "more"), "198.51.100.7"));
+    const retryAfter = Number(blocked.headers.get("Retry-After"));
+    assert("13. the 429 has a Retry-After within the minute and no sign-in challenge",
+      blocked.status === 429 && retryAfter >= 1 && retryAfter <= 60 && !blocked.headers.get("WWW-Authenticate"), String(retryAfter));
+    const other = await wrapped(fromIp(accessToken(undefined, "other-ip"), "192.0.2.1"));
+    assert("13. another IP is not limited", other.status === 401 && exchanges.length === n + 1);
+    advance(61 * 1000);
+    const later = await wrapped(fromIp(accessToken(undefined, "later"), "198.51.100.7"));
+    assert("13. the window resets after a minute", later.status === 401 && exchanges.length === n + 2);
+    const good = accessToken(undefined, "good");
+    const ok1 = await wrapped(fromIp(good, "198.51.100.8"));
+    for (let i = 0; i < n; i++) await wrapped(fromIp(accessToken(undefined, `fill${i}`), "198.51.100.8")).catch(() => undefined);
+    const ok2 = await wrapped(fromIp(good, "198.51.100.8"));
+    assert("13. a cached key still works while its IP is limited", ok1.status === 200 && ok2.status === 200, `${ok1.status} ${ok2.status}`);
+  }
+
+  {
+    clearExchangeCache();
+    const n = MAX_EXCHANGES_PER_IP_PER_MINUTE;
+    const members = 2 * n;
+    const refusal = () => Response.json({ detail: "Invalid access token" }, { status: 401 });
+    const responses = [
+      ...Array.from({ length: members }, (_, i) => keyResponse(`member-key-${i}`)),
+      ...Array.from({ length: n }, refusal),
+    ];
+    const { deps, exchanges } = stub(responses);
+    const { handler } = recorder();
+    const wrapped = withOAuthExchange(handler, deps);
+    const ip = "198.51.100.20";
+    const signIns: number[] = [];
+    for (let i = 0; i < members; i++) signIns.push((await wrapped(fromIp(accessToken(undefined, `member${i}`), ip))).status);
+    assert(
+      `13b. ${members} members behind one IP all sign in within a minute`,
+      signIns.every((s) => s === 200) && exchanges.length === members,
+      signIns.join(",")
+    );
+    const flood: number[] = [];
+    for (let i = 0; i < n + 1; i++) flood.push((await wrapped(fromIp(accessToken(undefined, `fake${i}`), ip))).status);
+    assert(
+      `13b. failed exchanges from that IP are still capped at ${n}`,
+      flood.slice(0, n).every((s) => s === 401) && flood[n] === 429 && exchanges.length === members + n,
+      `exchanges=${exchanges.length} statuses=${flood.join(",")}`
+    );
+  }
+
+  {
+    clearExchangeCache();
+    const c = MAX_CONCURRENT_EXCHANGES;
+    const stalls: Array<"stall"> = Array.from({ length: c }, () => "stall" as const);
+    const { deps, exchanges } = stub(stalls, { timeoutMs: 200 });
+    const { handler } = recorder();
+    const wrapped = withOAuthExchange(handler, deps);
+    const pending = Array.from({ length: c }, (_, i) => wrapped(fromIp(accessToken(undefined, `slow${i}`), `10.1.0.${i}`)));
+    await new Promise((r) => setTimeout(r, 20));
+    const extra = await wrapped(fromIp(accessToken(undefined, "one-more"), "10.2.0.1"));
+    assert(`14. with ${c} exchanges in flight, one more gets 429 with no call`, extra.status === 429 && exchanges.length === c, `${extra.status} ${exchanges.length}`);
+    // AbortSignal.timeout's timer doesn't keep Node alive: hold it open meanwhile.
+    const keepAlive = setTimeout(() => undefined, 5_000);
+    const done = await Promise.all(pending);
+    clearTimeout(keepAlive);
+    assert("14. the stalled exchanges end as 503", done.every((r) => r.status === 503));
+  }
+
+  {
+    // 14b. The slots come back: after the stalled exchanges end, a new one
+    // reaches AssemblyAI instead of getting 429 (fails without inFlight--).
+    clearExchangeCache();
+    const c = MAX_CONCURRENT_EXCHANGES;
+    const responses: Array<Response | "stall"> = [...Array.from({ length: c }, () => "stall" as const), keyResponse("key-after-stall")];
+    const { deps, exchanges } = stub(responses, { timeoutMs: 200 });
+    const { handler } = recorder();
+    const wrapped = withOAuthExchange(handler, deps);
+    const keepAlive = setTimeout(() => undefined, 5_000);
+    await Promise.all(Array.from({ length: c }, (_, i) => wrapped(fromIp(accessToken(undefined, `slot${i}`), `10.3.0.${i}`))));
+    clearTimeout(keepAlive);
+    const next = await wrapped(fromIp(accessToken(undefined, "after-stall"), "10.4.0.1"));
+    assert("14b. after stalled exchanges time out, a new exchange reaches AssemblyAI", next.status === 200 && exchanges.length === c + 1, `${next.status} ${exchanges.length}`);
+  }
+
+  {
+    // 14c. A stalled service-token lookup is bound by the same deadline and
+    // frees its slot, so it can't fill every slot for good.
+    clearExchangeCache();
+    const c = MAX_CONCURRENT_EXCHANGES;
+    let stall = true;
+    const { deps, exchanges } = stub([keyResponse("key-after-oidc")], {
+      timeoutMs: 200,
+      serviceToken: () => (stall ? new Promise<string>(() => undefined) : Promise.resolve("vercel-oidc-token")),
+    });
+    const { handler } = recorder();
+    const wrapped = withOAuthExchange(handler, deps);
+    // Race a timer: without the deadline these never settle, and the test
+    // must fail rather than let Node exit quietly with nothing pending.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const hung = new Promise<"hung">((resolve) => (timer = setTimeout(() => resolve("hung"), 2_000)));
+    const stalled = await Promise.race([
+      Promise.all(Array.from({ length: c }, (_, i) => wrapped(fromIp(accessToken(undefined, `oidc${i}`), `10.5.0.${i}`)))),
+      hung,
+    ]);
+    clearTimeout(timer);
+    assert(
+      "14c. a stalled service-token lookup ends as 503 at the deadline",
+      stalled !== "hung" && stalled.every((r) => r.status === 503) && exchanges.length === 0,
+      stalled === "hung" ? "still pending after 2 s" : undefined
+    );
+    stall = false;
+    const next = await wrapped(fromIp(accessToken(undefined, "oidc-ok"), "10.6.0.1"));
+    assert("14c. and frees its slot: the next exchange reaches AssemblyAI", next.status === 200 && exchanges.length === 1, `${next.status} ${exchanges.length}`);
   }
 
   console.log(`\n${passed} passed, ${failed} failed`);

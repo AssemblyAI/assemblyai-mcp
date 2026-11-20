@@ -53,6 +53,27 @@ const EXCHANGE_TIMEOUT_MS = 10_000;
 const MAX_CACHE_MS = 5 * 60 * 1000;
 const MAX_CACHE_ENTRIES = 1000;
 
+/**
+ * Guards on the exchange (issue #44). The exchange runs before any auth
+ * check and is signed with this deployment's service identity, so without
+ * these any client on the internet could make it POST to AssemblyAI once per
+ * request with made-up JWT-shaped tokens.
+ */
+/** A refused token is answered from memory for this long, not re-exchanged. */
+const REFUSED_CACHE_MS = 60 * 1000;
+/** Failed upstream exchanges one client IP may make per minute. An exchange
+ * that returns a key gives its count back, because hosted connectors
+ * (Claude.ai, ChatGPT) send many members from one IP. A flood of made-up
+ * tokens is all failures, so it is still capped. */
+export const MAX_EXCHANGES_PER_IP_PER_MINUTE = 30;
+const RATE_WINDOW_MS = 60 * 1000;
+const MAX_TRACKED_IPS = 10_000;
+/** Upstream exchanges in flight at once on this instance. Each one can hold
+ * an invocation for up to EXCHANGE_TIMEOUT_MS. */
+export const MAX_CONCURRENT_EXCHANGES = 25;
+/** Clock skew allowed when a token's own `exp` is checked locally. */
+const EXP_SKEW_MS = 60 * 1000;
+
 /** A JWT: three base64url segments. API keys are opaque hex with no dots. */
 export function looksLikeAccessToken(token: string): boolean {
   return /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(token);
@@ -65,7 +86,9 @@ export type ExchangeOutcome =
   /** The token lacks `aai:api` (a member whose role can't create keys). */
   | { kind: "insufficient_scope"; detail: string }
   /** AssemblyAI couldn't answer, or this server couldn't authenticate itself. */
-  | { kind: "unavailable"; detail: string };
+  | { kind: "unavailable"; detail: string }
+  /** Too many exchanges from this client, or in flight here: try again later. */
+  | { kind: "rate_limited"; detail: string; retryAfterSeconds: number };
 
 export interface ExchangeDeps {
   fetch: typeof fetch;
@@ -94,22 +117,70 @@ interface CachedKey {
  */
 const cache = new Map<string, CachedKey>();
 
+type Refusal = Extract<ExchangeOutcome, { kind: "rejected" | "insufficient_scope" }>;
+/** Tokens AssemblyAI refused, by the same hash, so a repeat is answered
+ * without another upstream call. */
+const refused = new Map<string, { outcome: Refusal; until: number }>();
+/** Exchanges started per client IP in the current window. */
+const exchangesByIp = new Map<string, { windowStart: number; count: number }>();
+let inFlight = 0;
+
 function cacheKey(accessToken: string): string {
   return createHash("sha256").update(accessToken).digest("hex");
 }
 
-/** Test hook: forget every cached key. */
+/** Test hook: forget every cached key, refusal and rate-limit counter. */
 export function clearExchangeCache(): void {
   cache.clear();
+  refused.clear();
+  exchangesByIp.clear();
+  inFlight = 0;
+}
+
+/** Set `key` in a Map, dropping the oldest entry first when it is full. */
+function setBounded<K, V>(map: Map<K, V>, key: K, value: V, max: number): void {
+  map.delete(key);
+  if (map.size >= max) {
+    // Maps iterate in insertion order: drop the oldest.
+    const oldest = map.keys().next().value;
+    if (oldest !== undefined) map.delete(oldest);
+  }
+  map.set(key, value);
 }
 
 /** A JWT's claims, read without verifying it. */
 function claimsOf(jwt: string): Record<string, unknown> {
   try {
-    return JSON.parse(Buffer.from(jwt.split(".")[1] ?? "", "base64url").toString("utf8"));
+    const claims = JSON.parse(Buffer.from(jwt.split(".")[1] ?? "", "base64url").toString("utf8"));
+    return claims && typeof claims === "object" ? claims : {};
   } catch {
     return {};
   }
+}
+
+/** A JWT's header, read without verifying it. */
+function headerOf(jwt: string): Record<string, unknown> {
+  try {
+    const header = JSON.parse(Buffer.from(jwt.split(".")[0] ?? "", "base64url").toString("utf8"));
+    return header && typeof header === "object" ? header : {};
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Why a token can't be a live access token, checked without the network, or
+ * undefined when it might be. This does not verify the token (AssemblyAI
+ * does); it only spares AssemblyAI the tokens that are plainly not real:
+ * not JSON, unsigned, with no expiry, or expired.
+ */
+export function localRejection(accessToken: string, now: number): string | undefined {
+  const alg = headerOf(accessToken).alg;
+  if (typeof alg !== "string" || alg.toLowerCase() === "none") return "The access token is not a signed JWT";
+  const exp = claimsOf(accessToken).exp;
+  if (typeof exp !== "number" || !Number.isFinite(exp)) return "The access token has no expiry";
+  if (exp * 1000 + EXP_SKEW_MS <= now) return "The access token has expired";
+  return undefined;
 }
 
 /** The access token's own expiry: it only bounds how long a key is cached for
@@ -138,10 +209,12 @@ function detailOf(body: unknown, status: number): string {
 }
 
 /** Exchange an access token for its connection's API key, from the cache when
- * the cached entry is still fresh. */
+ * the cached entry is still fresh. `clientIp` keys the per-client rate limit
+ * on upstream exchanges. */
 export async function exchangeAccessToken(
   accessToken: string,
-  deps: ExchangeDeps = defaultDeps
+  deps: ExchangeDeps = defaultDeps,
+  clientIp = "unknown"
 ): Promise<ExchangeOutcome> {
   const entry = cacheKey(accessToken);
   const now = deps.now();
@@ -149,14 +222,87 @@ export async function exchangeAccessToken(
   if (cached && cached.until > now) return { kind: "key", apiKey: cached.apiKey };
   cache.delete(entry);
 
+  // Everything below can reach AssemblyAI; refuse what needs no call first.
+  const known = refused.get(entry);
+  if (known && known.until > now) return known.outcome;
+  refused.delete(entry);
+
+  const local = localRejection(accessToken, now);
+  if (local) {
+    log({ event: "oauth_exchange_rejected", level: "warn", tokenHash: keyHash(accessToken), reason: "local", detail: local });
+    return { kind: "rejected", detail: local };
+  }
+
+  const window = exchangesByIp.get(clientIp);
+  const count = window && now - window.windowStart < RATE_WINDOW_MS ? window.count : 0;
+  if (count >= MAX_EXCHANGES_PER_IP_PER_MINUTE) {
+    const retryAfterSeconds = Math.max(1, Math.ceil((window!.windowStart + RATE_WINDOW_MS - now) / 1000));
+    log({ event: "oauth_exchange_rate_limited", level: "warn", reason: "per_ip", retryAfterSeconds });
+    return { kind: "rate_limited", detail: "Too many sign-in exchanges from this client", retryAfterSeconds };
+  }
+  if (inFlight >= MAX_CONCURRENT_EXCHANGES) {
+    log({ event: "oauth_exchange_rate_limited", level: "warn", reason: "concurrency" });
+    return { kind: "rate_limited", detail: "Too many sign-in exchanges in progress", retryAfterSeconds: 1 };
+  }
+  const windowStart = count === 0 ? now : window!.windowStart;
+  setBounded(exchangesByIp, clientIp, { windowStart, count: count + 1 }, MAX_TRACKED_IPS);
+
+  inFlight++;
+  try {
+    const outcome = await exchangeUpstream(accessToken, entry, now, deps);
+    if (outcome.kind === "rejected" || outcome.kind === "insufficient_scope") {
+      setBounded(refused, entry, { outcome, until: now + REFUSED_CACHE_MS }, MAX_CACHE_ENTRIES);
+    }
+    if (outcome.kind === "key") {
+      // Only failures count against the IP. Refund in the window we charged:
+      // if that window has ended, its count no longer matters.
+      const current = exchangesByIp.get(clientIp);
+      if (current && current.windowStart === windowStart && current.count > 0) current.count--;
+    }
+    return outcome;
+  } finally {
+    inFlight--;
+  }
+}
+
+/** `promise`, or a rejection with the signal's reason once it aborts. */
+function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      }
+    );
+  });
+}
+
+/** The exchange itself: one POST to AssemblyAI. */
+async function exchangeUpstream(
+  accessToken: string,
+  entry: string,
+  now: number,
+  deps: ExchangeDeps
+): Promise<ExchangeOutcome> {
+  // One deadline for the whole exchange, service token included: a stalled
+  // OIDC lookup must not hold a concurrency slot past it.
+  const deadline = AbortSignal.timeout(deps.timeoutMs);
   let serviceToken: string;
   try {
-    serviceToken = await deps.serviceToken();
+    serviceToken = await untilAborted(deps.serviceToken(), deadline);
   } catch (error) {
+    const timedOut = error instanceof Error && error.name === "TimeoutError";
     log({
       event: "oauth_exchange_unavailable",
       level: "error",
-      reason: "no_service_token",
+      reason: timedOut ? "service_token_timeout" : "no_service_token",
       detail: scrubForLog(error instanceof Error ? error.message : String(error)),
     });
     return { kind: "unavailable", detail: "This server could not authenticate to AssemblyAI" };
@@ -173,7 +319,7 @@ export async function exchangeAccessToken(
       },
       // Also aborts reading the body below: a stalled body parses as no key
       // (503), like a stalled connection.
-      signal: AbortSignal.timeout(deps.timeoutMs),
+      signal: deadline,
     });
   } catch (error) {
     const timedOut = error instanceof Error && error.name === "TimeoutError";
@@ -220,12 +366,7 @@ export async function exchangeAccessToken(
       Number.isNaN(rotatesAt) ? Infinity : rotatesAt,
       tokenExpiry(accessToken) ?? Infinity
     );
-    if (cache.size >= MAX_CACHE_ENTRIES) {
-      // Maps iterate in insertion order: drop the oldest.
-      const oldest = cache.keys().next().value;
-      if (oldest !== undefined) cache.delete(oldest);
-    }
-    cache.set(entry, { apiKey: body.api_key, until });
+    setBounded(cache, entry, { apiKey: body.api_key, until }, MAX_CACHE_ENTRIES);
     log({
       event: "oauth_exchange_ok",
       // Not a secret, and stable for the connection's life: joins these logs
@@ -299,6 +440,13 @@ function withBearer(req: Request, token: string): Request {
   return new Request(req.url, init);
 }
 
+/** The client's IP: the first x-forwarded-for entry (on Vercel the platform
+ * sets this header and a client can't), else x-real-ip. */
+function clientIpOf(req: Request): string {
+  const forwarded = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
+  return forwarded || req.headers.get("x-real-ip")?.trim() || "unknown";
+}
+
 function bearerOf(req: Request): string | undefined {
   // Any run of whitespace after the scheme, not just one space: a split on
   // " " reads "Bearer  <token>" as an empty token and skips the exchange.
@@ -337,7 +485,7 @@ export function withOAuthExchange(
     const bearer = bearerOf(req);
     if (!bearer || !looksLikeAccessToken(bearer)) return handler(req);
 
-    const outcome = await exchangeAccessToken(bearer, deps);
+    const outcome = await exchangeAccessToken(bearer, deps, clientIpOf(req));
     switch (outcome.kind) {
       case "key":
         return handler(withBearer(req, outcome.apiKey));
@@ -349,6 +497,12 @@ export function withOAuthExchange(
         return new Response(JSON.stringify({ error: "temporarily_unavailable", error_description: outcome.detail }), {
           status: 503,
           headers: { "Content-Type": "application/json", "Retry-After": "5" },
+        });
+      case "rate_limited":
+        // 429, not 401: signing in again would not help.
+        return new Response(JSON.stringify({ error: "rate_limited", error_description: outcome.detail }), {
+          status: 429,
+          headers: { "Content-Type": "application/json", "Retry-After": String(outcome.retryAfterSeconds) },
         });
     }
   };
