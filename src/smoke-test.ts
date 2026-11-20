@@ -784,6 +784,7 @@ async function run() {
             summarization: {
               status: "success",
               summary_type: "paragraph",
+              block_summary: "High-level summary of the wildfire smoke situation.",
               summary: [{ start: 240, end: 37100, text: "Wildfire smoke discussion.", headline: "Wildfire Smoke" }],
             },
             action_items: {
@@ -799,6 +800,11 @@ async function run() {
     assert(
       "23. su_summary section with headline + timestamps",
       text.includes("--- su_summary") && text.includes("Wildfire Smoke") && text.includes("0:00–0:37"),
+      text
+    );
+    assert(
+      "23. su_block_summary section with executive overview",
+      text.includes("--- su_block_summary ---") && text.includes("High-level summary of the wildfire smoke situation."),
       text
     );
     assert(
