@@ -38,7 +38,7 @@ export function registerCreateUploadUrl(server: McpServer): void {
       if (!apiKey) {
         throw new Error(
           "No AssemblyAI API key in request context. Configure your AssemblyAI API key " +
-            "as the Bearer token in your MCP client connection."
+            "as the Bearer token in your MCP client connection (or re-authenticate if using Claude.ai)."
         );
       }
 
@@ -49,7 +49,10 @@ export function registerCreateUploadUrl(server: McpServer): void {
       const uploadLink = `${origin}/upload/${token}`;
       // Plain curl, no --fail-with-body (curl 7.76+ only): error responses are JSON the agent can read.
       // Single quotes: the link comes from request headers and must stay a shell literal.
-      const command = `curl -sS -X POST --data-binary @"/path/to/file" '${uploadLink.replaceAll("'", "'\\''")}'`;
+      // Content-Type is required: without it curl sends
+      // application/x-www-form-urlencoded, and Vercel rejects most binary
+      // bodies of that type (over about 270 KB) with a plain "Bad request".
+      const command = `curl -sS -X POST -H 'Content-Type: application/octet-stream' --data-binary @"/path/to/file" '${uploadLink.replaceAll("'", "'\\''")}'`;
       log({
         event: "tool_call",
         tool: "create_upload_url",
@@ -57,6 +60,21 @@ export function registerCreateUploadUrl(server: McpServer): void {
         status: "success",
         latencyMs: Date.now() - start,
       });
+      // Claude Code shows the model only structuredContent, so the same guidance
+      // goes into next_step as well as the text.
+      const guidance =
+        `It prints {"upload_url": "..."}. Pass that printed upload_url (not this link) as audio_url to submit_transcript. ` +
+        `If it prints {"error": ...} instead, follow the message. If it prints "Bad request", ` +
+        `make sure the command still has -H 'Content-Type: application/octet-stream' and run it again. ` +
+        `If it prints "Request Entity Too Large" ` +
+        `or the error says the file is too large, the file is over 4.5 MB: compress it ` +
+        `(e.g. ffmpeg -i in -ac 1 -b:a 32k out.mp3) or ask the user for a public URL. ` +
+        `If curl cannot connect at all (e.g. "Could not resolve host", "Connection refused", ` +
+        `or a 403 from a proxy saying the host is not allowed), your environment blocks ${host}: ` +
+        `do not retry or work around it. Tell the user to allow ${host} in their client's network ` +
+        `settings (claude.ai: Settings > Capabilities), or to give a public URL, or to run this ` +
+        `from a local client such as Claude Code. ` +
+        `Do not show this link to anyone: it uploads into the user's account.`;
       return {
         content: [
           {
@@ -64,16 +82,7 @@ export function registerCreateUploadUrl(server: McpServer): void {
             text:
               `Upload link created (expires in ${UPLOAD_TTL_MS / 60000} minutes, files up to 4.5 MB). ` +
               `Replace /path/to/file and run:\n\n${command}\n\n` +
-              `It prints {"upload_url": "..."}. Pass that printed upload_url (not this link) as audio_url to submit_transcript. ` +
-              `If it prints {"error": ...} instead, follow the message. If it prints "Request Entity Too Large" ` +
-              `or the error says the file is too large, the file is over 4.5 MB: compress it ` +
-              `(e.g. ffmpeg -i in -ac 1 -b:a 32k out.mp3) or ask the user for a public URL. ` +
-              `If curl cannot connect at all (e.g. "Could not resolve host", "Connection refused", ` +
-              `or a 403 from a proxy saying the host is not allowed), your environment blocks ${host}: ` +
-              `do not retry or work around it. Tell the user to allow ${host} in their client's network ` +
-              `settings (claude.ai: Settings > Capabilities), or to give a public URL, or to run this ` +
-              `from a local client such as Claude Code. ` +
-              `Do not show this link to anyone: it uploads into the user's account.`,
+              guidance,
           },
         ],
         structuredContent: {
@@ -82,6 +91,7 @@ export function registerCreateUploadUrl(server: McpServer): void {
           expires_at: new Date(expiresAt).toISOString(),
           max_bytes: MAX_UPLOAD_BYTES,
           command,
+          next_step: `Replace /path/to/file in command with the file path and run it. ${guidance}`,
         },
       };
     }

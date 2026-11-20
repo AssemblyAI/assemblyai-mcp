@@ -6,7 +6,9 @@ import { registerSummarizeTranscript } from "./tools/summarize-transcript";
 import { registerUnderstandTranscript } from "./tools/understand-transcript";
 import { registerDeleteTranscript } from "./tools/delete-transcript";
 import { registerCreateUploadUrl } from "./tools/create-upload-url";
+import { registerCreateSpeech } from "./tools/create-speech";
 import { uploadsConfigured } from "./upload-token";
+import { ttsEnabled } from "./tts";
 
 /** Wire all tools onto an MCP server instance. */
 export function registerTools(server: McpServer): void {
@@ -17,4 +19,6 @@ export function registerTools(server: McpServer): void {
   registerDeleteTranscript(server);
   // Only offered when the deployment can sign upload links.
   if (uploadsConfigured()) registerCreateUploadUrl(server);
+  // Text to speech is off unless the deployment turns it on (TTS_ENABLED=1).
+  if (ttsEnabled()) registerCreateSpeech(server);
 }

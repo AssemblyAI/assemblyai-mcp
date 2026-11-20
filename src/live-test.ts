@@ -98,8 +98,9 @@ async function run() {
 
   // 1. Tool discovery
   const tools = await client.listTools();
-  // create_upload_url only appears where UPLOAD_TOKEN_SECRET is set.
-  const names = tools.tools.map((t) => t.name).filter((n) => n !== "create_upload_url").sort();
+  // create_upload_url only appears where UPLOAD_TOKEN_SECRET is set; create_speech where TTS_ENABLED=1.
+  const optional = new Set(["create_upload_url", "create_speech"]);
+  const names = tools.tools.map((t) => t.name).filter((n) => !optional.has(n)).sort();
   assert(
     "1. tools/list exposes the 5 transcript tools",
     JSON.stringify(names) ===
@@ -146,13 +147,13 @@ async function run() {
     // 2. Plain transcription + model pin surfaced
     assert("2. plain transcription completes", plain.final.structuredContent?.status === "completed");
     assert(
-      "2. speech_model_used=universal-3-5-pro in structuredContent",
-      plain.final.structuredContent?.speech_model_used === "universal-3-5-pro",
+      "2. speech_model_used=assemblyai-stt-3-7 in structuredContent",
+      plain.final.structuredContent?.speech_model_used === "assemblyai-stt-3-7",
       String(plain.final.structuredContent?.speech_model_used)
     );
     assert(
       "2. speech_model_used appears in text payload",
-      textOf(plain.final).includes("speech_model_used=universal-3-5-pro")
+      textOf(plain.final).includes("speech_model_used=assemblyai-stt-3-7")
     );
     assert("2. text section present", textOf(plain.final).includes("--- text ---"));
 

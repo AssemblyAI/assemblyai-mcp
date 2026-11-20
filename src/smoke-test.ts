@@ -35,6 +35,7 @@
  *   30. delete_transcript 404 → already deleted or not found message
  *   31. renderSpeechUnderstanding: mapping-only custom_formatting, failed-feature marker, empty action_items note
  *   32. submit_transcript rejects redact_pii_policies/redact_pii_sub without redact_pii, no fetch
+ *   32b. every redact_pii_* option is refused without redact_pii; passes through with it
  *   33. understand_transcript's /v1/understanding is not retried on 5xx (billable, non-idempotent)
  *   34. submit_transcript punctuate:false/format_text:false pass through explicitly
  *   35. submit_transcript rejects speech_models: [] before calling AssemblyAI
@@ -57,10 +58,18 @@
  *   52. ChatGPT files: openai/fileParams + file schema; download_url is sent as audio_url
  *   53. submit_transcript's POST /v2/transcript is not retried on 5xx (billable, non-idempotent)
  *   54. summarize_transcript's POST /v1/chat/completions is not retried on 5xx (billable, non-idempotent)
- *   55. submit_transcript refuses our own /upload/<token> link as audio_url, without echoing it
+ *   55. submit_transcript refuses our own /upload/<token> link as audio_url, without echoing it —
+ *       including respellings (trailing-dot host, doubled slashes, uppercase path, explicit port)
  *   56. create_upload_url says what to do when the network blocks the upload
  *   57. a non-JSON POST body gets a JSON-RPC parse error, not a hang; an oversized one 413 before parsing
  *   58. log fields are capped, so a huge caller value can't make a huge log line
+ *   59. submit_transcript accepts speech_models: ['assemblyai-stt-3-7'] and sends it unchanged
+ *   60. create_upload_url's curl command sends Content-Type: application/octet-stream (Vercel rejects form-urlencoded binary)
+ *   61. su_summary renders summary_type "bullets" chapters (no "— undefined"), splits multiline bullet strings, still renders "paragraph"
+ *   62. LLM Gateway 400s give the caller the reason from metadata.errors, but the logs do not get it (it can echo input)
+ *   63. next_step is in structuredContent for create_upload_url, submit_transcript and an unfinished get_transcript
+ *   64. a transcript_id that could leave /v2/transcript/ ("..", ".", "a/b", "%2e%2e", "") is refused before any fetch,
+ *       by every transcript tool and by the API helpers themselves (issue #73)
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -70,6 +79,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { registerTools } from "./server";
 import { log, logError, MAX_LOG_FIELD_CHARS, MAX_LOG_STACK_CHARS } from "./log";
 import { MAX_BODY_BYTES, withJsonBodyCheck } from "./json-body";
+import { renderSuSummary } from "./transcript-sections";
 
 interface FetchCall {
   url: string;
@@ -215,8 +225,8 @@ async function run() {
     );
     const body1 = JSON.parse(calls[0]?.body ?? "{}");
     assert(
-      "1. every submission pins speech_models to universal-3-5-pro + universal-2",
-      JSON.stringify(body1.speech_models) === JSON.stringify(["universal-3-5-pro", "universal-2"]),
+      "1. every submission pins speech_models to assemblyai-stt-3-7 + universal-2",
+      JSON.stringify(body1.speech_models) === JSON.stringify(["assemblyai-stt-3-7", "universal-2"]),
       JSON.stringify(body1)
     );
   });
@@ -257,7 +267,7 @@ async function run() {
         id: "txn-9",
         status: "completed",
         text: "hello world",
-        speech_model_used: "universal-3-5-pro",
+        speech_model_used: "assemblyai-stt-3-7",
         audio_duration: 5,
       }),
     ]);
@@ -272,7 +282,7 @@ async function run() {
     );
     assert(
       "5. get_transcript surfaces speech_model_used in structuredContent",
-      result.structuredContent?.speech_model_used === "universal-3-5-pro"
+      result.structuredContent?.speech_model_used === "assemblyai-stt-3-7"
     );
     const text5 = result.content?.[0]?.text ?? "";
     assert(
@@ -282,7 +292,7 @@ async function run() {
     );
     assert(
       "5. get_transcript text payload includes speech_model_used",
-      text5.includes("speech_model_used=universal-3-5-pro"),
+      text5.includes("speech_model_used=assemblyai-stt-3-7"),
       `payload: ${text5}`
     );
   });
@@ -393,8 +403,8 @@ async function run() {
     const body = JSON.parse(calls[0]?.body ?? "{}");
     assert("9. sentiment_analysis flag set in payload", body.sentiment_analysis === true, JSON.stringify(body));
     assert(
-      "9. speech_models pinned to universal-3-5-pro + universal-2",
-      JSON.stringify(body.speech_models) === JSON.stringify(["universal-3-5-pro", "universal-2"]),
+      "9. speech_models pinned to assemblyai-stt-3-7 + universal-2",
+      JSON.stringify(body.speech_models) === JSON.stringify(["assemblyai-stt-3-7", "universal-2"]),
       JSON.stringify(body)
     );
   });
@@ -520,6 +530,7 @@ async function run() {
         speech_threshold: 0.5,
         content_safety: true,
         content_safety_confidence: 60,
+        redact_pii: true,
         redact_pii_return_unredacted: true,
         multichannel: true,
         disfluencies: true,
@@ -812,7 +823,7 @@ async function run() {
         iab_categories_result: { summary: { "NewsAndPolitics>Weather": 0.99 } },
         auto_highlights_result: { results: [{ count: 1, rank: 0.12, text: "wildfire smoke" }, { count: 3, rank: 0.08, text: "air quality" }] },
         unredacted_text: "Jane Doe reported the fire.",
-        metadata: { domain_used: null, warnings: [{ message: "'ur' is not supported in universal-3-5-pro" }] },
+        metadata: { domain_used: null, warnings: [{ message: "'ur' is not supported in assemblyai-stt-3-7" }] },
       }),
     ]);
     const result = await callTool(client, "get_transcript", { transcript_id: "txn-g1" }, "k");
@@ -1134,6 +1145,55 @@ async function run() {
       "32. redact_pii_policies without redact_pii rejected before calling AssemblyAI",
       result.isError === true && text.includes("redact_pii: true") && calls.length === 0,
       `isError=${result.isError} text=${text} calls=${calls.length}`
+    );
+  });
+
+  // 32b. The rest of the redact_pii_* family gets the same refusal (they used
+  // to pass straight through without redact_pii — issue #30). With the flag
+  // set they pass through unchanged.
+  await withClientServer(async (client) => {
+    for (const option of [
+      { redact_pii_audio: true },
+      { redact_pii_audio_quality: "wav" },
+      { redact_pii_audio_options: { return_redacted_no_speech_audio: true } },
+      { redact_pii_return_unredacted: true },
+      { redact_static_entities: { INTERNAL: ["secret"] } },
+      { redact_pii_sub: "hash" },
+    ]) {
+      resetMock([]);
+      const res = await callTool(
+        client,
+        "submit_transcript",
+        { audio_url: "https://example.com/x.mp3", ...option },
+        "k"
+      );
+      const text = (res.content?.[0]?.text ?? "").toLowerCase();
+      assert(
+        `32b. ${Object.keys(option)[0]} without redact_pii rejected before calling AssemblyAI`,
+        res.isError === true && text.includes("redact_pii: true") && calls.length === 0,
+        `isError=${res.isError} text=${text} calls=${calls.length}`
+      );
+    }
+    resetMock([jsonResponse(200, { id: "txn-pii", status: "queued" })]);
+    const ok = await callTool(
+      client,
+      "submit_transcript",
+      {
+        audio_url: "https://example.com/x.mp3",
+        redact_pii: true,
+        redact_pii_audio: true,
+        redact_static_entities: { INTERNAL: ["secret"] },
+      },
+      "k"
+    );
+    const sent = JSON.parse(calls[0]?.body ?? "{}") as Record<string, unknown>;
+    assert(
+      "32b. redact_pii_* options still pass through with redact_pii: true",
+      ok.isError !== true &&
+        sent.redact_pii === true &&
+        sent.redact_pii_audio === true &&
+        (sent.redact_static_entities as Record<string, string[]>)?.INTERNAL?.[0] === "secret",
+      calls[0]?.body ?? "no call"
     );
   });
 
@@ -1536,6 +1596,18 @@ async function run() {
     const hung = await POST(new Request("https://mcp.assemblyai.com/upload/x", { method: "POST", body }), ctx(uploadToken));
     assert("48. an upstream timeout answers 502", hung.status === 502, String(hung.status));
 
+    resetMock([]);
+    const abortedStream = new ReadableStream<Uint8Array>({
+      pull() {
+        throw new DOMException("The user aborted a request.", "AbortError");
+      },
+    });
+    const aborted = await POST(
+      new Request("https://mcp.assemblyai.com/upload/x", { method: "POST", body: abortedStream, duplex: "half" } as RequestInit),
+      ctx(uploadToken)
+    );
+    assert("48. an aborted client stream answers 400", aborted.status === 400, String(aborted.status));
+
     // With uploads turned off, even a once-valid link gets a 404 that doesn't point at the missing tool.
     delete process.env.UPLOAD_TOKEN_SECRET;
     resetMock([]);
@@ -1861,6 +1933,38 @@ async function run() {
       const ok = await callTool(client, "submit_transcript", { audio_url: other }, "k");
       assert(`55. ${label} is still accepted`, ok.isError !== true && calls.length === 1, JSON.stringify(ok));
     }
+    // Respellings of the same link must be refused too: the harm is the token
+    // reaching a transcript record, not whether the route would answer (issue #29).
+    for (const [label, variant] of [
+      ["trailing-dot host", "https://mcp.assemblyai.com./upload/tok-SECRET-abc123"],
+      ["doubled leading slash", "https://mcp.assemblyai.com//upload/tok-SECRET-abc123"],
+      ["empty path segment", "https://mcp.assemblyai.com/upload//tok-SECRET-abc123"],
+      ["uppercase path", "https://mcp.assemblyai.com/UPLOAD/tok-SECRET-abc123"],
+      ["explicit port", "https://mcp.assemblyai.com:8080/upload/tok-SECRET-abc123"],
+    ]) {
+      resetMock([]);
+      const res = await callTool(client, "submit_transcript", { audio_url: variant }, "k");
+      const variantText = res.content?.[0]?.text ?? "";
+      assert(
+        `55. the ${label} variant of the upload link is refused`,
+        res.isError === true && calls.length === 0 && !variantText.includes("tok-SECRET"),
+        `isError=${res.isError} calls=${calls.length} text=${variantText}`
+      );
+    }
+    // The file channel is a loose object any client can fill — the link must be
+    // refused there too (the check used to run only for source "audio_url").
+    resetMock([]);
+    const viaFile = await callTool(
+      client,
+      "submit_transcript",
+      { file: { download_url: "https://mcp.assemblyai.com/upload/tok-SECRET-abc123", file_id: "x" } },
+      "k"
+    );
+    assert(
+      "55. the upload link passed via file.download_url is refused",
+      viaFile.isError === true && calls.length === 0 && !(viaFile.content?.[0]?.text ?? "").includes("tok-SECRET"),
+      `isError=${viaFile.isError} calls=${calls.length}`
+    );
   });
 
   // 56. A blocked network gets a clear next step, not retries or workarounds.
@@ -1960,6 +2064,233 @@ async function run() {
     );
     assert("58. a capped log line stays small", lines.every((l) => l.length < 5_000), String(lines.map((l) => l.length)));
   }
+
+  // 59. submit_transcript accepts speech_models: ['assemblyai-stt-3-7'] and sends it unchanged
+  await withClientServer(async (client) => {
+    resetMock([jsonResponse(200, { id: "txn-59", status: "queued" })]);
+    const result = await callTool(
+      client,
+      "submit_transcript",
+      { audio_url: "https://example.com/x.mp3", speech_models: ["assemblyai-stt-3-7"] },
+      "k"
+    );
+    assert(
+      "59. speech_models: ['assemblyai-stt-3-7'] is accepted",
+      result.isError !== true,
+      JSON.stringify(result.content)
+    );
+    const body = JSON.parse(calls[0]?.body ?? "{}");
+    assert(
+      "59. assemblyai-stt-3-7 is sent to AssemblyAI unchanged",
+      JSON.stringify(body.speech_models) === JSON.stringify(["assemblyai-stt-3-7"]),
+      JSON.stringify(body)
+    );
+  });
+
+  // 60. Without a Content-Type, curl sends application/x-www-form-urlencoded and
+  // Vercel answers "Bad request" for most real audio files (over ~270 KB).
+  process.env.UPLOAD_TOKEN_SECRET = "test-secret-" + "s".repeat(32);
+  await withClientServer(async (client) => {
+    resetMock([]);
+    const res = await callTool(client, "create_upload_url", {}, "k");
+    const command = String(res.structuredContent?.command ?? "");
+    const text = res.content?.[0]?.text ?? "";
+    assert(
+      "60. the curl command sends Content-Type: application/octet-stream",
+      command.includes("-H 'Content-Type: application/octet-stream'") && text.includes(command),
+      command
+    );
+    assert(
+      "60. the guidance says what to do on \"Bad request\"",
+      text.includes('"Bad request"') && text.includes("Content-Type"),
+      text
+    );
+  });
+  delete process.env.UPLOAD_TOKEN_SECRET;
+
+  // 61. summary_type "bullets" sends `bullets`, not `text`.
+  {
+    const bulletLines = renderSuSummary([
+      { start: 0, end: 280000, headline: "Wildfire smoke", bullets: ["- Smoke reaches the US.", "Air quality drops."] },
+    ]);
+    const bulletText = bulletLines.join("\n");
+    assert(
+      "61. bullets chapters render each bullet, never \"undefined\"",
+      !bulletText.includes("undefined") &&
+        bulletText.includes("[0:00–4:40] Wildfire smoke") &&
+        bulletText.includes("  - Smoke reaches the US.") &&
+        bulletText.includes("  - Air quality drops."),
+      bulletText
+    );
+    const multiText = renderSuSummary([
+      { start: 0, end: 1000, headline: "Multi", bullets: "- First\n- Second\r\n\n- Third" },
+    ]).join("\n");
+    assert(
+      "61. a multiline bullet string renders each bullet indented under its chapter",
+      multiText.includes("  - First\n  - Second\n  - Third") && !/\n- /.test(multiText),
+      multiText
+    );
+    const paraText = renderSuSummary([{ start: 0, end: 60000, headline: "Intro", text: "A short intro." }]).join("\n");
+    assert("61. paragraph chapters render as before", paraText.includes("[0:00–1:00] Intro — A short intro."), paraText);
+    const emptyText = renderSuSummary([{ start: 0, end: 1000, headline: "Empty" }]).join("\n");
+    assert("61. a chapter with no text or bullets renders the headline only", !emptyText.includes("undefined"), emptyText);
+  }
+  await withClientServer(async (client) => {
+    resetMock([
+      jsonResponse(200, {
+        speech_understanding: {
+          response: {
+            summarization: {
+              status: "success",
+              summary_type: "bullets",
+              summary: [{ start: 0, end: 5000, headline: "Topic", bullets: ["One point."] }],
+            },
+          },
+        },
+      }),
+    ]);
+    const res = await callTool(
+      client,
+      "understand_transcript",
+      { transcript_id: "txn-b", speech_understanding: { request: { summarization: { summary_type: "bullets" } } } },
+      "k"
+    );
+    const text = res.content?.[0]?.text ?? "";
+    assert(
+      "61. understand_transcript text shows the bullets",
+      !res.isError && text.includes("  - One point.") && !text.includes("undefined"),
+      text
+    );
+  });
+
+  // 62. The Gateway puts the reason in metadata.errors; message is only "invalid request body".
+  await withClientServer(async (client) => {
+    resetMock([
+      jsonResponse(400, {
+        metadata: { errors: ["target_language 'klingon' is invalid"] },
+        request_id: "r",
+        message: "invalid request body",
+        code: 400,
+      }),
+    ]);
+    const logged: string[] = [];
+    const originalLog = console.log;
+    console.log = (line: string) => logged.push(String(line));
+    let res: ToolResult;
+    try {
+      res = await callTool(
+        client,
+        "understand_transcript",
+        { transcript_id: "txn-k", speech_understanding: { request: { translation: { target_languages: ["klingon"] } } } },
+        "k"
+      );
+    } finally {
+      console.log = originalLog;
+    }
+    const text = res.content?.[0]?.text ?? "";
+    assert(
+      "62. the error is logged, but without the metadata.errors reason (it can echo caller input)",
+      logged.some((l) => l.includes("invalid request body")) && !logged.some((l) => l.includes("klingon")),
+      logged.join("\n").slice(0, 500)
+    );
+    assert(
+      "62. understand_transcript error includes the metadata.errors reason",
+      res.isError === true && text.includes("invalid request body") && text.includes("target_language 'klingon' is invalid"),
+      text
+    );
+  });
+  await withClientServer(async (client) => {
+    resetMock([
+      jsonResponse(400, {
+        metadata: { errors: ["one of messages or prompt required", "model nope is not supported"] },
+        message: "invalid request body",
+      }),
+    ]);
+    const res = await callTool(client, "summarize_transcript", { transcript_id: "txn-s" }, "k");
+    const text = res.content?.[0]?.text ?? "";
+    assert(
+      "62. summarize_transcript error includes every metadata.errors reason",
+      res.isError === true && text.includes("one of messages or prompt required") && text.includes("model nope is not supported"),
+      text
+    );
+  });
+
+  // 63. Claude Code shows the model only structuredContent: the next step must be there too.
+  process.env.UPLOAD_TOKEN_SECRET = "test-secret-" + "s".repeat(32);
+  await withClientServer(async (client) => {
+    resetMock([]);
+    const up = await callTool(client, "create_upload_url", {}, "k");
+    const upNext = String(up.structuredContent?.next_step ?? "");
+    assert(
+      "63. create_upload_url next_step says to pass the printed upload_url to submit_transcript",
+      upNext.includes("upload_url") && upNext.includes("submit_transcript") && upNext.includes("Bad request"),
+      upNext
+    );
+
+    resetMock([jsonResponse(200, { id: "txn-n", status: "queued" })]);
+    const sub = await callTool(client, "submit_transcript", { audio_url: "https://example.com/a.mp3" }, "k");
+    assert(
+      "63. submit_transcript next_step says to poll get_transcript",
+      String(sub.structuredContent?.next_step ?? "").includes("get_transcript"),
+      JSON.stringify(sub.structuredContent)
+    );
+
+    resetMock([jsonResponse(200, { id: "txn-n", status: "processing" })]);
+    const pending = await callTool(client, "get_transcript", { transcript_id: "txn-n" }, "k");
+    assert(
+      "63. get_transcript while processing has a next_step",
+      String(pending.structuredContent?.next_step ?? "").includes("get_transcript"),
+      JSON.stringify(pending.structuredContent)
+    );
+
+    resetMock([jsonResponse(200, { id: "txn-n", status: "completed", text: "hi" })]);
+    const done = await callTool(client, "get_transcript", { transcript_id: "txn-n" }, "k");
+    assert(
+      "63. a completed get_transcript has no next_step",
+      !("next_step" in (done.structuredContent ?? {})),
+      JSON.stringify(done.structuredContent)
+    );
+  });
+
+  // 64. encodeURIComponent leaves "." alone, so ".." would become /v2/ (issue #73).
+  const badIds = ["..", ".", "a/b", "%2e%2e", "", "abc?x=1", "../upload"];
+  await withClientServer(async (client) => {
+    for (const tool of ["get_transcript", "delete_transcript", "understand_transcript", "summarize_transcript"]) {
+      for (const id of badIds) {
+        resetMock([jsonResponse(200, { id: "x", status: "completed", text: "hi" })]);
+        const args: Record<string, unknown> = { transcript_id: id };
+        if (tool === "understand_transcript") args.speech_understanding = { sentiment_analysis: true };
+        if (tool === "summarize_transcript") args.style = "bullets";
+        const r = await callTool(client, tool, args, "k");
+        assert(
+          `64. ${tool} refuses transcript_id ${JSON.stringify(id)} with no fetch`,
+          r.isError === true && calls.length === 0,
+          `isError=${r.isError} calls=${calls.map((c) => c.method + " " + c.url).join(", ")}`
+        );
+      }
+    }
+    resetMock([jsonResponse(200, { id: "5551722-f677-48a6-9287-39c0aafd9ac1", status: "completed", text: "hi" })]);
+    const ok = await callTool(client, "get_transcript", { transcript_id: "5551722-f677-48a6-9287-39c0aafd9ac1" }, "k");
+    assert(
+      "64. a normal transcript id still works",
+      ok.isError !== true && (calls[0]?.url ?? "").endsWith("/v2/transcript/5551722-f677-48a6-9287-39c0aafd9ac1"),
+      JSON.stringify(ok.content)
+    );
+  });
+  {
+    const { getTranscript, deleteTranscript, getRedactedAudio } = await import("./assemblyai");
+    for (const [name, fn] of [["getTranscript", getTranscript], ["deleteTranscript", deleteTranscript], ["getRedactedAudio", getRedactedAudio]] as const) {
+      resetMock([jsonResponse(200, {})]);
+      let threw = false;
+      try {
+        await fn("k", "..");
+      } catch {
+        threw = true;
+      }
+      assert(`64. ${name}("..") throws with no fetch`, threw && calls.length === 0);
+    }
+  }
+  delete process.env.UPLOAD_TOKEN_SECRET;
 
   globalThis.fetch = originalFetch;
 

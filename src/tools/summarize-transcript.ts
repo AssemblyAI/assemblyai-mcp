@@ -4,6 +4,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { summarizeViaLlmGateway, LLM_GATEWAY_MODEL } from "../llm-gateway";
 import { log, keyHash } from "../log";
 import { handleToolError } from "../tool-errors";
+import { transcriptIdSchema } from "../transcript-id";
 
 const STYLE_PROMPTS: Record<string, string> = {
   bullets:
@@ -33,9 +34,7 @@ export function registerSummarizeTranscript(server: McpServer): void {
         openWorldHint: false,
       },
       inputSchema: {
-        transcript_id: z
-          .string()
-          .describe("The id of a completed transcript (from submit_transcript / get_transcript)."),
+        transcript_id: transcriptIdSchema("The id of a completed transcript (from submit_transcript / get_transcript)."),
         style: z
           .enum(["bullets", "paragraph", "headline", "action_items", "custom"])
           .optional()
@@ -53,7 +52,7 @@ export function registerSummarizeTranscript(server: McpServer): void {
       if (!apiKey) {
         throw new Error(
           "No AssemblyAI API key in request context. Configure your AssemblyAI API key " +
-            "as the Bearer token in your MCP client connection."
+            "as the Bearer token in your MCP client connection (or re-authenticate if using Claude.ai)."
         );
       }
 

@@ -13,6 +13,7 @@ import type {
   IabCategoriesResult,
   AutoHighlightsResult,
 } from "./transcript-sections";
+import { isValidTranscriptId } from "./transcript-id";
 
 const DEFAULT_BASE_URL =
   process.env.ASSEMBLYAI_BASE_URL ?? "https://api.assemblyai.com";
@@ -29,12 +30,19 @@ export const DEFAULT_REDACT_PII_POLICIES = [
 export class AssemblyAIError extends Error {
   status: number;
   transcriptId: string | undefined;
+  /**
+   * The reasons from an LLM Gateway error body (metadata.errors). They can
+   * echo caller input, so they are not part of `message`, which goes to the
+   * logs. handleToolError adds them only to the error the caller gets.
+   */
+  detail: string | undefined;
 
-  constructor(message: string, status: number, transcriptId?: string) {
+  constructor(message: string, status: number, transcriptId?: string, detail?: string) {
     super(message);
     this.name = "AssemblyAIError";
     this.status = status;
     this.transcriptId = transcriptId;
+    this.detail = detail;
   }
 }
 
@@ -51,7 +59,7 @@ export interface TranscriptSubmitOptions {
   // Verbatim/formatting toggles — both default true server-side.
   punctuate?: boolean;
   format_text?: boolean;
-  // Prompting (Universal-3.5 Pro)
+  // Prompting (AssemblyAI-STT-3.7)
   prompt?: string;
   keyterms_prompt?: string[];
   // Language
@@ -67,7 +75,8 @@ export interface TranscriptSubmitOptions {
   };
   language_confidence_threshold?: number;
   // Models
-  speech_models?: Array<"universal-3-5-pro" | "universal-2">;
+  // universal-3-5-pro is deprecated but still accepted.
+  speech_models?: Array<"assemblyai-stt-3-7" | "universal-2" | "universal-3-5-pro">;
   temperature?: number;
   // Diarization
   speaker_options?: { min_speakers_expected?: number; max_speakers_expected?: number };
@@ -172,10 +181,10 @@ export async function submitTranscript(
 ): Promise<TranscriptRecord> {
   const payload: Record<string, unknown> = {
     audio_url: options.audio_url,
-    // The v2 API only accepts universal-3-5-pro and universal-2. Pin the
-    // priority list unless the caller overrides, so model selection doesn't
-    // drift with API-side defaults.
-    speech_models: options.speech_models ?? ["universal-3-5-pro", "universal-2"],
+    // AssemblyAI-STT-3.7 for every language it supports, Universal-2 for the
+    // rest. Pin the priority list unless the caller overrides, so model
+    // selection doesn't drift with API-side defaults.
+    speech_models: options.speech_models ?? ["assemblyai-stt-3-7", "universal-2"],
   };
   if (options.speaker_labels) payload.speaker_labels = true;
   if (options.sentiment_analysis) payload.sentiment_analysis = true;
@@ -195,6 +204,18 @@ export async function submitTranscript(
   return requestWithRetry<TranscriptRecord>(apiKey, "POST", "/v2/transcript", payload, 1);
 }
 
+/**
+ * `/v2/transcript/<id>`, refusing an id that could leave that path ("..",
+ * "/", "%2e" and the like; issue #73). The tool schemas already check the id;
+ * this guards every other caller.
+ */
+function transcriptPath(transcriptId: string): string {
+  if (!isValidTranscriptId(transcriptId)) {
+    throw new AssemblyAIError("Invalid transcript_id: use the id returned by submit_transcript.", 400);
+  }
+  return `/v2/transcript/${transcriptId}`;
+}
+
 export async function getTranscript(
   apiKey: string,
   transcriptId: string
@@ -202,7 +223,7 @@ export async function getTranscript(
   return requestWithRetry<TranscriptRecord>(
     apiKey,
     "GET",
-    `/v2/transcript/${encodeURIComponent(transcriptId)}`
+    transcriptPath(transcriptId)
   );
 }
 
@@ -222,7 +243,7 @@ export async function getRedactedAudio(
   return requestWithRetry<RedactedAudioResponse>(
     apiKey,
     "GET",
-    `/v2/transcript/${encodeURIComponent(transcriptId)}/redacted-audio`,
+    `${transcriptPath(transcriptId)}/redacted-audio`,
     undefined,
     1
   );
@@ -239,7 +260,7 @@ export async function deleteTranscript(
   return requestWithRetry<TranscriptRecord>(
     apiKey,
     "DELETE",
-    `/v2/transcript/${encodeURIComponent(transcriptId)}`,
+    transcriptPath(transcriptId),
     undefined,
     1
   );
@@ -267,7 +288,7 @@ export async function uploadFile(
     signal: AbortSignal.timeout(UPLOAD_TIMEOUT_MS),
   });
   if (!response.ok) {
-    throw new AssemblyAIError(await safeErrorMessage(response), response.status);
+    throw await errorFromResponse(response);
   }
   return (await response.json()) as { upload_url: string };
 }
@@ -300,19 +321,13 @@ export async function requestWithRetry<T>(
     }
 
     if (response.status >= 500) {
-      lastError = new AssemblyAIError(
-        await safeErrorMessage(response),
-        response.status
-      );
+      lastError = await errorFromResponse(response);
       await sleep(2 ** attempt * 1000);
       continue;
     }
 
     if (response.status >= 400) {
-      throw new AssemblyAIError(
-        await safeErrorMessage(response),
-        response.status
-      );
+      throw await errorFromResponse(response);
     }
 
     return (await response.json()) as T;
@@ -325,21 +340,40 @@ export async function requestWithRetry<T>(
   );
 }
 
-async function safeErrorMessage(response: Response): Promise<string> {
+async function errorFromResponse(response: Response): Promise<AssemblyAIError> {
   const text = await response.text();
   try {
     const body = JSON.parse(text);
     for (const key of ["error", "message", "detail"] as const) {
       if (body && typeof body === "object" && body[key]) {
-        return `HTTP ${response.status}: ${body[key]}`;
+        // The LLM Gateway puts the real reason in metadata.errors and only a
+        // generic "invalid request body" in message. Keep the reason, apart
+        // from the message (see AssemblyAIError.detail).
+        const reasons = gatewayErrorReasons(body);
+        return new AssemblyAIError(
+          `HTTP ${response.status}: ${body[key]}`,
+          response.status,
+          undefined,
+          reasons.length > 0 ? reasons.join("; ") : undefined
+        );
       }
     }
   } catch {
     // not JSON
   }
-  return `HTTP ${response.status}: ${text.slice(0, 500)}`;
+  return new AssemblyAIError(`HTTP ${response.status}: ${text.slice(0, 500)}`, response.status);
 }
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+/** String reasons from an LLM Gateway error body's metadata.errors, capped. */
+function gatewayErrorReasons(body: unknown): string[] {
+  const errors = (body as { metadata?: { errors?: unknown } })?.metadata?.errors;
+  if (!Array.isArray(errors)) return [];
+  return errors
+    .filter((e): e is string => typeof e === "string" && e.length > 0)
+    .slice(0, 10)
+    .map((e) => e.slice(0, 300));
 }

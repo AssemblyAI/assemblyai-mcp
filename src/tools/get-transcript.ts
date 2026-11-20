@@ -21,6 +21,7 @@ import {
   type AutoHighlightsResult,
   type TranslatedUtterance,
 } from "../transcript-sections";
+import { transcriptIdSchema } from "../transcript-id";
 
 export function registerGetTranscript(server: McpServer): void {
   server.registerTool(
@@ -40,9 +41,7 @@ export function registerGetTranscript(server: McpServer): void {
         openWorldHint: false,
       },
       inputSchema: {
-        transcript_id: z
-          .string()
-          .describe("The transcript id returned by submit_transcript."),
+        transcript_id: transcriptIdSchema("The transcript id returned by submit_transcript."),
         include_words: z
           .boolean()
           .optional()
@@ -59,7 +58,7 @@ export function registerGetTranscript(server: McpServer): void {
       if (!apiKey) {
         throw new Error(
           "No AssemblyAI API key in request context. Configure your AssemblyAI API key " +
-            "as the Bearer token in your MCP client connection."
+            "as the Bearer token in your MCP client connection (or re-authenticate if using Claude.ai)."
         );
       }
 
@@ -100,6 +99,11 @@ export function registerGetTranscript(server: McpServer): void {
         const shaped = shape(record, redactedAudioUrl, args.include_words === true);
         if (redactedAudioPending) shaped.redacted_audio_pending = true;
         if (redactedAudioError) shaped.redacted_audio_error = redactedAudioError;
+        if (shaped.status === "queued" || shaped.status === "processing") {
+          shaped.next_step = "Not finished yet. Call get_transcript again with the same transcript_id in ~3 seconds.";
+        } else if (redactedAudioPending) {
+          shaped.next_step = "The redacted audio is not ready yet. Call get_transcript again shortly to get redacted_audio_url.";
+        }
         log({
           event: "tool_call",
           tool: "get_transcript",
@@ -154,6 +158,8 @@ interface ShapedTranscript {
   redacted_audio_url?: string;
   redacted_audio_pending?: boolean;
   redacted_audio_error?: string;
+  /** What to do next, when there is something to do. Claude Code shows the model only structuredContent. */
+  next_step?: string;
   metadata?: { domain_used?: string | null; warnings?: Array<{ message: string }> };
 }
 

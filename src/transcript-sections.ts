@@ -9,7 +9,10 @@
 export interface SuChapter {
   start: number;
   end: number;
-  text: string;
+  /** Present for summary_type "paragraph". */
+  text?: string;
+  /** Present for summary_type "bullets" instead of text. */
+  bullets?: string[] | string;
   headline: string;
 }
 
@@ -95,7 +98,25 @@ export function renderCustomFormatting(formattedText: string): string[] {
 
 export function renderSuSummary(chapters: SuChapter[]): string[] {
   const lines = ["", "--- su_summary (chaptered summary; start–end are m:ss) ---"];
-  for (const c of chapters) lines.push(`[${formatMs(c.start)}–${formatMs(c.end)}] ${c.headline} — ${c.text}`);
+  for (const c of chapters) {
+    const head = `[${formatMs(c.start)}–${formatMs(c.end)}] ${c.headline}`;
+    // One string can hold several bullets, one on each line: split them, so
+    // every bullet stays indented under its chapter.
+    const raw = Array.isArray(c.bullets) ? c.bullets : typeof c.bullets === "string" ? [c.bullets] : [];
+    const bullets = raw
+      .filter((b): b is string => typeof b === "string")
+      .flatMap((b) => b.split(/\r?\n/))
+      .filter((b) => b.trim() !== "");
+    if (bullets.length > 0) {
+      lines.push(head);
+      // The API may already prefix each bullet with "- " or "• ".
+      for (const b of bullets) lines.push(`  - ${b.trim().replace(/^[-•*]\s+/, "")}`);
+    } else if (typeof c.text === "string" && c.text !== "") {
+      lines.push(`${head} — ${c.text}`);
+    } else {
+      lines.push(head);
+    }
+  }
   return lines;
 }
 

@@ -80,7 +80,7 @@ function validateAudioUrl(audioUrl: string): void {
   }
 }
 
-const UPLOAD_LINK_PATH = /^\/upload\/[^/]+\/?$/;
+const UPLOAD_LINK_PATH = /^\/upload\/[^/]+\/?$/i;
 
 /**
  * The link `create_upload_url` hands out receives files (POST/PUT); it is not
@@ -92,7 +92,17 @@ const UPLOAD_LINK_PATH = /^\/upload\/[^/]+\/?$/;
 function isOwnUploadLink(audioUrl: string, ownHosts: ReadonlySet<string>): boolean {
   try {
     const parsed = new URL(audioUrl);
-    return ownHosts.has(parsed.host.toLowerCase()) && UPLOAD_LINK_PATH.test(parsed.pathname);
+    // Canonicalize before comparing: the harm is the link reaching a
+    // transcript record, not whether the route would answer it — so a
+    // trailing-dot FQDN, an explicit port, doubled slashes or a differently
+    // cased path must all still match (issue #29).
+    const hostname = parsed.hostname.replace(/\.+$/, "").toLowerCase();
+    const path = parsed.pathname.replace(/\/{2,}/g, "/");
+    if (!UPLOAD_LINK_PATH.test(path)) return false;
+    for (const own of ownHosts) {
+      if (hostname === own.replace(/:\d+$/, "").replace(/\.+$/, "")) return true;
+    }
+    return false;
   } catch {
     return false;
   }
@@ -250,7 +260,7 @@ export function registerSubmitTranscript(server: McpServer): void {
           .optional()
           .describe(
             "Contextual DESCRIPTION of the audio (domain, scenario, or details — e.g. " +
-              "'Cardiology consultation about chest pain'). Improves accuracy on Universal-3.5 Pro. " +
+              "'Cardiology consultation about chest pain'). Improves accuracy on AssemblyAI-STT-3.7. " +
               "NOT instructions: formatting/behavioral commands are ignored."
           ),
         keyterms_prompt: z
@@ -258,7 +268,7 @@ export function registerSubmitTranscript(server: McpServer): void {
           .optional()
           .describe(
             "Names/brands/domain terms to boost recognition (exact spelling). " +
-              "Up to 1000 terms on universal-3-5-pro, 200 on universal-2. Complementary with prompt."
+              "Up to 1000 terms on assemblyai-stt-3-7, 200 on universal-2. Complementary with prompt."
           ),
         language_code: z
           .string()
@@ -268,7 +278,9 @@ export function registerSubmitTranscript(server: McpServer): void {
           .array(z.string())
           .optional()
           .describe(
-            "Languages for code-switching audio (must include 'en'), e.g. ['en','es']. universal-3-5-pro only."
+            "Languages for code-switching audio, e.g. ['en','es']. On assemblyai-stt-3-7, any number of supported languages " +
+              "(English not required); on universal-2, at most two, one of them 'en'. " +
+              "Don't combine with language_code or language_detection."
           ),
         language_detection: z
           .boolean()
@@ -281,20 +293,21 @@ export function registerSubmitTranscript(server: McpServer): void {
           .optional()
           .describe("Fail transcription if detected-language confidence is below this (0–1)."),
         speech_models: z
-          .array(z.enum(["universal-3-5-pro", "universal-2"]))
+          .array(z.enum(["assemblyai-stt-3-7", "universal-2", "universal-3-5-pro"]))
           .min(1)
           .optional()
           .describe(
-            "Priority-ordered model list; first supported model runs, falls back to next. " +
-              "Default ['universal-3-5-pro','universal-2'] is right for almost all cases. " +
-              "Must not be empty — omit the field entirely to use the default."
+            "Priority-ordered model list. Default ['assemblyai-stt-3-7','universal-2'] (AssemblyAI-STT-3.7, with Universal-2 " +
+              "for languages 3.7 doesn't support) is right for almost all cases. 'assemblyai-stt-3-7' runs for every " +
+              "language it supports wherever it appears in the list, and keeps disfluencies (filler words) by default. " +
+              "'universal-3-5-pro' is deprecated. Must not be empty — omit the field entirely to use the default."
           ),
         temperature: z
           .number()
           .min(0)
           .max(1)
           .optional()
-          .describe("Sampling randomness 0–1. universal-3-5-pro only. Leave unset normally."),
+          .describe("Sampling randomness 0–1. Leave unset normally."),
         filter_profanity: z
           .boolean()
           .optional()
@@ -347,7 +360,10 @@ export function registerSubmitTranscript(server: McpServer): void {
         disfluencies: z
           .boolean()
           .optional()
-          .describe("Keep filler words ('um', 'uh') in the transcript."),
+          .describe(
+            "Keep filler words ('um', 'uh') in the transcript. Defaults to true with assemblyai-stt-3-7 (the default model), " +
+              "which also keeps repetitions and false starts; set false for a cleaner transcript."
+          ),
         audio_start_from: z
           .number()
           .int()
@@ -398,7 +414,7 @@ export function registerSubmitTranscript(server: McpServer): void {
           .looseObject({
             expected_languages: z.array(z.string()).optional().describe("Restrict detection to these codes."),
             fallback_language: z.string().optional().describe("Fallback code if detection fails."),
-            code_switching: z.boolean().optional().describe("Detect language switches (universal-2 only)."),
+            code_switching: z.boolean().optional().describe("Detect language switches (universal-2 only; assemblyai-stt-3-7 code-switches natively)."),
             code_switching_confidence_threshold: z.number().min(0).max(1).optional(),
             localization: z
               .array(z.string())
@@ -458,7 +474,7 @@ export function registerSubmitTranscript(server: McpServer): void {
       if (!apiKey) {
         throw new Error(
           "No AssemblyAI API key in request context. Configure your AssemblyAI API key " +
-            "as the Bearer token in your MCP client connection."
+            "as the Bearer token in your MCP client connection (or re-authenticate if using Claude.ai)."
         );
       }
 
@@ -480,10 +496,12 @@ export function registerSubmitTranscript(server: McpServer): void {
       try {
         ({ url: audioUrl, source } = pickAudioUrl(args.audio_url, fileUrl));
         validateAudioUrl(audioUrl);
-        if (source === "audio_url" && isOwnUploadLink(audioUrl, ownHostsOf(extra.requestInfo?.headers))) {
-          // Do not echo the link: its token can upload into the user's account.
+        // Whichever param carried it — `file.download_url` is a loose object any
+        // client can fill, not only ChatGPT — the resolved URL must not be our
+        // upload link. Do not echo it: its token can upload into the user's account.
+        if (isOwnUploadLink(audioUrl, ownHostsOf(extra.requestInfo?.headers))) {
           throw new AudioSourceError(
-            "audio_url is the upload link from create_upload_url, not the uploaded file. " +
+            "That is the upload link from create_upload_url, not the uploaded file. " +
               "Run the curl command it gave you with the file path, then pass the `upload_url` " +
               "that the command prints as audio_url.",
             "upload_link",
@@ -504,9 +522,22 @@ export function registerSubmitTranscript(server: McpServer): void {
       }
 
       try {
-        if (!args.redact_pii && (args.redact_pii_policies || args.redact_pii_sub)) {
+        // Every redact_pii_* option needs the master flag: a model that sets
+        // one without it gets the same refusal, not an option sent silently.
+        const needsRedactPii = (
+          [
+            "redact_pii_policies",
+            "redact_pii_sub",
+            "redact_pii_audio",
+            "redact_pii_audio_quality",
+            "redact_pii_audio_options",
+            "redact_pii_return_unredacted",
+            "redact_static_entities",
+          ] as const
+        ).filter((k) => args[k]);
+        if (!args.redact_pii && needsRedactPii.length > 0) {
           throw new Error(
-            "redact_pii_policies/redact_pii_sub require redact_pii: true. Set redact_pii to enable redaction."
+            `${needsRedactPii.join(", ")} require redact_pii: true. Set redact_pii to enable redaction.`
           );
         }
         const { audio_url: _url, file: _file, summarization: _ignored, ...rest } = args;
@@ -534,6 +565,7 @@ export function registerSubmitTranscript(server: McpServer): void {
           structuredContent: {
             transcript_id: record.id,
             status: record.status,
+            next_step: "Call get_transcript with this transcript_id every ~3s until status is completed or error.",
           },
         };
       } catch (err) {

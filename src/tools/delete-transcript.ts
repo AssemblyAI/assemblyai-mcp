@@ -1,9 +1,9 @@
-import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import { deleteTranscript } from "../assemblyai";
 import { log, keyHash } from "../log";
 import { handleToolError } from "../tool-errors";
+import { transcriptIdSchema } from "../transcript-id";
 
 export function registerDeleteTranscript(server: McpServer): void {
   server.registerTool(
@@ -22,7 +22,7 @@ export function registerDeleteTranscript(server: McpServer): void {
         openWorldHint: false,
       },
       inputSchema: {
-        transcript_id: z.string().describe("The id of the transcript to permanently delete."),
+        transcript_id: transcriptIdSchema("The id of the transcript to permanently delete."),
       },
     },
     async (args, extra) => {
@@ -31,7 +31,7 @@ export function registerDeleteTranscript(server: McpServer): void {
       if (!apiKey) {
         throw new Error(
           "No AssemblyAI API key in request context. Configure your AssemblyAI API key " +
-            "as the Bearer token in your MCP client connection."
+            "as the Bearer token in your MCP client connection (or re-authenticate if using Claude.ai)."
         );
       }
 
