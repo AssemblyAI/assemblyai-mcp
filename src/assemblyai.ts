@@ -293,16 +293,27 @@ export async function uploadFile(
   return (await response.json()) as { upload_url: string };
 }
 
+// Below our 60 s request budget (src/deadline.ts): every attempt and backoff of
+// one call shares this budget, so a hung upstream becomes our own error instead
+// of a request that runs past the budget.
+export const REQUEST_BUDGET_MS = 50_000;
+
 export async function requestWithRetry<T>(
   apiKey: string,
   method: "GET" | "POST" | "DELETE",
   path: string,
   body?: unknown,
   retries = 3,
-  baseUrl: string = DEFAULT_BASE_URL
+  baseUrl: string = DEFAULT_BASE_URL,
+  budgetMs: number = REQUEST_BUDGET_MS
 ): Promise<T> {
+  const deadline = Date.now() + budgetMs;
   let lastError: unknown;
+  let attempts = 0;
   for (let attempt = 0; attempt < retries; attempt++) {
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) break;
+    attempts++;
     let response: Response;
     try {
       response = await fetch(`${baseUrl}${path}`, {
@@ -313,16 +324,17 @@ export async function requestWithRetry<T>(
           ...(body ? { "Content-Type": "application/json" } : {}),
         },
         body: body ? JSON.stringify(body) : undefined,
+        signal: AbortSignal.timeout(remainingMs),
       });
     } catch (err) {
       lastError = err;
-      await sleep(2 ** attempt * 1000);
+      if (!(await backoff(attempt, retries, deadline))) break;
       continue;
     }
 
     if (response.status >= 500) {
       lastError = await errorFromResponse(response);
-      await sleep(2 ** attempt * 1000);
+      if (!(await backoff(attempt, retries, deadline))) break;
       continue;
     }
 
@@ -334,10 +346,25 @@ export async function requestWithRetry<T>(
   }
 
   if (lastError instanceof AssemblyAIError) throw lastError;
+  const timedOut = lastError instanceof Error && lastError.name === "TimeoutError";
   throw new AssemblyAIError(
-    `AssemblyAI request failed after ${retries} retries: ${String(lastError)}`,
-    502
+    timedOut
+      ? `AssemblyAI did not answer within ${Math.round(budgetMs / 1000)} s`
+      : `AssemblyAI request failed after ${attempts} attempt${attempts === 1 ? "" : "s"}: ${String(lastError)}`,
+    timedOut ? 504 : 502
   );
+}
+
+/**
+ * Wait before the next attempt. Returns false, without waiting, when this was
+ * the last attempt or the backoff would run past the call's deadline.
+ */
+async function backoff(attempt: number, retries: number, deadline: number): Promise<boolean> {
+  if (attempt >= retries - 1) return false;
+  const delayMs = 2 ** attempt * 1000;
+  if (Date.now() + delayMs >= deadline) return false;
+  await sleep(delayMs);
+  return true;
 }
 
 async function errorFromResponse(response: Response): Promise<AssemblyAIError> {
