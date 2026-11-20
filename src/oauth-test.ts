@@ -23,7 +23,8 @@
  *  11. plainly fake tokens (unsigned, no exp, expired, junk) are refused with no upstream call (issue #44)
  *  12. a refused token is answered from memory on repeat, for a minute, then exchanged again
  *  13. one client IP gets at most MAX_EXCHANGES_PER_IP_PER_MINUTE upstream exchanges a minute → 429;
- *      other IPs and cached keys are not affected, and the window resets
+ *      other IPs and cached keys are not affected, and the window resets;
+ *      13b. exchanges that return a key do not count, so many members behind one IP all sign in
  *  14. at most MAX_CONCURRENT_EXCHANGES exchanges are in flight at once → 429 for the rest;
  *      14b. timed-out exchanges free their slots; 14c. so does a stalled service-token lookup
  */
@@ -499,6 +500,35 @@ async function run() {
     for (let i = 0; i < n; i++) await wrapped(fromIp(accessToken(undefined, `fill${i}`), "198.51.100.8")).catch(() => undefined);
     const ok2 = await wrapped(fromIp(good, "198.51.100.8"));
     assert("13. a cached key still works while its IP is limited", ok1.status === 200 && ok2.status === 200, `${ok1.status} ${ok2.status}`);
+  }
+
+  {
+    clearExchangeCache();
+    const n = MAX_EXCHANGES_PER_IP_PER_MINUTE;
+    const members = 2 * n;
+    const refusal = () => Response.json({ detail: "Invalid access token" }, { status: 401 });
+    const responses = [
+      ...Array.from({ length: members }, (_, i) => keyResponse(`member-key-${i}`)),
+      ...Array.from({ length: n }, refusal),
+    ];
+    const { deps, exchanges } = stub(responses);
+    const { handler } = recorder();
+    const wrapped = withOAuthExchange(handler, deps);
+    const ip = "198.51.100.20";
+    const signIns: number[] = [];
+    for (let i = 0; i < members; i++) signIns.push((await wrapped(fromIp(accessToken(undefined, `member${i}`), ip))).status);
+    assert(
+      `13b. ${members} members behind one IP all sign in within a minute`,
+      signIns.every((s) => s === 200) && exchanges.length === members,
+      signIns.join(",")
+    );
+    const flood: number[] = [];
+    for (let i = 0; i < n + 1; i++) flood.push((await wrapped(fromIp(accessToken(undefined, `fake${i}`), ip))).status);
+    assert(
+      `13b. failed exchanges from that IP are still capped at ${n}`,
+      flood.slice(0, n).every((s) => s === 401) && flood[n] === 429 && exchanges.length === members + n,
+      `exchanges=${exchanges.length} statuses=${flood.join(",")}`
+    );
   }
 
   {

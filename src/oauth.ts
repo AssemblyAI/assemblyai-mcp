@@ -61,9 +61,10 @@ const MAX_CACHE_ENTRIES = 1000;
  */
 /** A refused token is answered from memory for this long, not re-exchanged. */
 const REFUSED_CACHE_MS = 60 * 1000;
-/** Upstream exchanges (cache misses) one client IP may start per minute. A
- * member exchanges about once per 5 minutes per token, so this only bites a
- * flood. */
+/** Failed upstream exchanges one client IP may make per minute. An exchange
+ * that returns a key gives its count back, because hosted connectors
+ * (Claude.ai, ChatGPT) send many members from one IP. A flood of made-up
+ * tokens is all failures, so it is still capped. */
 export const MAX_EXCHANGES_PER_IP_PER_MINUTE = 30;
 const RATE_WINDOW_MS = 60 * 1000;
 const MAX_TRACKED_IPS = 10_000;
@@ -243,18 +244,20 @@ export async function exchangeAccessToken(
     log({ event: "oauth_exchange_rate_limited", level: "warn", reason: "concurrency" });
     return { kind: "rate_limited", detail: "Too many sign-in exchanges in progress", retryAfterSeconds: 1 };
   }
-  setBounded(
-    exchangesByIp,
-    clientIp,
-    count === 0 ? { windowStart: now, count: 1 } : { windowStart: window!.windowStart, count: count + 1 },
-    MAX_TRACKED_IPS
-  );
+  const windowStart = count === 0 ? now : window!.windowStart;
+  setBounded(exchangesByIp, clientIp, { windowStart, count: count + 1 }, MAX_TRACKED_IPS);
 
   inFlight++;
   try {
     const outcome = await exchangeUpstream(accessToken, entry, now, deps);
     if (outcome.kind === "rejected" || outcome.kind === "insufficient_scope") {
       setBounded(refused, entry, { outcome, until: now + REFUSED_CACHE_MS }, MAX_CACHE_ENTRIES);
+    }
+    if (outcome.kind === "key") {
+      // Only failures count against the IP. Refund in the window we charged:
+      // if that window has ended, its count no longer matters.
+      const current = exchangesByIp.get(clientIp);
+      if (current && current.windowStart === windowStart && current.count > 0) current.count--;
     }
     return outcome;
   } finally {
