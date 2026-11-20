@@ -147,7 +147,7 @@ interface ShapedTranscript {
   words?: WordTiming[];
   summary?: string;
   error?: string;
-  sentiment?: Array<{ text: string; sentiment: string; confidence: number; start: number; end: number; speaker: string | null }>;
+  sentiment?: Array<{ text: string; sentiment: string; confidence?: number | null; start: number; end: number; speaker: string | null }>;
   entities?: Array<{ text: string; entity_type: string; start: number; end: number }>;
   translated_texts?: Record<string, string>;
   speech_understanding?: { request?: unknown; response?: SpeechUnderstandingResponse };
@@ -251,7 +251,11 @@ function formatTranscript(s: ShapedTranscript): string {
     lines.push("--- sentiment (per-sentence; start/end are mm:ss) ---");
     for (const r of s.sentiment) {
       const who = r.speaker ? ` (Speaker ${r.speaker})` : "";
-      lines.push(`[${r.sentiment} ${r.confidence.toFixed(2)}] ${formatMs(r.start)}–${formatMs(r.end)}${who}: ${r.text}`);
+      const score =
+        typeof r.confidence === "number"
+          ? r.confidence.toFixed(2)
+          : (r.confidence != null ? String(r.confidence) : "");
+      lines.push(`[${r.sentiment}${score ? ` ${score}` : ""}] ${formatMs(r.start)}–${formatMs(r.end)}${who}: ${r.text}`);
     }
   }
 

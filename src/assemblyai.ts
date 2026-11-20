@@ -138,7 +138,7 @@ export interface TranscriptRecord {
   sentiment_analysis_results?: Array<{
     text: string;
     sentiment: string;
-    confidence: number;
+    confidence?: number | null;
     start: number;
     end: number;
     speaker: string | null;
