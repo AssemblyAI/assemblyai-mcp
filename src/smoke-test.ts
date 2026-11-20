@@ -70,6 +70,7 @@
  *   63. next_step is in structuredContent for create_upload_url, submit_transcript and an unfinished get_transcript
  *   64. a transcript_id that could leave /v2/transcript/ ("..", ".", "a/b", "%2e%2e", "") is refused before any fetch,
  *       by every transcript tool and by the API helpers themselves (issue #73)
+ *   65. summarize_transcript treats a blank custom_prompt as not given (style prompt is sent; style=custom errors)
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -2291,6 +2292,38 @@ async function run() {
     }
   }
   delete process.env.UPLOAD_TOKEN_SECRET;
+  // 65. a blank custom_prompt falls back to the style prompt instead of an empty instruction
+  for (const blank of ["", "   "]) {
+    await withClientServer(async (client) => {
+      resetMock([jsonResponse(200, { choices: [{ message: { content: "- point" } }] })]);
+      await callTool(
+        client,
+        "summarize_transcript",
+        { transcript_id: "txn-ai", style: "headline", custom_prompt: blank },
+        "k"
+      );
+      const content = JSON.parse(calls[0]?.body ?? "{}").messages?.[0]?.content ?? "";
+      assert(
+        `65. custom_prompt=${JSON.stringify(blank)} sends the headline style prompt`,
+        content.startsWith("Provide a single-sentence headline") && content.includes("{{ transcript }}"),
+        content
+      );
+    });
+    await withClientServer(async (client) => {
+      resetMock([]);
+      const result = await callTool(
+        client,
+        "summarize_transcript",
+        { transcript_id: "txn-ai", style: "custom", custom_prompt: blank },
+        "k"
+      );
+      assert(
+        `65. style=custom with custom_prompt=${JSON.stringify(blank)} errors before calling the gateway`,
+        result.isError === true && calls.length === 0,
+        `isError=${result.isError} calls=${calls.length}`
+      );
+    });
+  }
 
   globalThis.fetch = originalFetch;
 

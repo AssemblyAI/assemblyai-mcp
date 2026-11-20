@@ -56,14 +56,18 @@ export function registerSummarizeTranscript(server: McpServer): void {
         );
       }
 
-      if (args.style === "custom" && !args.custom_prompt) {
+      // ||-style check: models often fill an unused optional param with "", and a
+      // blank custom_prompt would reach the gateway as a prompt with no instruction.
+      const customPrompt = args.custom_prompt?.trim() ? args.custom_prompt : undefined;
+
+      if (args.style === "custom" && !customPrompt) {
         throw new Error(
           "style='custom' requires a custom_prompt. Either provide custom_prompt or choose a built-in style (bullets, paragraph, headline, action_items)."
         );
       }
 
       const prompt: string =
-        args.custom_prompt ??
+        customPrompt ??
         (args.style != null ? STYLE_PROMPTS[args.style] : undefined) ??
         // STYLE_PROMPTS.bullets is always defined — the key is a literal in STYLE_PROMPTS.
         (STYLE_PROMPTS.bullets as string);
