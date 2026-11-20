@@ -5,7 +5,7 @@
  *
  *   1. create_speech is hidden unless TTS_ENABLED is exactly "1"
  *   2. when offered: titled, not read-only, and the description states the cost
- *   3. delivery "file": mints a TTS-only token, returns a curl command, calls no TTS
+ *   3. delivery "file": mints a TTS-only token (LLM Gateway denied, #108), returns a curl command, calls no TTS
  *   4. the command is a safe shell literal for hostile text
  *   5. format, voice and language reach the command; wav sets the container
  *   6. text limits count Unicode code points; over the limit is refused with no request
@@ -221,8 +221,20 @@ async function run() {
       call?.url === "https://token.us.assemblyai.com/v1/token" && call.method === "POST" &&
         call.headers.authorization === KEY &&
         JSON.stringify(JSON.parse(call.body ?? "{}")) ===
-          JSON.stringify({ product: "tts", expires_in_seconds: SPEECH_TOKEN_TTL_SECONDS }),
+          JSON.stringify({
+            product: "tts",
+            expires_in_seconds: SPEECH_TOKEN_TTL_SECONDS,
+            access: { tts: { enabled: true }, llm_gateway: { enabled: false } },
+          }),
       JSON.stringify(call)
+    );
+    const access = (JSON.parse(call?.body ?? "{}") as { access?: Record<string, { enabled?: unknown }> }).access;
+    assert(
+      "3. the token request denies the LLM Gateway and allows only TTS (#108)",
+      access?.llm_gateway?.enabled === false &&
+        access?.tts?.enabled === true &&
+        Object.entries(access ?? {}).every(([product, rule]) => product === "tts" || rule.enabled === false),
+      JSON.stringify(access)
     );
     assert(
       "3. the command carries the token, never the API key",
