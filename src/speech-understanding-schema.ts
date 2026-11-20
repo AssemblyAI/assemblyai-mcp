@@ -34,7 +34,9 @@ export const speechUnderstandingSchema = z.strictObject({
         .describe("Translate the transcript into one or more languages."),
       speaker_identification: z
         .looseObject({
-          speaker_type: z.enum(["name", "role"]).describe("Map diarization labels to real names or to roles."),
+          speaker_type: z
+            .enum(["name", "role", "name_role"])
+            .describe("Map diarization labels to real names, roles, or both."),
           known_values: z
             .array(z.string())
             .optional()
@@ -49,8 +51,8 @@ export const speechUnderstandingSchema = z.strictObject({
             )
             .optional()
             .describe(
-              "Richer metadata per speaker; each entry needs name (speaker_type='name') or role " +
-                "(speaker_type='role'); extra custom fields allowed."
+              "Richer metadata per speaker; each entry needs name (speaker_type='name'), role " +
+                "(speaker_type='role'), or both (speaker_type='name_role'); extra custom fields allowed."
             ),
         })
         .optional()

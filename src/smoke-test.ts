@@ -701,6 +701,34 @@ async function run() {
     );
   });
 
+  // 20b. speech_understanding allows speaker_type name_role
+  await withClientServer(async (client) => {
+    resetMock([jsonResponse(200, { id: "txn-su-nr", status: "queued" })]);
+    await callTool(
+      client,
+      "submit_transcript",
+      {
+        audio_url: "https://example.com/audio.mp3",
+        speaker_labels: true,
+        speech_understanding: {
+          request: {
+            speaker_identification: {
+              speaker_type: "name_role",
+              speakers: [{ name: "Host", role: "Interviewer" }],
+            },
+          },
+        },
+      },
+      "k"
+    );
+    const body = JSON.parse(calls[0]?.body ?? "{}");
+    assert(
+      "20b. speaker_type name_role accepted and passed through",
+      body.speech_understanding?.request?.speaker_identification?.speaker_type === "name_role",
+      JSON.stringify(body)
+    );
+  });
+
   // 21. speech_understanding without the request wrapper → schema error, no API call.
   // NOTE: zod violations are rejected at the MCP protocol layer (InvalidParams),
   // so client.callTool THROWS here rather than returning isError — catch both shapes.
