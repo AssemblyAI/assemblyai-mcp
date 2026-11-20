@@ -162,6 +162,7 @@ keys only work against its own API.
 | `ASSEMBLYAI_BASE_URL` | `https://api.assemblyai.com` | The AssemblyAI API |
 | `ASSEMBLYAI_LLM_GATEWAY_BASE_URL` | `https://llm-gateway.assemblyai.com` | The LLM Gateway |
 | `UPLOAD_TOKEN_SECRET` | unset | 32+ random characters. Encrypts the API key inside upload links; without it, `create_upload_url` is not offered. Rotating it invalidates open links. |
+| `PUBLIC_HOSTS` | unset | Comma-separated hostnames (no scheme) this deployment may put in the links it hands out, for a self-hosted domain. `mcp.assemblyai.com`, local hosts and the deployment's own Vercel hostnames are always allowed. A request for any other host gets `https://mcp.assemblyai.com` in its links. |
 | `TTS_ENABLED` | unset | `1` offers the `create_speech` tool (text to speech). Any other value, or unset: the tool is not listed. |
 | `ASSEMBLYAI_TTS_BASE_URL` | `https://tts.us.assemblyai.com` | The Streaming TTS API (`https://tts.eu.assemblyai.com` for the EU data zone) |
 | `ASSEMBLYAI_TOKEN_BASE_URL` | `https://token.us.assemblyai.com` | Where `create_speech` mints its short-lived TTS tokens |
