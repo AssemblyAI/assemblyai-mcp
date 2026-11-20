@@ -83,6 +83,33 @@ function validateAudioUrl(audioUrl: string): void {
 const UPLOAD_LINK_PATH = /^\/upload\/[^/]+\/?$/i;
 
 /**
+ * The path as the router would see it: percent-decoded (repeatedly, so
+ * `%2575` can't hide a `%75` either), backslashes as slashes, dot segments
+ * resolved and empty segments dropped. Undefined when the path can't be
+ * decoded (a stray `%`).
+ */
+function routedPath(rawPath: string): string | undefined {
+  let path = rawPath;
+  for (let i = 0; i < 3; i++) {
+    let decoded: string;
+    try {
+      decoded = decodeURIComponent(path);
+    } catch {
+      return undefined;
+    }
+    if (decoded === path) break;
+    path = decoded;
+  }
+  const out: string[] = [];
+  for (const segment of path.replace(/\\/g, "/").split("/")) {
+    if (segment === "" || segment === ".") continue;
+    if (segment === "..") out.pop();
+    else out.push(segment);
+  }
+  return `/${out.join("/")}${path.endsWith("/") && out.length > 0 ? "/" : ""}`;
+}
+
+/**
  * The link `create_upload_url` hands out receives files (POST/PUT); it is not
  * where the file ends up. A model that skips the curl step, or passes that link
  * instead of the printed `upload_url`, would make AssemblyAI GET it: a slow,
@@ -94,15 +121,20 @@ function isOwnUploadLink(audioUrl: string, ownHosts: ReadonlySet<string>): boole
     const parsed = new URL(audioUrl);
     // Canonicalize before comparing: the harm is the link reaching a
     // transcript record, not whether the route would answer it — so a
-    // trailing-dot FQDN, an explicit port, doubled slashes or a differently
-    // cased path must all still match (issue #29).
+    // trailing-dot FQDN, an explicit port, doubled slashes, a differently
+    // cased path (issue #29) or a percent-encoded one (issue #79) must all
+    // still match.
     const hostname = parsed.hostname.replace(/\.+$/, "").toLowerCase();
-    const path = parsed.pathname.replace(/\/{2,}/g, "/");
-    if (!UPLOAD_LINK_PATH.test(path)) return false;
+    let ours = false;
     for (const own of ownHosts) {
-      if (hostname === own.replace(/:\d+$/, "").replace(/\.+$/, "")) return true;
+      if (hostname === own.replace(/:\d+$/, "").replace(/\.+$/, "")) ours = true;
     }
-    return false;
+    if (!ours) return false;
+    const path = routedPath(parsed.pathname);
+    // A path on our host that won't decode: refuse it if it could be the
+    // link. Our hosts serve no audio, so this costs nothing real.
+    if (path === undefined) return /upload/i.test(parsed.pathname);
+    return UPLOAD_LINK_PATH.test(path);
   } catch {
     return false;
   }

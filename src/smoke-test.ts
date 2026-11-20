@@ -59,6 +59,7 @@
  *   53. submit_transcript's POST /v2/transcript is not retried on 5xx (billable, non-idempotent)
  *   54. summarize_transcript's POST /v1/chat/completions is not retried on 5xx (billable, non-idempotent)
  *   55. submit_transcript refuses our own /upload/<token> link as audio_url, without echoing it —
+ *       also percent-encoded, double-encoded, backslash and dot-segment spellings (issue #79) —
  *       including respellings (trailing-dot host, doubled slashes, uppercase path, explicit port)
  *   56. create_upload_url says what to do when the network blocks the upload
  *   57. a non-JSON POST body gets a JSON-RPC parse error, not a hang; an oversized one 413 before parsing
@@ -1928,6 +1929,8 @@ async function run() {
       ["another host's /upload/ path", "https://example.com/upload/abc.mp3"],
       ["a deeper path on our host", "https://mcp.assemblyai.com/upload/abc/file.mp3"],
       ["the AssemblyAI CDN upload_url", "https://cdn.assemblyai.com/upload/abc-123"],
+      ["an encoded path on another host", "https://example.com/upload%2Fabc.mp3"],
+      ["an encoded deeper path on our host", "https://mcp.assemblyai.com/upload%2Fabc%2Ffile.mp3"],
     ]) {
       resetMock([jsonResponse(200, { id: "txn-ok", status: "queued" })]);
       const ok = await callTool(client, "submit_transcript", { audio_url: other }, "k");
@@ -1941,6 +1944,14 @@ async function run() {
       ["empty path segment", "https://mcp.assemblyai.com/upload//tok-SECRET-abc123"],
       ["uppercase path", "https://mcp.assemblyai.com/UPLOAD/tok-SECRET-abc123"],
       ["explicit port", "https://mcp.assemblyai.com:8080/upload/tok-SECRET-abc123"],
+      // Percent-encoded paths: new URL keeps them encoded, the router decodes them (issue #79).
+      ["encoded slash", "https://mcp.assemblyai.com/upload%2Ftok-SECRET-abc123"],
+      ["encoded letter", "https://mcp.assemblyai.com/uploa%64/tok-SECRET-abc123"],
+      ["every slash encoded", "https://mcp.assemblyai.com/%2Fupload%2Ftok-SECRET-abc123"],
+      ["double-encoded letter", "https://mcp.assemblyai.com/%2575pload/tok-SECRET-abc123"],
+      ["encoded backslash", "https://mcp.assemblyai.com/upload%5Ctok-SECRET-abc123"],
+      ["encoded dot segment", "https://mcp.assemblyai.com/x/%2e%2e/upload/tok-SECRET-abc123"],
+      ["undecodable path", "https://mcp.assemblyai.com/upload/tok-SECRET-abc123%"],
     ]) {
       resetMock([]);
       const res = await callTool(client, "submit_transcript", { audio_url: variant }, "k");
