@@ -16,7 +16,7 @@ const DEFAULT_LLM_GATEWAY_BASE_URL =
 export const LLM_GATEWAY_MODEL = "claude-sonnet-4-6";
 
 interface ChatCompletionResponse {
-  choices?: Array<{ message?: { content?: string } }>;
+  choices?: Array<{ message?: { content?: string }; finish_reason?: string }>;
 }
 
 export interface SummarizeOptions {
@@ -47,9 +47,13 @@ export async function summarizeViaLlmGateway(
     1,
     DEFAULT_LLM_GATEWAY_BASE_URL
   );
-  const content = data.choices?.[0]?.message?.content;
+  const choice = data.choices?.[0];
+  const content = choice?.message?.content;
   if (!content) {
     throw new Error("LLM Gateway returned no summary content.");
+  }
+  if (choice?.finish_reason === "length") {
+    return `${content}\n\n[Note: Summary truncated because output reached token limit]`;
   }
   return content;
 }
