@@ -44,6 +44,19 @@ export function registerSummarizeTranscript(server: McpServer): void {
           .string()
           .optional()
           .describe("Instruction used when style='custom' (or to override the canned style prompt)."),
+        model: z
+          .string()
+          .optional()
+          .describe(
+            "LLM model to use for summarization. Defaults to 'claude-sonnet-4-6'. " +
+              "Supports any model available in AssemblyAI's LLM Gateway (e.g. 'claude-haiku-4-5-20251001', 'gpt-5-mini', 'gemini-2.5-flash')."
+          ),
+        max_tokens: z
+          .number()
+          .int()
+          .positive()
+          .optional()
+          .describe("Maximum token limit for generated summary (default 1000)."),
       },
     },
     async (args, extra) => {
@@ -72,6 +85,8 @@ export function registerSummarizeTranscript(server: McpServer): void {
         const summary = await summarizeViaLlmGateway(apiKey, {
           transcript_id: args.transcript_id,
           prompt,
+          model: args.model,
+          maxTokens: args.max_tokens,
         });
         log({
           event: "tool_call",
@@ -87,7 +102,7 @@ export function registerSummarizeTranscript(server: McpServer): void {
             transcript_id: args.transcript_id,
             summary,
             style: args.style,
-            model: LLM_GATEWAY_MODEL,
+            model: args.model ?? LLM_GATEWAY_MODEL,
           },
         };
       } catch (err) {
