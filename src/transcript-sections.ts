@@ -39,7 +39,13 @@ export interface SpeechUnderstandingResponse {
     mapping?: Record<string, string>;
     formatted_utterances?: Array<{ speaker: string; text: string; start: number; end: number }>;
   };
-  summarization?: { status?: string; summary_type?: string; effort?: string; summary?: SuChapter[] };
+  summarization?: {
+    status?: string;
+    summary_type?: string;
+    effort?: string;
+    summary?: SuChapter[];
+    block_summary?: string;
+  };
   action_items?: { status?: string; effort?: string; items?: SuActionItem[] };
 }
 
@@ -180,6 +186,9 @@ export function renderSpeechUnderstanding(response: SpeechUnderstandingResponse)
       }
       case "summarization": {
         const su = response.summarization;
+        if (su?.block_summary) {
+          lines.push("", "--- su_block_summary ---", su.block_summary);
+        }
         if (su?.summary && su.summary.length > 0) {
           lines.push(...renderSuSummary(su.summary));
         } else if (su?.summary) {
