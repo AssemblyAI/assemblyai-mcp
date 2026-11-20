@@ -1071,6 +1071,32 @@ async function run() {
     );
   });
 
+  // 30b. get_transcript on deleted transcript surfaces status=deleted
+  await withClientServer(async (client) => {
+    resetMock([
+      jsonResponse(200, {
+        id: "txn-purged",
+        status: "completed",
+        audio_url: "http://deleted_by_user",
+        text: "Deleted by user.",
+        words: null,
+        utterances: null,
+      }),
+    ]);
+    const result = await callTool(client, "get_transcript", { transcript_id: "txn-purged" }, "k");
+    const text = result.content?.[0]?.text ?? "";
+    assert(
+      "30b. get_transcript reports deleted status and purge notice",
+      text.includes("status=deleted") && text.includes("purged"),
+      text
+    );
+    assert(
+      "30b. structuredContent has status=deleted and deleted=true",
+      result.structuredContent?.status === "deleted" && result.structuredContent?.deleted === true,
+      JSON.stringify(result.structuredContent)
+    );
+  });
+
   // 31. renderSpeechUnderstanding: mapping-only custom_formatting, failed-feature marker, empty action_items note
   await withClientServer(async (client) => {
     resetMock([

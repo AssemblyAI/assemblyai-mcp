@@ -135,7 +135,8 @@ type WordTiming = NonNullable<NonNullable<TranscriptRecord["utterances"]>[number
 
 interface ShapedTranscript {
   transcript_id: string;
-  status: TranscriptRecord["status"];
+  status: TranscriptRecord["status"] | "deleted";
+  deleted?: boolean;
   text?: string;
   language_code?: string;
   language_confidence?: number;
@@ -163,11 +164,29 @@ interface ShapedTranscript {
   metadata?: { domain_used?: string | null; warnings?: Array<{ message: string }> };
 }
 
+function isDeleted(record: TranscriptRecord): boolean {
+  if (record.is_deleted === true) return true;
+  if (record.audio_url === "http://deleted_by_user" || record.audio_url === "deleted_by_user") return true;
+  if (
+    record.text === "Deleted by user." &&
+    (record.words == null || record.words.length === 0) &&
+    (record.utterances == null || record.utterances.length === 0)
+  ) {
+    return true;
+  }
+  return false;
+}
+
 function shape(record: TranscriptRecord, redactedAudioUrl?: string, includeWords = false): ShapedTranscript {
+  const deleted = isDeleted(record);
   const out: ShapedTranscript = {
     transcript_id: record.id,
-    status: record.status,
+    status: deleted ? "deleted" : record.status,
   };
+  if (deleted) {
+    out.deleted = true;
+    return out;
+  }
   if (record.text !== undefined) out.text = record.text;
   if (record.language_code != null) out.language_code = record.language_code;
   if (record.language_confidence != null) out.language_confidence = record.language_confidence;
@@ -206,6 +225,9 @@ function shape(record: TranscriptRecord, redactedAudioUrl?: string, includeWords
  * sentiment, entities, and summary — must appear here as plain text.
  */
 function formatTranscript(s: ShapedTranscript): string {
+  if (s.status === "deleted" || s.deleted) {
+    return `status=deleted transcript_id=${s.transcript_id}. This transcript was deleted by user and its text and audio data have been permanently purged.`;
+  }
   if (s.status === "error") {
     return `status=error transcript_id=${s.transcript_id} error="${s.error ?? ""}"`;
   }
