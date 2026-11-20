@@ -23,6 +23,7 @@
  */
 
 import { GET as resourceMetadata, OPTIONS as resourceOptions } from "../app/.well-known/oauth-protected-resource/route";
+import { OPTIONS as mcpOptions } from "../app/mcp/[[...path]]/route";
 import {
   clearExchangeCache,
   type ExchangeDeps,
@@ -416,6 +417,16 @@ async function run() {
       "10. metadata OPTIONS preflight answers 204 with CORS headers",
       optRes.status === 204 && optRes.headers.get("access-control-allow-origin") === "*",
       String(optRes.status)
+    );
+    const mcpOpt = mcpOptions();
+    const allowHeaders = mcpOpt.headers.get("access-control-allow-headers") ?? "";
+    assert(
+      "10. /mcp OPTIONS preflight answers 204 with protocol and event headers",
+      mcpOpt.status === 204 &&
+        mcpOpt.headers.get("access-control-allow-origin") === "*" &&
+        allowHeaders.includes("mcp-protocol-version") &&
+        allowHeaders.includes("last-event-id"),
+      allowHeaders
     );
   }
 
