@@ -17,7 +17,7 @@
  *   11. submit_transcript redact_pii defaults (policies + sub)
  *   12. summarization flag is inert — no deprecated params reach AssemblyAI
  *   13. get_transcript renders sentiment + entities sections in text content
- *   14. summarize_transcript calls LLM Gateway with transcript_id + {{ transcript }} tag
+ *   14. summarize_transcript calls LLM Gateway with transcript_id + {{ transcript }} tag (and appends truncation notice if finish_reason=length)
  *   15. summarize_transcript with style=custom but no custom_prompt → validation error, no gateway call
  *   16.–18. scalar/boolean pass-through params
  *   19. nested objects pass through unchanged (language_detection_options, speaker_options, etc.)
@@ -492,6 +492,27 @@ async function run() {
     );
     const text = result.content?.[0]?.text ?? "";
     assert("14. returns summary content", text.includes("point one"), text);
+  });
+
+  // 14b. summarize_transcript appends truncation notice when finish_reason is length
+  await withClientServer(async (client) => {
+    resetMock([
+      jsonResponse(200, {
+        choices: [
+          {
+            message: { content: "- point one\n- point two" },
+            finish_reason: "length",
+          },
+        ],
+      }),
+    ]);
+    const result = await callTool(client, "summarize_transcript", { transcript_id: "txn-ai" }, "k");
+    const text = result.content?.[0]?.text ?? "";
+    assert(
+      "14b. truncation notice appended when finish_reason is length",
+      text.includes("[Note: Summary truncated because output reached token limit]"),
+      text
+    );
   });
 
   // 15. summarize_transcript with style=custom but no custom_prompt → error, no gateway call
