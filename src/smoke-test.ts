@@ -494,6 +494,28 @@ async function run() {
     assert("14. returns summary content", text.includes("point one"), text);
   });
 
+  // 14b. summarize_transcript passes custom model and max_tokens
+  await withClientServer(async (client) => {
+    resetMock([jsonResponse(200, { choices: [{ message: { content: "Concise summary." } }] })]);
+    const result = await callTool(
+      client,
+      "summarize_transcript",
+      { transcript_id: "txn-custom-model", model: "gemini-2.5-flash", max_tokens: 500 },
+      "k"
+    );
+    const body = JSON.parse(calls[0]?.body ?? "{}");
+    assert(
+      "14b. sends custom model and max_tokens",
+      body.model === "gemini-2.5-flash" && body.max_tokens === 500,
+      JSON.stringify(body)
+    );
+    assert(
+      "14b. structuredContent reflects custom model",
+      result.structuredContent?.model === "gemini-2.5-flash",
+      JSON.stringify(result.structuredContent)
+    );
+  });
+
   // 15. summarize_transcript with style=custom but no custom_prompt → error, no gateway call
   await withClientServer(async (client) => {
     resetMock([]);
