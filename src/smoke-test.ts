@@ -44,7 +44,7 @@
  *   38. submit_transcript rejects a speech_understanding feature key placed outside the request wrapper
  *   39. get_transcript renders translated_utterances for utterances carrying translated_texts
  *   40. get_transcript drops explicit API nulls (content_safety_labels, translated_texts) instead of passing them through
- *   41. renderContentSafety tolerates a non-numeric confidence value without throwing
+ *   41. renderContentSafety and sentiment formatters tolerate null or non-numeric confidence values without throwing
  *   42. summarize_transcript 429 → friendly rate-limit message (shared tool-error mapper)
  *   43. every tool carries a title + readOnlyHint/destructiveHint; delete is destructive, reads are read-only
  *   44. logError scrubs URLs and long tokens from error messages and stacks
@@ -1375,6 +1375,28 @@ async function run() {
     assert(
       "41. content_safety renders without throwing when a confidence value is non-numeric",
       result.isError !== true && text.includes("disasters: null"),
+      text
+    );
+  });
+
+  // 41b. formatTranscript tolerates null or non-numeric sentiment confidence without throwing
+  await withClientServer(async (client) => {
+    resetMock([
+      jsonResponse(200, {
+        id: "txn-sent-null",
+        status: "completed",
+        text: "Acme is great.",
+        audio_duration: 3,
+        sentiment_analysis_results: [
+          { text: "Acme is great.", sentiment: "POSITIVE", confidence: null, start: 0, end: 1500, speaker: "A" },
+        ],
+      }),
+    ]);
+    const result = await callTool(client, "get_transcript", { transcript_id: "txn-sent-null" }, "k");
+    const text = result.content?.[0]?.text ?? "";
+    assert(
+      "41b. sentiment renders without throwing when confidence is null",
+      result.isError !== true && text.includes("--- sentiment") && text.includes("[POSITIVE] 0:00"),
       text
     );
   });
