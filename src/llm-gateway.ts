@@ -15,6 +15,13 @@ const DEFAULT_LLM_GATEWAY_BASE_URL =
 
 export const LLM_GATEWAY_MODEL = "claude-sonnet-4-6";
 
+/**
+ * LLM calls can run longer than the 60 s request budget (deadline.ts leaves
+ * the 300 s Fluid compute platform limit above it so they are not cut off).
+ * Give them their own deadline below that platform limit instead.
+ */
+export const LLM_GATEWAY_TIMEOUT_MS = 240_000;
+
 interface ChatCompletionResponse {
   choices?: Array<{ message?: { content?: string } }>;
 }
@@ -45,7 +52,8 @@ export async function summarizeViaLlmGateway(
     "/v1/chat/completions",
     body,
     1,
-    DEFAULT_LLM_GATEWAY_BASE_URL
+    DEFAULT_LLM_GATEWAY_BASE_URL,
+    LLM_GATEWAY_TIMEOUT_MS
   );
   const content = data.choices?.[0]?.message?.content;
   if (!content) {
@@ -86,6 +94,7 @@ export async function understandTranscript(
     "/v1/understanding",
     { transcript_id: options.transcript_id, speech_understanding: options.speech_understanding },
     1,
-    DEFAULT_LLM_GATEWAY_BASE_URL
+    DEFAULT_LLM_GATEWAY_BASE_URL,
+    LLM_GATEWAY_TIMEOUT_MS
   );
 }

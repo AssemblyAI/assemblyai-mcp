@@ -4,7 +4,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
 import { AssemblyAIError } from "../assemblyai";
-import { remainingMs } from "../deadline";
+import { remainingMs, RETURN_RESERVE_MS } from "../deadline";
 import { log, logError, keyHash } from "../log";
 import {
   AudioTooLargeError,
@@ -25,8 +25,6 @@ import {
   TtsError,
 } from "../tts";
 
-/** Kept free at the end of the request to encode and send the result. */
-export const RETURN_RESERVE_MS = 5_000;
 /** Below this much time, do not start speech: it could be billed and then lost. */
 export const MIN_SPEECH_MS = 10_000;
 /** Below this much time, do not ask for a token. */

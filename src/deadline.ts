@@ -16,6 +16,9 @@ import { AsyncLocalStorage } from "node:async_hooks";
  */
 export const ROUTE_BUDGET_MS = 60_000;
 
+/** Kept free at the end of the request to encode and send the result. */
+export const RETURN_RESERVE_MS = 5_000;
+
 const startedAt = new AsyncLocalStorage<number>();
 
 /** Wrap the route handler: everything it awaits sees this request's start time. */

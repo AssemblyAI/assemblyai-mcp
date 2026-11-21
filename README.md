@@ -304,6 +304,7 @@ assemblyai-mcp/
 │   │   └── delete-transcript.ts
 │   ├── smoke-test.ts                        # InMemoryTransport, mocked fetch
 │   ├── oauth-test.ts                        # token exchange, stubbed (npm test)
+│   ├── request-timeout-test.ts              # requestWithRetry deadlines, real local HTTP (npm test)
 │   ├── oauth-preview-test.ts                # sign-in against a deployment (npm run test:oauth)
 │   └── live-test.ts                         # real API, Streamable HTTP client
 ├── package.json

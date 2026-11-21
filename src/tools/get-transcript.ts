@@ -73,12 +73,11 @@ export function registerGetTranscript(server: McpServer): void {
             redactedAudioUrl = audio.redacted_audio_url;
             redactedAudioPending = redactedAudioUrl === undefined;
           } catch (err) {
-            // 400 (not ready yet) and "200 but no URL yet" both mean "keep
-            // polling" — the existing pending note. Anything else (401/403/
-            // 404/5xx/network, all surfaced as AssemblyAIError by
-            // requestWithRetry) means the audio is genuinely unavailable
+            // 400 (not ready yet), "200 but no URL yet", and 504 (our own
+            // deadline: AssemblyAI didn't answer in time) mean call again.
+            // Anything else means the audio is genuinely unavailable
             // (e.g. the ~24h link expiry), which is a different message.
-            if (err instanceof AssemblyAIError && err.status === 400) {
+            if (err instanceof AssemblyAIError && (err.status === 400 || err.status === 504)) {
               redactedAudioPending = true;
             } else {
               redactedAudioError = err instanceof AssemblyAIError ? `HTTP ${err.status}` : "unknown error";
