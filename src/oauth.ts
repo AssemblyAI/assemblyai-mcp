@@ -507,3 +507,26 @@ export function withOAuthExchange(
     }
   };
 }
+
+/**
+ * `withMcpAuth` answers a request with no Bearer as `invalid_token`. RFC 6750
+ * section 3.1: when the request lacks any authentication information, the
+ * challenge should carry no error code. `invalid_token` says a token was sent
+ * and refused, which can send a client down a refresh or re-register path
+ * instead of plain discovery. So a 401 for a request with no Bearer is
+ * rewritten to `Bearer resource_metadata="..."`. A 401 for a Bearer that was
+ * sent keeps its error code.
+ */
+export function withMissingCredentialsChallenge(
+  handler: (req: Request) => Promise<Response>
+): (req: Request) => Promise<Response> {
+  return async (req) => {
+    const res = await handler(req);
+    if (res.status !== 401 || bearerOf(req) !== undefined) return res;
+    const metadata = /resource_metadata="[^"]*"/.exec(res.headers.get("WWW-Authenticate") ?? "")?.[0];
+    if (!metadata) return res;
+    const headers = new Headers(res.headers);
+    headers.set("WWW-Authenticate", `Bearer ${metadata}`);
+    return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
+  };
+}

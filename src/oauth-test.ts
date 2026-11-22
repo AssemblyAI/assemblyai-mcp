@@ -27,8 +27,13 @@
  *      13b. exchanges that return a key do not count, so many members behind one IP all sign in
  *  14. at most MAX_CONCURRENT_EXCHANGES exchanges are in flight at once → 429 for the rest;
  *      14b. timed-out exchanges free their slots; 14c. so does a stalled service-token lookup
+ *  15. discovery follows RFC 9728 / RFC 6750 (issue #117): the metadata is also served at the path-aware
+ *      /.well-known/oauth-protected-resource/mcp, and a 401 for a request with no Bearer names no error code
  */
 
+import { withMcpAuth } from "mcp-handler";
+
+import { GET as pathAwareResourceMetadata } from "../app/.well-known/oauth-protected-resource/mcp/route";
 import { GET as resourceMetadata } from "../app/.well-known/oauth-protected-resource/route";
 import {
   clearExchangeCache,
@@ -37,6 +42,7 @@ import {
   MAX_CONCURRENT_EXCHANGES,
   MAX_EXCHANGES_PER_IP_PER_MINUTE,
   OAUTH_ISSUER,
+  withMissingCredentialsChallenge,
   withOAuthExchange,
 } from "./oauth";
 
@@ -594,6 +600,80 @@ async function run() {
     stall = false;
     const next = await wrapped(fromIp(accessToken(undefined, "oidc-ok"), "10.6.0.1"));
     assert("14c. and frees its slot: the next exchange reaches AssemblyAI", next.status === 200 && exchanges.length === 1, `${next.status} ${exchanges.length}`);
+  }
+
+  // 15. discovery follows RFC 9728 / RFC 6750 (issue #117)
+  {
+    const root = await resourceMetadata(new Request("https://mcp.example.com/.well-known/oauth-protected-resource")).text();
+    const pathAware = pathAwareResourceMetadata(new Request("https://mcp.example.com/.well-known/oauth-protected-resource/mcp"));
+    const pathAwareBody = await pathAware.text();
+    assert(
+      "15. the path-aware metadata URL serves the same document as the root URL",
+      pathAware.status === 200 && pathAwareBody === root && JSON.parse(pathAwareBody).resource === "https://mcp.example.com/mcp",
+      pathAwareBody
+    );
+  }
+
+  {
+    // Through the real withMcpAuth, as app/mcp/[[...path]]/route.ts wires it.
+    const verifyToken = async (_req: Request, bearer?: string) =>
+      bearer && bearer.trim() ? { token: bearer.trim(), scopes: [], clientId: "test" } : undefined;
+    const { handler } = recorder();
+    const authed = withMissingCredentialsChallenge(
+      withMcpAuth(handler, verifyToken, { required: true, resourceMetadataPath: "/.well-known/oauth-protected-resource" })
+    );
+    const expected = 'Bearer resource_metadata="https://mcp.example.com/.well-known/oauth-protected-resource"';
+
+    const noAuth = await authed(mcpRequest());
+    assert(
+      "15. no Authorization header → 401 with only resource_metadata, no error code",
+      noAuth.status === 401 && noAuth.headers.get("WWW-Authenticate") === expected,
+      String(noAuth.headers.get("WWW-Authenticate"))
+    );
+    assert(
+      "15. the 401 keeps its JSON body and content type",
+      noAuth.headers.get("Content-Type") === "application/json" && ((await noAuth.json()) as { error?: string }).error === "invalid_token"
+    );
+    for (const header of ["Bearer", "Bearer ", "Basic dXNlcjpwYXNz"]) {
+      const res = await authed(new Request("https://mcp.example.com/mcp", { method: "POST", headers: { Authorization: header }, body: "{}" }));
+      assert(
+        `15. "${header}" (no Bearer token) is answered without an error code`,
+        res.status === 401 && res.headers.get("WWW-Authenticate") === expected,
+        String(res.headers.get("WWW-Authenticate"))
+      );
+    }
+
+    const sent = await authed(mcpRequest("an-api-key"));
+    assert("15. a Bearer that was sent still reaches the handler", sent.status === 200 && (await sent.text()) === "ok");
+
+    const refused = withMissingCredentialsChallenge(
+      withMcpAuth(
+        handler,
+        async () => {
+          throw new Error("boom");
+        },
+        { required: true }
+      )
+    );
+    const refusedRes = await refused(mcpRequest("bad-token"));
+    assert(
+      "15. a Bearer that was sent and refused keeps error=invalid_token",
+      refusedRes.status === 401 && (refusedRes.headers.get("WWW-Authenticate") ?? "").includes('error="invalid_token"'),
+      String(refusedRes.headers.get("WWW-Authenticate"))
+    );
+
+    const forbidden = await withMissingCredentialsChallenge(
+      async () => new Response("no", { status: 403, headers: { "WWW-Authenticate": 'Bearer error="insufficient_scope"' } })
+    )(mcpRequest());
+    const bare = await withMissingCredentialsChallenge(
+      async () => new Response("no", { status: 401, headers: { "WWW-Authenticate": "Bearer" } })
+    )(mcpRequest());
+    assert(
+      "15. other statuses, and a 401 with no resource_metadata, are left alone",
+      forbidden.status === 403 &&
+        forbidden.headers.get("WWW-Authenticate") === 'Bearer error="insufficient_scope"' &&
+        bare.headers.get("WWW-Authenticate") === "Bearer"
+    );
   }
 
   console.log(`\n${passed} passed, ${failed} failed`);

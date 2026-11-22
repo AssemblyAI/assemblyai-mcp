@@ -2,7 +2,7 @@ import { createMcpHandler, withMcpAuth } from "mcp-handler";
 
 import { withRequestClock } from "../../../src/deadline";
 import { withJsonBodyCheck } from "../../../src/json-body";
-import { RESOURCE_METADATA_PATH, withOAuthExchange } from "../../../src/oauth";
+import { RESOURCE_METADATA_PATH, withMissingCredentialsChallenge, withOAuthExchange } from "../../../src/oauth";
 import { registerTools } from "../../../src/server";
 
 // Explicit endpoint paths so clients connect at /mcp directly.
@@ -41,10 +41,12 @@ async function verifyToken(_req: Request, bearer?: string) {
 // 60 s budget after sign-in (see src/deadline.ts).
 const authed = withRequestClock(
   withOAuthExchange(
-    withMcpAuth(withJsonBodyCheck(handler), verifyToken, {
-      required: true,
-      resourceMetadataPath: RESOURCE_METADATA_PATH,
-    })
+    withMissingCredentialsChallenge(
+      withMcpAuth(withJsonBodyCheck(handler), verifyToken, {
+        required: true,
+        resourceMetadataPath: RESOURCE_METADATA_PATH,
+      })
+    )
   )
 );
 
