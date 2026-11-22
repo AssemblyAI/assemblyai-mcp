@@ -245,6 +245,13 @@ export function renderUnredactedText(text: string): string[] {
   return ["", "--- unredacted_text (returned because redact_pii_return_unredacted was set) ---", text];
 }
 
+/** Which PII categories were redacted, and what redaction does not cover. */
+export function renderRedaction(policies: string[], hasEntities: boolean): string[] {
+  const lines = ["", "--- redaction (PII categories redacted in the text; others are not) ---", policies.join(", ")];
+  if (hasEntities) lines.push("(entities are not redacted and may contain PII)");
+  return lines;
+}
+
 export function renderRedactedAudio(url: string): string[] {
   return ["", "--- redacted_audio ---", url, "(link expires ~24 hours after transcription)"];
 }

@@ -150,6 +150,9 @@ export interface TranscriptRecord {
   iab_categories_result?: IabCategoriesResult;
   auto_highlights_result?: AutoHighlightsResult;
   unredacted_text?: string;
+  /** Echo of the request params: whether PII redaction ran, and for which categories. */
+  redact_pii?: boolean;
+  redact_pii_policies?: string[];
   /** Echo of the request param — signals a redacted audio file exists. */
   redact_pii_audio?: boolean;
   // Not yet observed in a live response — verify via test:live before relying on it (see PR #1 review).

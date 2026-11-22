@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
-import { submitTranscript } from "../assemblyai";
+import { DEFAULT_REDACT_PII_POLICIES, submitTranscript } from "../assemblyai";
 import { log, keyHash } from "../log";
 import { publicOrigin } from "../origin";
 import { speechUnderstandingSchema } from "../speech-understanding-schema";
@@ -222,15 +222,19 @@ export function registerSubmitTranscript(server: McpServer): void {
           .optional()
           .default(false)
           .describe(
-            "Enable PII redaction of the transcript text. Sensitive values are replaced before the " +
-              "text is returned. Configure with redact_pii_policies and redact_pii_sub."
+            "Enable PII redaction of the transcript text. Only the categories in redact_pii_policies are " +
+              `redacted (default: ${DEFAULT_REDACT_PII_POLICIES.join(", ")}); addresses, dates of birth, ` +
+              "bank and account numbers, medical conditions and other categories stay in clear text unless " +
+              "listed. Only `text` (and utterances/words) is redacted: entities and summaries may still " +
+              "contain PII. Configure with redact_pii_policies and redact_pii_sub."
           ),
         redact_pii_policies: z
           .array(z.string())
           .optional()
           .describe(
-            "Which PII categories to redact when redact_pii is true (e.g. person_name, phone_number, " +
-              "email_address). Defaults to a common set if omitted."
+            "Which PII categories to redact when redact_pii is true (e.g. location, date_of_birth, " +
+              "banking_information, medical_condition, password). When omitted, only the default set is used: " +
+              `${DEFAULT_REDACT_PII_POLICIES.join(", ")}. Pass the categories the user needs redacted.`
           ),
         redact_pii_sub: z
           .enum(["entity_name", "hash"])
@@ -553,18 +557,28 @@ export function registerSubmitTranscript(server: McpServer): void {
           file_param: fileParam,
           source,
         });
+        // Which categories will be redacted, so the caller can tell the user
+        // what stays in clear text.
+        const redactPiiPolicies = args.redact_pii
+          ? (args.redact_pii_policies ?? DEFAULT_REDACT_PII_POLICIES)
+          : undefined;
+        const redactionNote = redactPiiPolicies
+          ? ` PII redaction applies only to: ${redactPiiPolicies.join(", ")}. Other categories are not redacted.` +
+            (args.entity_detection ? " Entities are not redacted and may contain PII." : "")
+          : "";
         return {
           content: [
             {
               type: "text" as const,
               text:
-                `Submitted. transcript_id=${record.id} status=${record.status}. ` +
+                `Submitted. transcript_id=${record.id} status=${record.status}.${redactionNote} ` +
                 `Call get_transcript with this id every ~3s until status is completed or error.`,
             },
           ],
           structuredContent: {
             transcript_id: record.id,
             status: record.status,
+            ...(redactPiiPolicies ? { redact_pii_policies: redactPiiPolicies } : {}),
             next_step: "Call get_transcript with this transcript_id every ~3s until status is completed or error.",
           },
         };
