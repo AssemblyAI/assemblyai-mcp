@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 
+import { requireApiKey } from "../tool-errors";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
@@ -25,38 +26,26 @@ import {
   TtsError,
 } from "../tts";
 
-/** Below this much time, do not start speech: it could be billed and then lost. */
 export const MIN_SPEECH_MS = 10_000;
-/** Below this much time, do not ask for a token. */
 export const MIN_TOKEN_MS = 3_000;
 
 const VOICE_CATALOG = "https://www.assemblyai.com/dashboard/text-to-speech/voices";
 
-/** A request we refused ourselves, already logged. */
 class Refusal extends Error {}
 
-/** A POSIX shell literal: nothing inside single quotes is expanded. */
 function shellQuote(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
-/**
- * A PowerShell literal. In single quotes only the quote marks are special,
- * and PowerShell also reads the Unicode single quotes as quote marks.
- */
+/** A PowerShell literal. PowerShell also reads the Unicode single quotes as quote marks. */
 function powershellQuote(value: string): string {
   return `'${value.replace(/['\u2018\u2019\u201A\u201B]/g, "$&$&")}'`;
 }
 
-/**
- * The language of a known library voice, or undefined. An own-property check:
- * `in` would also match names such as "constructor" from the object prototype.
- */
 function knownVoiceLanguage(voiceId: string): SpeechLanguage | undefined {
   return Object.hasOwn(KNOWN_VOICES, voiceId) ? KNOWN_VOICES[voiceId] : undefined;
 }
 
-/** The known library voices of one language. */
 function voicesFor(language: SpeechLanguage): string[] {
   return Object.entries(KNOWN_VOICES)
     .filter(([, lang]) => lang === language)
@@ -75,7 +64,6 @@ function countChars(text: string): number {
   return n;
 }
 
-/** What the agent should do next, per API error code. Unknown codes keep the API's own message. */
 function hintFor(err: TtsError): string {
   switch (err.code) {
     case "voice_not_found":
@@ -112,7 +100,6 @@ export function registerCreateSpeech(server: McpServer): void {
         "For longer text, split it at sentence ends and make one call per part. " +
         "Languages: English, Spanish, German, Italian, Portuguese, French. " +
         "Do not add markup or SSML; write the text as it should be spoken.",
-      // Not read-only: it spends the user's money, or issues a credential that can.
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
@@ -120,7 +107,6 @@ export function registerCreateSpeech(server: McpServer): void {
         openWorldHint: true,
       },
       inputSchema: {
-        // Code points are checked in the handler; this bound only stops absurd input early.
         text: z
           .string()
           .min(1)
@@ -166,13 +152,7 @@ export function registerCreateSpeech(server: McpServer): void {
     },
     async (args, extra) => {
       const start = Date.now();
-      const apiKey = extra.authInfo?.token;
-      if (!apiKey) {
-        throw new Error(
-          "No AssemblyAI API key in request context. Configure your AssemblyAI API key " +
-            "as the Bearer token in your MCP client connection."
-        );
-      }
+      const apiKey = requireApiKey(extra);
 
       const delivery = args.delivery ?? "file";
       const format = args.format ?? "mp3";
@@ -214,9 +194,7 @@ export function registerCreateSpeech(server: McpServer): void {
       if (delivery === "inline" && format === "wav") {
         refuse("inline_wav", 'Inline audio is always MP3. Leave format out, or use delivery "file" for a WAV file.');
       }
-      // A known library voice speaks one language. With another language the API
-      // still bills, and the audio has the wrong accent. Unknown voices (cloned or
-      // from the larger catalog) may speak any language, so they are not checked.
+      // The API still bills a known voice given another language, with the wrong accent.
       const voiceLanguage = args.voice_id !== undefined ? knownVoiceLanguage(args.voice_id) : undefined;
       if (voiceLanguage !== undefined && args.language !== undefined && voiceLanguage !== args.language) {
         refuse(
@@ -228,8 +206,6 @@ export function registerCreateSpeech(server: McpServer): void {
         );
       }
 
-      // Sign-in (the OAuth key exchange) may have used part of the request's
-      // 60 s budget: work only in what is left, and keep time to return.
       const budget = remainingMs() - RETURN_RESERVE_MS;
       const minimum = delivery === "inline" ? MIN_SPEECH_MS : MIN_TOKEN_MS;
       if (budget < minimum) {
@@ -247,12 +223,10 @@ export function registerCreateSpeech(server: McpServer): void {
             speech = await createSpeech(
               apiKey,
               { text: args.text, voice_id: args.voice_id, language: args.language, format: "mp3", bit_rate: INLINE_BIT_RATE },
-              // Stop reading at the cap: an oversized body is never held in memory.
               { timeoutMs, maxBytes: MAX_INLINE_AUDIO_BYTES }
             );
           } catch (err) {
             if (err instanceof AudioTooLargeError) {
-              // Already synthesized, so already billed: say so, and how to avoid it next time.
               refuse(
                 "inline_too_large",
                 `${err.message} That is too large to return inline (it was billed). ` +
@@ -310,21 +284,16 @@ export function registerCreateSpeech(server: McpServer): void {
         }
 
         const token = await createTtsToken(apiKey, SPEECH_TOKEN_TTL_SECONDS, Math.min(TOKEN_DEADLINE_MS, budget));
-        // A new name per call: when long text is split into parts, each part's
-        // command must not overwrite the one before (or a file of the user's).
         const outputFile = `speech-${randomBytes(4).toString("hex")}.${format}`;
         const body = JSON.stringify(
           speechRequestBody({ text: args.text, voice_id: args.voice_id, language: args.language, format })
         );
-        // Plain curl, no --fail-with-body (curl 7.76+ only): -w prints the status instead.
-        // Every value is a single-quoted shell literal: the text comes from the caller.
+        // No --fail-with-body: it needs curl 7.76+.
         const command =
           `curl -sS -o ${shellQuote(outputFile)} -w '%{http_code}\\n' ` +
           `-H ${shellQuote(`Authorization: ${token}`)} -H 'Content-Type: application/json' ` +
           `-d ${shellQuote(body)} ${shellQuote(`${ttsBaseUrl()}/v1/speech`)}`;
-        // PowerShell (Windows): curl is an alias of Invoke-WebRequest there, and
-        // PowerShell 5.1 strips the double quotes of an argument to a native
-        // program. So call curl.exe, and send the JSON from a file, not -d.
+        // PowerShell: curl aliases Invoke-WebRequest, and 5.1 strips double quotes from native-program args, so use curl.exe and a JSON file.
         const bodyFile = outputFile.replace(/\.\w+$/, ".json");
         const commandPowershell =
           `[IO.File]::WriteAllText((Join-Path $PWD ${powershellQuote(bodyFile)}), ${powershellQuote(body)}); ` +
@@ -332,7 +301,6 @@ export function registerCreateSpeech(server: McpServer): void {
           `-H ${powershellQuote(`Authorization: ${token}`)} -H 'Content-Type: application/json' ` +
           `--data-binary ${powershellQuote(`@${bodyFile}`)} ${powershellQuote(`${ttsBaseUrl()}/v1/speech`)}; ` +
           `Remove-Item ${powershellQuote(bodyFile)}`;
-        // Not refused: the catalog is much larger than the voices we know.
         const unknownVoice = args.voice_id !== undefined && voiceLanguage === undefined;
         const voiceWarning = unknownVoice
           ? `voice_id "${args.voice_id}" is not one of the voices this tool knows. Use it only if the user gave it to you; ` +
@@ -386,13 +354,10 @@ export function registerCreateSpeech(server: McpServer): void {
       } catch (err) {
         const payload = { ...base, status: "error", latencyMs: Date.now() - start };
         if (!(err instanceof AssemblyAIError)) {
-          // Our own refusals above are already logged; anything else (a timeout) is not.
           if (!(err instanceof Refusal)) logError({ ...payload, event: "create_speech_error" }, err);
           throw err;
         }
-        // Only the speech API receives the text, so only its errors could echo it:
-        // log their status and code, never their message. The token service never
-        // sees the text, so its errors are logged in full.
+        // Only the speech API sees the text, so log its errors' status and code, never their message.
         const logFailure = (event: string) =>
           err instanceof TtsError
             ? log({ ...payload, event, level: "error", http_status: err.status, code: err.code ?? null })
