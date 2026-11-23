@@ -280,38 +280,25 @@ redirect, so this test can't sign in as one. It also requires the redirect
 to carry an `iss` naming the advertised authorization server (RFC 9207), as
 stricter clients do.
 
-## Project layout
+## Feature map
 
-```
-assemblyai-mcp/
-├── app/
-│   ├── mcp/[[...path]]/route.ts             # mcp-handler entry, wrapped with withOAuthExchange + withMcpAuth
-│   └── .well-known/oauth-protected-resource/route.ts
-├── src/
-│   ├── server.ts                            # registerTools factory
-│   ├── oauth.ts                             # Sign in with AssemblyAI: access token → API key exchange
-│   ├── log.ts                               # JSON logging helpers + key hashing
-│   ├── tool-errors.ts                       # shared 401/404/429 error mapper
-│   ├── assemblyai.ts                        # fetch wrapper (submit, get, delete, retry)
-│   ├── llm-gateway.ts                       # LLM Gateway client (summarize, understand)
-│   ├── transcript-sections.ts               # section renderers for tool text output
-│   ├── speech-understanding-schema.ts       # shared speech_understanding zod schema
-│   ├── tools/
-│   │   ├── submit-transcript.ts
-│   │   ├── get-transcript.ts
-│   │   ├── summarize-transcript.ts
-│   │   ├── understand-transcript.ts
-│   │   └── delete-transcript.ts
-│   ├── smoke-test.ts                        # InMemoryTransport, mocked fetch
-│   ├── oauth-test.ts                        # token exchange, stubbed (npm test)
-│   ├── oauth-preview-test.ts                # sign-in against a deployment (npm run test:oauth)
-│   └── live-test.ts                         # real API, Streamable HTTP client
-├── package.json
-├── tsconfig.json
-├── next.config.js
-├── vercel.json
-└── README.md
-```
+One row per feature. A PR names the rows it changes (see `.github/pull_request_template.md`). Update this table in the same PR when a row's files, tests or flag change.
+
+| Feature | Entry point | Code | Tests | Flag |
+|---|---|---|---|---|
+| Submit a transcript | `submit_transcript` | `src/tools/submit-transcript.ts`, `src/assemblyai.ts` | `smoke-test.ts` | |
+| Read a transcript | `get_transcript` | `src/tools/get-transcript.ts`, `src/transcript-sections.ts` | `smoke-test.ts` | |
+| Summarize | `summarize_transcript` | `src/tools/summarize-transcript.ts`, `src/llm-gateway.ts` | `smoke-test.ts` | |
+| Speech Understanding | `understand_transcript` | `src/tools/understand-transcript.ts`, `src/llm-gateway.ts`, `src/speech-understanding-schema.ts` | `smoke-test.ts` | |
+| Delete a transcript | `delete_transcript` | `src/tools/delete-transcript.ts` | `smoke-test.ts` | |
+| Local file upload | `create_upload_url`, `POST /upload/<token>` | `src/tools/create-upload-url.ts`, `src/upload-token.ts`, `app/upload/[token]/route.ts` | `smoke-test.ts` | `UPLOAD_TOKEN_SECRET` |
+| Text to speech | `create_speech` | `src/tools/create-speech.ts`, `src/tts.ts` | `tts-test.ts` | `TTS_ENABLED=1` |
+| MCP endpoint | `/mcp` | `app/mcp/[[...path]]/route.ts`, `src/server.ts`, `src/json-body.ts`, `src/deadline.ts` | `smoke-test.ts` | |
+| Auth: API key and OAuth sign-in | `Authorization` header | `src/oauth.ts`, `src/tool-errors.ts` | `oauth-test.ts`, `npm run test:oauth` | |
+| Input safety | all transcript tools | `src/transcript-id.ts`, `src/origin.ts` | `smoke-test.ts` | |
+| Logging | all tools | `src/log.ts` | `smoke-test.ts` | |
+| API request deadline and retry | every AssemblyAI and LLM Gateway call | `src/assemblyai.ts`, `src/deadline.ts` | `request-timeout-test.ts` | |
+| End-to-end | real API | | `npm run test:live` | `ASSEMBLYAI_API_KEY` |
 
 ## Logging
 
