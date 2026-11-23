@@ -5,7 +5,7 @@ import { submitTranscript } from "../assemblyai";
 import { log, keyHash } from "../log";
 import { publicOrigin } from "../origin";
 import { speechUnderstandingSchema } from "../speech-understanding-schema";
-import { handleToolError } from "../tool-errors";
+import { handleToolError, requireApiKey } from "../tool-errors";
 import { uploadsConfigured } from "../upload-token";
 
 const ALLOWED_SCHEMES = new Set(["http:", "https:"]);
@@ -470,13 +470,7 @@ export function registerSubmitTranscript(server: McpServer): void {
     },
     async (args, extra) => {
       const start = Date.now();
-      const apiKey = extra.authInfo?.token;
-      if (!apiKey) {
-        throw new Error(
-          "No AssemblyAI API key in request context. Configure your AssemblyAI API key " +
-            "as the Bearer token in your MCP client connection (or re-authenticate if using Claude.ai)."
-        );
-      }
+      const apiKey = requireApiKey(extra);
 
       let audioUrl: string;
       const fileUrl = args.file?.download_url || undefined;

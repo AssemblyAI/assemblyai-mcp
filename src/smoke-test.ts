@@ -1,77 +1,3 @@
-/**
- * In-process smoke test that exercises both MCP tools end-to-end with a
- * stubbed AssemblyAI HTTP layer. Run with `npm test`.
- *
- * Coverage:
- *   1. submit_transcript happy path — POSTs to /v2/transcript
- *   2. Bearer prefix is stripped (regression guard for the Bearer auth bridge)
- *   3. submit_transcript URL validation rejects file://
- *   4. AssemblyAI 401 surfaces as friendly error
- *   5. get_transcript happy path (status=completed, incl. speech_model_used)
- *   5b. get_transcript with speaker utterances — appears in text content with timestamps
- *   6. get_transcript while processing returns status without error
- *   7. 5xx retry-then-succeed
- *   8. 4xx no retry
- *   9. submit_transcript sentiment_analysis flag + pinned speech_models
- *   10. submit_transcript entity_detection flag
- *   11. submit_transcript redact_pii defaults (policies + sub)
- *   12. summarization flag is inert — no deprecated params reach AssemblyAI
- *   13. get_transcript renders sentiment + entities sections in text content
- *   14. summarize_transcript calls LLM Gateway with transcript_id + {{ transcript }} tag
- *   15. summarize_transcript with style=custom but no custom_prompt → validation error, no gateway call
- *   16.–18. scalar/boolean pass-through params
- *   19. nested objects pass through unchanged (language_detection_options, speaker_options, etc.)
- *   20. speech_understanding.request nests correctly with translation, summarization, action_items
- *   21. speech_understanding without request wrapper rejected before API call
- *   22. get_transcript renders translation / speaker_identification / custom_formatting
- *   23. get_transcript renders su_summary + action_items
- *   24. get_transcript renders content_safety / topics / highlights / unredacted / warnings
- *   25. get_transcript fetches redacted audio URL when flag present; degrades gracefully when not ready
- *   26. understand_transcript posts to the Gateway /v1/understanding and renders results
- *   27. understand_transcript 404 → friendly message
- *   27b. understand_transcript 401 → friendly bad-key error
- *   28. understand_transcript 429 → rate-limit message; summarize_transcript description points here
- *   29. delete_transcript DELETEs to /v2/transcript/{id} and confirms with transcript_id + deleted: true
- *   30. delete_transcript 404 → already deleted or not found message
- *   31. renderSpeechUnderstanding: mapping-only custom_formatting, failed-feature marker, empty action_items note
- *   32. submit_transcript rejects redact_pii_policies/redact_pii_sub without redact_pii, no fetch
- *   32b. every redact_pii_* option is refused without redact_pii; passes through with it
- *   33. understand_transcript's /v1/understanding is not retried on 5xx (billable, non-idempotent)
- *   34. submit_transcript punctuate:false/format_text:false pass through explicitly
- *   35. submit_transcript rejects speech_models: [] before calling AssemblyAI
- *   36. delete_transcript's DELETE is not retried on 5xx
- *   37. get_transcript redacted-audio 5xx renders an "unavailable" note (not "pending") + redacted_audio_error
- *   38. submit_transcript rejects a speech_understanding feature key placed outside the request wrapper
- *   39. get_transcript renders translated_utterances for utterances carrying translated_texts
- *   40. get_transcript drops explicit API nulls (content_safety_labels, translated_texts) instead of passing them through
- *   41. renderContentSafety tolerates a non-numeric confidence value without throwing
- *   42. summarize_transcript 429 → friendly rate-limit message (shared tool-error mapper)
- *   43. every tool carries a title + readOnlyHint/destructiveHint; delete is destructive, reads are read-only
- *   44. logError scrubs URLs and long tokens from error messages and stacks
- *   45. create_upload_url is hidden unless UPLOAD_TOKEN_SECRET is set
- *   46. create_upload_url returns an /upload/<token> link + curl command, key not in the link
- *   47. upload tokens round-trip; expired, tampered and other-secret tokens are refused
- *   48. the upload route forwards to /v2/upload with the raw key; bad token 401, empty body 400
- *   49. get_transcript drops per-word timestamps unless include_words is set
- *   50. include_words falls back to top-level words when there are no utterances
- *   51. publicOrigin takes the first x-forwarded-host entry
- *   52. ChatGPT files: openai/fileParams + file schema; download_url is sent as audio_url
- *   53. submit_transcript's POST /v2/transcript is not retried on 5xx (billable, non-idempotent)
- *   54. summarize_transcript's POST /v1/chat/completions is not retried on 5xx (billable, non-idempotent)
- *   55. submit_transcript refuses our own /upload/<token> link as audio_url, without echoing it —
- *       including respellings (trailing-dot host, doubled slashes, uppercase path, explicit port)
- *   56. create_upload_url says what to do when the network blocks the upload
- *   57. a non-JSON POST body gets a JSON-RPC parse error, not a hang; an oversized one 413 before parsing
- *   58. log fields are capped, so a huge caller value can't make a huge log line
- *   59. submit_transcript accepts speech_models: ['assemblyai-stt-3-7'] and sends it unchanged
- *   60. create_upload_url's curl command sends Content-Type: application/octet-stream (Vercel rejects form-urlencoded binary)
- *   61. su_summary renders summary_type "bullets" chapters (no "— undefined"), splits multiline bullet strings, still renders "paragraph"
- *   62. LLM Gateway 400s give the caller the reason from metadata.errors, but the logs do not get it (it can echo input)
- *   63. next_step is in structuredContent for create_upload_url, submit_transcript and an unfinished get_transcript
- *   64. a transcript_id that could leave /v2/transcript/ ("..", ".", "a/b", "%2e%2e", "") is refused before any fetch,
- *       by every transcript tool and by the API helpers themselves (issue #73)
- */
-
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -156,10 +82,6 @@ async function callTool(
   args: Record<string, unknown>,
   bearerForExtra: string
 ): Promise<ToolResult> {
-  // The MCP client doesn't normally let us inject `extra.authInfo`. For the
-  // smoke test we set it directly on the server's currently-handled request
-  // via the test transport pair: we simulate the withMcpAuth result by
-  // monkey-patching the registered tool callback to inject authInfo.
   return (await client.callTool({
     name,
     arguments: args,
@@ -219,7 +141,7 @@ async function run() {
       result.structuredContent?.transcript_id === "txn-1"
     );
     assert(
-      "2. Bearer prefix is stripped (Authorization header is the raw key)",
+      "2. the key reaches AssemblyAI as the raw Authorization header",
       calls[0]?.headers["authorization"] === "raw-key-no-prefix",
       `got: ${calls[0]?.headers["authorization"]}`
     );

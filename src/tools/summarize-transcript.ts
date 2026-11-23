@@ -3,10 +3,10 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import { summarizeViaLlmGateway, LLM_GATEWAY_MODEL } from "../llm-gateway";
 import { log, keyHash } from "../log";
-import { handleToolError } from "../tool-errors";
+import { handleToolError, requireApiKey } from "../tool-errors";
 import { transcriptIdSchema } from "../transcript-id";
 
-const STYLE_PROMPTS: Record<string, string> = {
+const STYLE_PROMPTS = {
   bullets:
     "Provide a brief summary of the transcript in bullet-point format. Focus on the key points and main takeaways.",
   paragraph:
@@ -48,13 +48,7 @@ export function registerSummarizeTranscript(server: McpServer): void {
     },
     async (args, extra) => {
       const start = Date.now();
-      const apiKey = extra.authInfo?.token;
-      if (!apiKey) {
-        throw new Error(
-          "No AssemblyAI API key in request context. Configure your AssemblyAI API key " +
-            "as the Bearer token in your MCP client connection (or re-authenticate if using Claude.ai)."
-        );
-      }
+      const apiKey = requireApiKey(extra);
 
       if (args.style === "custom" && !args.custom_prompt) {
         throw new Error(
@@ -62,11 +56,7 @@ export function registerSummarizeTranscript(server: McpServer): void {
         );
       }
 
-      const prompt: string =
-        args.custom_prompt ??
-        (args.style != null ? STYLE_PROMPTS[args.style] : undefined) ??
-        // STYLE_PROMPTS.bullets is always defined — the key is a literal in STYLE_PROMPTS.
-        (STYLE_PROMPTS.bullets as string);
+      const prompt = args.custom_prompt ?? STYLE_PROMPTS[args.style === "custom" ? "bullets" : args.style];
 
       try {
         const summary = await summarizeViaLlmGateway(apiKey, {

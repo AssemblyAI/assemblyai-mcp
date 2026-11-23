@@ -19,7 +19,7 @@ const DEFAULT_BASE_URL =
   process.env.ASSEMBLYAI_BASE_URL ?? "https://api.assemblyai.com";
 
 /** PII categories redacted when redact_pii is enabled but no policies are given. */
-export const DEFAULT_REDACT_PII_POLICIES = [
+const DEFAULT_REDACT_PII_POLICIES = [
   "person_name",
   "phone_number",
   "email_address",
@@ -46,7 +46,7 @@ export class AssemblyAIError extends Error {
   }
 }
 
-export interface TranscriptSubmitOptions {
+interface TranscriptSubmitOptions {
   audio_url: string;
   // Established flags (behavior unchanged — sent only when true; redact_pii
   // applies the server's default policies/sub).
@@ -227,7 +227,7 @@ export async function getTranscript(
   );
 }
 
-export interface RedactedAudioResponse {
+interface RedactedAudioResponse {
   status: string;
   redacted_audio_url?: string;
 }
@@ -267,7 +267,7 @@ export async function deleteTranscript(
 }
 
 // Below the upload route's 60 s maxDuration.
-export const UPLOAD_TIMEOUT_MS = 50_000;
+const UPLOAD_TIMEOUT_MS = 50_000;
 
 /**
  * Upload raw file bytes to AssemblyAI's private storage. The returned
@@ -277,10 +277,9 @@ export const UPLOAD_TIMEOUT_MS = 50_000;
  */
 export async function uploadFile(
   apiKey: string,
-  data: ArrayBuffer,
-  baseUrl: string = DEFAULT_BASE_URL
+  data: ArrayBuffer
 ): Promise<{ upload_url: string }> {
-  const response = await fetch(`${baseUrl}/v2/upload`, {
+  const response = await fetch(`${DEFAULT_BASE_URL}/v2/upload`, {
     method: "POST",
     headers: { Authorization: apiKey, "Content-Type": "application/octet-stream" },
     body: data,

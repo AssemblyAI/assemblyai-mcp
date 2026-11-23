@@ -3,6 +3,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { log, keyHash } from "../log";
 import { publicOrigin } from "../origin";
 import { createUploadToken, MAX_UPLOAD_BYTES, UPLOAD_TTL_MS } from "../upload-token";
+import { requireApiKey } from "../tool-errors";
 
 type Headers = Record<string, string | string[] | undefined> | undefined;
 
@@ -34,13 +35,7 @@ export function registerCreateUploadUrl(server: McpServer): void {
     },
     async (_args, extra) => {
       const start = Date.now();
-      const apiKey = extra.authInfo?.token;
-      if (!apiKey) {
-        throw new Error(
-          "No AssemblyAI API key in request context. Configure your AssemblyAI API key " +
-            "as the Bearer token in your MCP client connection (or re-authenticate if using Claude.ai)."
-        );
-      }
+      const apiKey = requireApiKey(extra);
 
       const { token, expiresAt } = createUploadToken(apiKey);
       const headers = extra.requestInfo?.headers;

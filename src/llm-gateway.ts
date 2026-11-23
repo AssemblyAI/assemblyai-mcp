@@ -19,11 +19,9 @@ interface ChatCompletionResponse {
   choices?: Array<{ message?: { content?: string } }>;
 }
 
-export interface SummarizeOptions {
+interface SummarizeOptions {
   transcript_id: string;
   prompt: string;
-  model?: string;
-  maxTokens?: number;
 }
 
 export async function summarizeViaLlmGateway(
@@ -31,10 +29,10 @@ export async function summarizeViaLlmGateway(
   options: SummarizeOptions
 ): Promise<string> {
   const body = {
-    model: options.model ?? LLM_GATEWAY_MODEL,
+    model: LLM_GATEWAY_MODEL,
     messages: [{ role: "user", content: `${options.prompt}\n\n{{ transcript }}` }],
     transcript_id: options.transcript_id,
-    max_tokens: options.maxTokens ?? 1000,
+    max_tokens: 1000,
   };
   // retries=1: POST /v1/chat/completions is a billable, non-idempotent LLM
   // completion — retrying it on a transient 5xx would double-charge, unlike
@@ -54,12 +52,12 @@ export async function summarizeViaLlmGateway(
   return content;
 }
 
-export interface UnderstandOptions {
+interface UnderstandOptions {
   transcript_id: string;
   speech_understanding: { request: Record<string, unknown> };
 }
 
-export interface UnderstandingResponse {
+interface UnderstandingResponse {
   request_id?: string;
   translated_texts?: Record<string, string>;
   utterances?: Array<{

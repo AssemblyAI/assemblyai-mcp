@@ -79,7 +79,7 @@ export function looksLikeAccessToken(token: string): boolean {
   return /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(token);
 }
 
-export type ExchangeOutcome =
+type ExchangeOutcome =
   | { kind: "key"; apiKey: string }
   /** The token, the member or their access was refused: sign in again. */
   | { kind: "rejected"; detail: string }
@@ -211,7 +211,7 @@ function detailOf(body: unknown, status: number): string {
 /** Exchange an access token for its connection's API key, from the cache when
  * the cached entry is still fresh. `clientIp` keys the per-client rate limit
  * on upstream exchanges. */
-export async function exchangeAccessToken(
+async function exchangeAccessToken(
   accessToken: string,
   deps: ExchangeDeps = defaultDeps,
   clientIp = "unknown"

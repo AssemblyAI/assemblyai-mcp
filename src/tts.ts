@@ -69,7 +69,7 @@ export const KNOWN_VOICES: Readonly<Record<string, SpeechLanguage>> = {
   "aai-gunther": "german", "aai-jorg": "german", "aai-magdalena": "german",
   "aai-giada": "italian", "aai-donatien": "french", "aai-benicio": "portuguese", "aai-nelson": "portuguese",
 };
-export type SpeechFormat = "mp3" | "wav";
+type SpeechFormat = "mp3" | "wav";
 
 export class TtsError extends AssemblyAIError {
   /** The API's stable, machine-readable code, e.g. `voice_not_found`. */
@@ -108,7 +108,7 @@ export function speechRequestBody(options: SpeechOptions): Record<string, unknow
   return body;
 }
 
-export interface SpeechResult {
+interface SpeechResult {
   audio: Buffer;
   mimeType: string;
   voiceId: string | undefined;

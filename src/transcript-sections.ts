@@ -6,7 +6,7 @@
  * shipped, never rename or reshape a section — only add new ones.
  */
 
-export interface SuChapter {
+interface SuChapter {
   start: number;
   end: number;
   /** Present for summary_type "paragraph". */
@@ -16,7 +16,7 @@ export interface SuChapter {
   headline: string;
 }
 
-export interface SuActionItem {
+interface SuActionItem {
   action_item: string;
   quote: string;
   timestamp: number;
@@ -86,13 +86,13 @@ export function renderTranslatedUtterances(utterances: TranslatedUtterance[]): s
   return lines;
 }
 
-export function renderSpeakerIdentification(mapping: Record<string, string>): string[] {
+function renderSpeakerIdentification(mapping: Record<string, string>): string[] {
   const lines = ["", "--- speaker_identification (diarization label → identified speaker) ---"];
   for (const [label, who] of Object.entries(mapping)) lines.push(`${label} → ${who}`);
   return lines;
 }
 
-export function renderCustomFormatting(formattedText: string): string[] {
+function renderCustomFormatting(formattedText: string): string[] {
   return ["", CUSTOM_FORMATTING_HEADER, formattedText];
 }
 
@@ -120,7 +120,7 @@ export function renderSuSummary(chapters: SuChapter[]): string[] {
   return lines;
 }
 
-export function renderActionItems(items: SuActionItem[]): string[] {
+function renderActionItems(items: SuActionItem[]): string[] {
   const lines = ["", "--- action_items ---"];
   for (const i of items) lines.push(`- ${i.action_item} (quote: "${i.quote}" @ ${formatMs(i.timestamp)})`);
   return lines;

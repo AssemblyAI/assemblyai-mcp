@@ -2,7 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import { deleteTranscript } from "../assemblyai";
 import { log, keyHash } from "../log";
-import { handleToolError } from "../tool-errors";
+import { handleToolError, requireApiKey } from "../tool-errors";
 import { transcriptIdSchema } from "../transcript-id";
 
 export function registerDeleteTranscript(server: McpServer): void {
@@ -27,13 +27,7 @@ export function registerDeleteTranscript(server: McpServer): void {
     },
     async (args, extra) => {
       const start = Date.now();
-      const apiKey = extra.authInfo?.token;
-      if (!apiKey) {
-        throw new Error(
-          "No AssemblyAI API key in request context. Configure your AssemblyAI API key " +
-            "as the Bearer token in your MCP client connection (or re-authenticate if using Claude.ai)."
-        );
-      }
+      const apiKey = requireApiKey(extra);
 
       try {
         await deleteTranscript(apiKey, args.transcript_id);

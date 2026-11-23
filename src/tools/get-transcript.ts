@@ -3,7 +3,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import { getTranscript, getRedactedAudio, AssemblyAIError, type TranscriptRecord } from "../assemblyai";
 import { log, logError, keyHash } from "../log";
-import { handleToolError } from "../tool-errors";
+import { handleToolError, requireApiKey } from "../tool-errors";
 import {
   formatMs,
   renderTranslations,
@@ -54,13 +54,7 @@ export function registerGetTranscript(server: McpServer): void {
     },
     async (args, extra) => {
       const start = Date.now();
-      const apiKey = extra.authInfo?.token;
-      if (!apiKey) {
-        throw new Error(
-          "No AssemblyAI API key in request context. Configure your AssemblyAI API key " +
-            "as the Bearer token in your MCP client connection (or re-authenticate if using Claude.ai)."
-        );
-      }
+      const apiKey = requireApiKey(extra);
 
       try {
         const record = await getTranscript(apiKey, args.transcript_id);
