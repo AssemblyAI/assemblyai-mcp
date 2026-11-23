@@ -1557,14 +1557,56 @@ async function run() {
       publicOrigin("mcp.assemblyai.com, edge.internal", "edge.internal") === "https://mcp.assemblyai.com"
     );
     assert("51. falls back to host, then the production host", publicOrigin(undefined, "localhost:3000") === "http://localhost:3000" && publicOrigin(null, null) === "https://mcp.assemblyai.com");
+    // localhost.example.com is not local: it gets https, and only when allowed.
+    process.env.PUBLIC_HOSTS = "localhost.example.com";
     assert("51. localhost.example.com gets https", publicOrigin("localhost.example.com", null) === "https://localhost.example.com");
+    delete process.env.PUBLIC_HOSTS;
     assert(
       "51. a host with shell or URL syntax falls back to production",
       publicOrigin("example.com$(printf injected >&2)", null) === "https://mcp.assemblyai.com" &&
         publicOrigin("evil.com/x?", null) === "https://mcp.assemblyai.com" &&
         publicOrigin(null, "a'b.com") === "https://mcp.assemblyai.com"
     );
-    assert("51. IPv6 and ports still work", publicOrigin(null, "[::1]:3000") === "https://[::1]:3000" && publicOrigin("127.0.0.1:3001", null) === "http://127.0.0.1:3001");
+    assert("51. local IPv6 and ports still work", publicOrigin(null, "[::1]:3000") === "http://[::1]:3000" && publicOrigin("127.0.0.1:3001", null) === "http://127.0.0.1:3001");
+  }
+
+  // 51b. A header can only pick among trusted hosts, and the result always parses (issue #74).
+  {
+    const { publicOrigin } = await import("./origin");
+    const saved = { ...process.env };
+    for (const k of ["PUBLIC_HOSTS", "VERCEL_URL", "VERCEL_BRANCH_URL", "VERCEL_PROJECT_PRODUCTION_URL"]) delete process.env[k];
+    const prod = "https://mcp.assemblyai.com";
+    assert(
+      "51b. an unknown x-forwarded-host falls back to production",
+      publicOrigin("evil.example", "mcp.assemblyai.com") === prod && publicOrigin("evil.example, mcp.assemblyai.com", null) === prod
+    );
+    for (const bad of ["example.com:99999", "[:::]", "999.999.999.999", "mcp.assemblyai.com:70000", "[zz::1]"]) {
+      const origin = publicOrigin(bad, null);
+      let parses = true;
+      try {
+        new URL(origin);
+      } catch {
+        parses = false;
+      }
+      assert(`51b. ${JSON.stringify(bad)} falls back to production and parses`, origin === prod && parses, origin);
+    }
+    process.env.VERCEL_URL = "assemblyai-mcp-abc123-assemblyai.vercel.app";
+    process.env.VERCEL_BRANCH_URL = "assemblyai-mcp-git-fix-assemblyai.vercel.app";
+    assert(
+      "51b. the deployment's own Vercel hostnames are allowed",
+      publicOrigin("assemblyai-mcp-abc123-assemblyai.vercel.app", null) === "https://assemblyai-mcp-abc123-assemblyai.vercel.app" &&
+        publicOrigin(null, "Assemblyai-Mcp-Git-Fix-Assemblyai.vercel.app") === "https://assemblyai-mcp-git-fix-assemblyai.vercel.app"
+    );
+    assert("51b. another vercel.app host is not", publicOrigin("attacker.vercel.app", null) === prod);
+    process.env.PUBLIC_HOSTS = " mcp.example.org , https://other.example.net/ ";
+    assert(
+      "51b. PUBLIC_HOSTS adds self-hosted domains (scheme, path and spaces ignored)",
+      publicOrigin("mcp.example.org", null) === "https://mcp.example.org" &&
+        publicOrigin("other.example.net:8443", null) === "https://other.example.net:8443"
+    );
+    assert("51b. IPv4 shorthand for loopback is normalized", publicOrigin("127.1:3000", null) === "http://127.0.0.1:3000");
+    for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k];
+    Object.assign(process.env, saved);
   }
 
   await withClientServer(async (client) => {

@@ -162,6 +162,7 @@ keys only work against its own API.
 | `ASSEMBLYAI_BASE_URL` | `https://api.assemblyai.com` | The AssemblyAI API |
 | `ASSEMBLYAI_LLM_GATEWAY_BASE_URL` | `https://llm-gateway.assemblyai.com` | The LLM Gateway |
 | `UPLOAD_TOKEN_SECRET` | unset | 32+ random characters. Encrypts the API key inside upload links; without it, `create_upload_url` is not offered. Rotating it invalidates open links. |
+| `PUBLIC_HOSTS` | unset | Comma-separated hostnames (no scheme) this deployment may put in the links it hands out, for a self-hosted domain. `mcp.assemblyai.com`, local hosts and the deployment's own Vercel hostnames are always allowed. A request for any other host gets `https://mcp.assemblyai.com` in its links. |
 | `TTS_ENABLED` | unset | `1` offers the `create_speech` tool (text to speech). Any other value, or unset: the tool is not listed. |
 | `ASSEMBLYAI_TTS_BASE_URL` | `https://tts.us.assemblyai.com` | The Streaming TTS API (`https://tts.eu.assemblyai.com` for the EU data zone) |
 | `ASSEMBLYAI_TOKEN_BASE_URL` | `https://token.us.assemblyai.com` | Where `create_speech` mints its short-lived TTS tokens |
@@ -295,7 +296,7 @@ One row per feature. A PR names the rows it changes (see `.github/pull_request_t
 | Text to speech | `create_speech` | `src/tools/create-speech.ts`, `src/tts.ts` | `tts-test.ts` | `TTS_ENABLED=1` |
 | MCP endpoint | `/mcp` | `app/mcp/[[...path]]/route.ts`, `src/server.ts`, `src/json-body.ts`, `src/deadline.ts` | `smoke-test.ts` | |
 | Auth: API key and OAuth sign-in | `Authorization` header | `src/oauth.ts`, `src/tool-errors.ts` | `oauth-test.ts`, `npm run test:oauth` | |
-| Input safety | all transcript tools | `src/transcript-id.ts`, `src/origin.ts` | `smoke-test.ts` | |
+| Input safety | all transcript tools | `src/transcript-id.ts`, `src/origin.ts` | `smoke-test.ts` | `PUBLIC_HOSTS` |
 | Logging | all tools | `src/log.ts` | `smoke-test.ts` | |
 | API request deadline and retry | every AssemblyAI and LLM Gateway call | `src/assemblyai.ts`, `src/deadline.ts` | `request-timeout-test.ts` | |
 | End-to-end | real API | | `npm run test:live` | `ASSEMBLYAI_API_KEY` |
