@@ -6,9 +6,7 @@ interface ToolErrorContext {
   apiKey: string;
   start: number;
   transcriptId?: string;
-  /** Omit to rethrow a 404 as the raw AssemblyAIError. */
   notFoundMessage?: string;
-  /** Omit to rethrow a 429 as the raw AssemblyAIError. */
   rateLimitMessage?: string;
   errorEvent: string;
 }

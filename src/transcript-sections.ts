@@ -1,17 +1,9 @@
-/**
- * Shared renderers for the labeled text sections emitted by get_transcript
- * and understand_transcript. some MCP clients read only
- * content[].text, so every feature result must render as plain text here.
- * Section headers are contract (README "Extending the tool surface"): once
- * shipped, never rename or reshape a section — only add new ones.
- */
+/** Some MCP clients read only content[].text, so every feature result renders as plain text. */
 
 interface SuChapter {
   start: number;
   end: number;
-  /** Present for summary_type "paragraph". */
   text?: string;
-  /** Present for summary_type "bullets" instead of text. */
   bullets?: string[] | string;
   headline: string;
 }
@@ -71,7 +63,6 @@ export function renderTranslations(translatedTexts: Record<string, string>): str
   return lines;
 }
 
-/** Per-utterance translations (translation.match_original_utterance=true). */
 export function renderTranslatedUtterances(utterances: TranslatedUtterance[]): string[] {
   const withTranslations = utterances.filter(
     (u) => u.translated_texts && Object.keys(u.translated_texts).length > 0
@@ -100,8 +91,6 @@ export function renderSuSummary(chapters: SuChapter[]): string[] {
   const lines = ["", "--- su_summary (chaptered summary; start–end are m:ss) ---"];
   for (const c of chapters) {
     const head = `[${formatMs(c.start)}–${formatMs(c.end)}] ${c.headline}`;
-    // One string can hold several bullets, one on each line: split them, so
-    // every bullet stays indented under its chapter.
     const raw = Array.isArray(c.bullets) ? c.bullets : typeof c.bullets === "string" ? [c.bullets] : [];
     const bullets = raw
       .filter((b): b is string => typeof b === "string")
@@ -128,13 +117,6 @@ function renderActionItems(items: SuActionItem[]): string[] {
 
 const CUSTOM_FORMATTING_HEADER = "--- custom_formatting (transcript with requested formats applied) ---";
 
-/**
- * Renders every present feature of a speech_understanding.response object.
- * A feature with a non-"success" status is surfaced as a one-line failure
- * marker (rather than silently dropped) so failed/partial SU runs are still
- * visible to the caller. Mapping-only / empty-but-successful results also
- * render a short note instead of vanishing.
- */
 export function renderSpeechUnderstanding(response: SpeechUnderstandingResponse): string[] {
   const lines: string[] = [];
   const featureOrder = [
@@ -196,9 +178,6 @@ export function renderSpeechUnderstanding(response: SpeechUnderstandingResponse)
         }
         break;
       }
-      // translation has no content of its own here — its text is rendered
-      // separately via renderTranslations/renderTranslatedUtterances from
-      // the top-level translated_texts / utterances fields.
       default:
         break;
     }
@@ -207,8 +186,6 @@ export function renderSpeechUnderstanding(response: SpeechUnderstandingResponse)
   return lines;
 }
 
-/** AssemblyAI's response types aren't runtime-validated; guard against a
- * non-number slipping through (would otherwise throw on .toFixed). */
 function formatScore(value: unknown): string {
   return typeof value === "number" ? value.toFixed(2) : String(value);
 }

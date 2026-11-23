@@ -35,7 +35,6 @@ export function registerGetTranscript(server: McpServer): void {
         "Poll this tool every ~3 seconds after `submit_transcript` until you see `completed` or `error`. " +
         "Per-word timestamps are left out unless you set `include_words` (only for word-level tasks such as subtitles); " +
           "they come per utterance with speaker_labels, otherwise as a top-level `words` list.",
-      // Reads a transcript's status and results.
       annotations: {
         readOnlyHint: true,
         openWorldHint: false,
@@ -67,11 +66,7 @@ export function registerGetTranscript(server: McpServer): void {
             redactedAudioUrl = audio.redacted_audio_url;
             redactedAudioPending = redactedAudioUrl === undefined;
           } catch (err) {
-            // 400 (not ready yet) and "200 but no URL yet" both mean "keep
-            // polling" — the existing pending note. Anything else (401/403/
-            // 404/5xx/network, all surfaced as AssemblyAIError by
-            // requestWithRetry) means the audio is genuinely unavailable
-            // (e.g. the ~24h link expiry), which is a different message.
+            // 400, or 200 with no URL, means not ready yet; any other failure means unavailable (the link expires after ~24h).
             if (err instanceof AssemblyAIError && err.status === 400) {
               redactedAudioPending = true;
             } else {
@@ -112,7 +107,6 @@ export function registerGetTranscript(server: McpServer): void {
           structuredContent: shaped as unknown as Record<string, unknown>,
         };
       } catch (err) {
-        // No notFoundMessage: a 404 here stays the raw AssemblyAIError, unchanged from before.
         handleToolError(err, {
           tool: "get_transcript",
           apiKey,
@@ -137,7 +131,6 @@ interface ShapedTranscript {
   speech_model_used?: string;
   audio_duration?: number;
   speakers?: Array<TranslatedUtterance & { words?: WordTiming[] }>;
-  /** Only with include_words on a transcript without utterances (no speaker_labels). */
   words?: WordTiming[];
   summary?: string;
   error?: string;
@@ -152,7 +145,7 @@ interface ShapedTranscript {
   redacted_audio_url?: string;
   redacted_audio_pending?: boolean;
   redacted_audio_error?: string;
-  /** What to do next, when there is something to do. Claude Code shows the model only structuredContent. */
+  /** Claude Code shows the model only structuredContent. */
   next_step?: string;
   metadata?: { domain_used?: string | null; warnings?: Array<{ message: string }> };
 }
@@ -168,8 +161,7 @@ function shape(record: TranscriptRecord, redactedAudioUrl?: string, includeWords
   if (record.language_detection != null) out.language_detection = record.language_detection;
   if (record.speech_model_used !== undefined) out.speech_model_used = record.speech_model_used;
   if (record.audio_duration !== undefined) out.audio_duration = record.audio_duration;
-  // != null (not !== undefined): an explicit `null` from the API means
-  // "no data", same as the field being absent — don't leak it downstream.
+  // The API sends explicit nulls for missing data.
   if (record.utterances != null && record.utterances.length > 0) {
     out.speakers = includeWords ? record.utterances : record.utterances.map(({ words: _words, ...u }) => u);
   } else if (includeWords && record.words != null && record.words.length > 0) {
@@ -192,13 +184,7 @@ function shape(record: TranscriptRecord, redactedAudioUrl?: string, includeWords
   return out;
 }
 
-/**
- * Format the transcript into the `content[].text` payload. Some MCP clients
- * (text-only clients) only surface this text
- * to the underlying model and ignore `structuredContent`. So everything the
- * agent might need — full text, per-speaker utterances with timestamps,
- * sentiment, entities, and summary — must appear here as plain text.
- */
+/** Some MCP clients show the model only content[].text, so everything the agent needs must appear here. */
 function formatTranscript(s: ShapedTranscript): string {
   if (s.status === "error") {
     return `status=error transcript_id=${s.transcript_id} error="${s.error ?? ""}"`;

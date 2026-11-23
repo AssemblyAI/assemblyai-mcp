@@ -28,7 +28,6 @@ export function registerSummarizeTranscript(server: McpServer): void {
         " For a CHAPTERED summary with timestamps/headlines, or decision-aware action items, use the " +
         "`understand_transcript` tool (summarization / action_items features) instead — this tool is " +
         "the freeform/custom-prompt option.",
-      // Reads a completed transcript and returns an LLM summary; changes nothing.
       annotations: {
         readOnlyHint: true,
         openWorldHint: false,
@@ -87,7 +86,6 @@ export function registerSummarizeTranscript(server: McpServer): void {
           start,
           transcriptId: args.transcript_id,
           notFoundMessage: `LLM Gateway could not find transcript ${args.transcript_id} (404). Make sure it has completed and belongs to this API key.`,
-          // Same wording as understand_transcript — both hit the same rate-limited Gateway.
           rateLimitMessage:
             "Speech Understanding rate limit reached (30 requests/min on paid accounts, 2/min free). Retry shortly.",
           errorEvent: "llm_gateway_error",

@@ -1,13 +1,5 @@
-/**
- * Thin wrapper around the AssemblyAI Streaming TTS HTTP API and the token
- * host. Like ./assemblyai, it is stateless: the API key comes in per call.
- *
- * The base URLs are read per call, so a deployment (or a test) can point them
- * at another data zone or a fake.
- */
 import { AssemblyAIError } from "./assemblyai";
 
-/** The tool is only offered where the deployment turns it on. */
 export function ttsEnabled(): boolean {
   return process.env.TTS_ENABLED === "1";
 }
@@ -23,28 +15,14 @@ function tokenBaseUrl(): string {
 /** The API's own limit: 1 to 5,000 Unicode code points per request. */
 export const MAX_SPEECH_CHARS = 5000;
 
-/**
- * Inline audio goes back through the MCP response as base64, and a client may
- * hand it to the model. 1,000 characters is about a minute of speech: about
- * 400 KB of MP3 at INLINE_BIT_RATE. Longer text goes to a file instead.
- */
 export const MAX_INLINE_SPEECH_CHARS = 1000;
 export const INLINE_BIT_RATE = 48000;
-/** A guard for the response size, should the audio be longer than expected. */
 export const MAX_INLINE_AUDIO_BYTES = 1_500_000;
 
-/** How long the token in a curl command stays valid. */
 export const SPEECH_TOKEN_TTL_SECONDS = 300;
 
-// Below our 60 s request budget (src/deadline.ts). The tool passes less when sign-in
-// already used part of the request's budget.
 export const SPEECH_TIMEOUT_MS = 50_000;
 
-/**
- * One deadline for the whole token request: every attempt, the backoff and the
- * body read. Short, because the OAuth key exchange can run first in the same
- * 60 s request, and minting a token is normally fast.
- */
 export const TOKEN_DEADLINE_MS = 15_000;
 const TOKEN_ATTEMPTS = 2;
 const TOKEN_BACKOFF_MS = 1_000;
@@ -52,12 +30,7 @@ const TOKEN_BACKOFF_MS = 1_000;
 export const SPEECH_LANGUAGES = ["english", "spanish", "german", "italian", "portuguese", "french"] as const;
 export type SpeechLanguage = (typeof SPEECH_LANGUAGES)[number];
 
-/**
- * The library voices the docs list (docs/tts/voices), with their language.
- * Not the whole catalog: it has thousands of voices, plus the user's cloned
- * voices, and the API has no endpoint to list them. So a voice ID that is not
- * here is not refused; the tool only warns that it is not a known voice.
- */
+/** Not the whole catalog: the API has no endpoint to list voices, so an unknown voice ID only gets a warning. */
 export const KNOWN_VOICES: Readonly<Record<string, SpeechLanguage>> = {
   "aai-aaliyah": "english", "aai-abdiel": "english", "aai-annabelle": "english", "aai-april": "english",
   "aai-audrey": "english", "aai-buford": "english", "aai-carrie": "english", "aai-cloyd": "english",
@@ -72,7 +45,6 @@ export const KNOWN_VOICES: Readonly<Record<string, SpeechLanguage>> = {
 type SpeechFormat = "mp3" | "wav";
 
 export class TtsError extends AssemblyAIError {
-  /** The API's stable, machine-readable code, e.g. `voice_not_found`. */
   code: string | undefined;
   retryAfterSeconds: number | undefined;
 
@@ -92,7 +64,6 @@ export interface SpeechOptions {
   bit_rate?: number;
 }
 
-/** The JSON body of POST /v1/speech. Buffered: a whole file with exact sizes, never cut. */
 export function speechRequestBody(options: SpeechOptions): Record<string, unknown> {
   const body: Record<string, unknown> = { text: options.text };
   if (options.voice_id) body.voice_id = options.voice_id;
@@ -137,16 +108,11 @@ async function ttsError(response: Response): Promise<TtsError> {
       if (typeof body.retry_after_seconds === "number") retryAfter = body.retry_after_seconds;
     }
   } catch {
-    // Not JSON: a proxy's HTML page. Keep the status and the start of the text.
   }
   return new TtsError(`HTTP ${response.status}: ${message}`, response.status, code, retryAfter);
 }
 
-/**
- * The audio is larger than the caller's cap. The speech was already made, so
- * it was billed. `bytes` is the declared size, or, when the body had no
- * Content-Length, the bytes read when we stopped (the real size is larger).
- */
+/** The speech was already synthesized, so it was billed. */
 export class AudioTooLargeError extends Error {
   constructor(
     readonly bytes: number,
@@ -157,7 +123,6 @@ export class AudioTooLargeError extends Error {
   }
 }
 
-/** Read a body, but stop and cancel it once it passes `maxBytes`. */
 async function readCapped(response: Response, maxBytes: number): Promise<Buffer> {
   const declared = numberHeader(response, "content-length");
   if (declared !== undefined && declared > maxBytes) {
@@ -182,16 +147,11 @@ async function readCapped(response: Response, maxBytes: number): Promise<Buffer>
 }
 
 export interface SpeechLimits {
-  /** Deadline for the request and the body read. Default SPEECH_TIMEOUT_MS. */
   timeoutMs?: number;
-  /** Stop reading past this many bytes (AudioTooLargeError). Default: no cap. */
   maxBytes?: number;
 }
 
-/**
- * Synthesize the whole clip. Not retried: an error status costs nothing, and
- * the caller (an agent) can decide to call again.
- */
+/** Not retried: an error status costs nothing, and the calling agent can call again. */
 export async function createSpeech(
   apiKey: string,
   options: SpeechOptions,
@@ -201,7 +161,6 @@ export async function createSpeech(
     method: "POST",
     headers: { Authorization: apiKey, "Content-Type": "application/json" },
     body: JSON.stringify(speechRequestBody(options)),
-    // Also bounds the body read below.
     signal: AbortSignal.timeout(limits.timeoutMs ?? SPEECH_TIMEOUT_MS),
   });
   if (!response.ok) throw await ttsError(response);
@@ -218,10 +177,6 @@ export async function createSpeech(
   };
 }
 
-/**
- * A short-lived token that can only call Streaming TTS. It goes into the curl
- * command we hand out, so the API key itself never does.
- */
 export async function createTtsToken(
   apiKey: string,
   expiresInSeconds: number,
@@ -235,7 +190,6 @@ export async function createTtsToken(
       if (attempt > 0) await sleepUnlessAborted(TOKEN_BACKOFF_MS, signal);
       const response = await fetch(`${tokenBaseUrl()}/v1/token`, {
         method: "POST",
-        // No `Bearer ` prefix: AssemblyAI expects the raw key.
         headers: { Authorization: apiKey, "Content-Type": "application/json" },
         body: JSON.stringify({ product: "tts", expires_in_seconds: expiresInSeconds }),
         signal,
@@ -246,8 +200,7 @@ export async function createTtsToken(
       }
       if (!response.ok) {
         const message = await errorMessage(response);
-        // The token host answers a bad key with 404 "Invalid API key". Report it as
-        // the 401 it is: an agent reads a 404 as a missing resource and may retry.
+        // The token host answers a bad key with 404 "Invalid API key"; report it as the 401 it is.
         const status = response.status === 404 && /invalid api key/i.test(message) ? 401 : response.status;
         throw new AssemblyAIError(message, status);
       }
@@ -265,7 +218,7 @@ export async function createTtsToken(
           504
         );
       }
-      lastError = err; // a network error: try once more
+      lastError = err;
     }
   }
   if (lastError instanceof AssemblyAIError) throw lastError;
@@ -282,7 +235,6 @@ async function errorMessage(response: Response): Promise<string> {
       }
     }
   } catch {
-    // Not JSON: keep the start of the text.
   }
   return `HTTP ${response.status}: ${text.slice(0, 500)}`;
 }

@@ -10,13 +10,7 @@ import { uploadsConfigured } from "../upload-token";
 
 const ALLOWED_SCHEMES = new Set(["http:", "https:"]);
 
-/**
- * A file the user attached in ChatGPT. ChatGPT fills in every top-level param
- * named in `_meta["openai/fileParams"]` with this object. Its schema must
- * declare all four properties and require exactly download_url and file_id,
- * or OpenAI's tool scan rejects the plugin. download_url is a temporary link
- * AssemblyAI can fetch directly, so it goes in as the audio_url.
- */
+/** ChatGPT fills `_meta["openai/fileParams"]` params with this object; OpenAI's tool scan requires all four properties, with exactly download_url and file_id required. */
 const chatgptFileSchema = z
   .looseObject({
     download_url: z.string(),
@@ -29,13 +23,7 @@ const chatgptFileSchema = z
       "Other clients: do not set this; pass a public URL in `audio_url`.",
   );
 
-/**
- * ChatGPT may send `null` or `{}` (no download_url) when nothing is attached.
- * Treat both as "no file" so a public audio_url still works, but mark them
- * (`_empty`) so the logs show how often it happens. This is a preprocess step,
- * not `.nullish()`: the published schema must stay a plain object, or OpenAI's
- * tool scan rejects the file param.
- */
+/** ChatGPT may send null or {} when nothing is attached. A preprocess, not `.nullish()`: OpenAI's tool scan needs a plain object schema. */
 const chatgptFileParam = z.preprocess((value) => {
   if (value === null) return { download_url: "", file_id: "", _empty: "null" };
   if (typeof value === "object" && !Array.isArray(value)) {
@@ -52,7 +40,6 @@ const chatgptFileParam = z.preprocess((value) => {
   return value;
 }, chatgptFileSchema.optional());
 
-/** A bad source: `reason` goes into the log so we can see how clients fail. */
 class AudioSourceError extends Error {
   constructor(
     message: string,
@@ -82,20 +69,9 @@ function validateAudioUrl(audioUrl: string): void {
 
 const UPLOAD_LINK_PATH = /^\/upload\/[^/]+\/?$/i;
 
-/**
- * The link `create_upload_url` hands out receives files (POST/PUT); it is not
- * where the file ends up. A model that skips the curl step, or passes that link
- * instead of the printed `upload_url`, would make AssemblyAI GET it: a slow,
- * vague download failure, and the token (it holds the encrypted API key) saved
- * in the transcript record. Refuse it on our own hosts.
- */
 function isOwnUploadLink(audioUrl: string, ownHosts: ReadonlySet<string>): boolean {
   try {
     const parsed = new URL(audioUrl);
-    // Canonicalize before comparing: the harm is the link reaching a
-    // transcript record, not whether the route would answer it — so a
-    // trailing-dot FQDN, an explicit port, doubled slashes or a differently
-    // cased path must all still match (issue #29).
     const hostname = parsed.hostname.replace(/\.+$/, "").toLowerCase();
     const path = parsed.pathname.replace(/\/{2,}/g, "/");
     if (!UPLOAD_LINK_PATH.test(path)) return false;
@@ -120,11 +96,6 @@ function ownHostsOf(headers: Headers): Set<string> {
   return new Set(["mcp.assemblyai.com", requestHost.toLowerCase()]);
 }
 
-/**
- * One source: a URL, or (in ChatGPT only) an attached file. When a file is
- * attached, a model may also echo its name or link into audio_url; that is not
- * a second source, so the file wins. Only two different http(s) URLs conflict.
- */
 function pickAudioUrl(
   audioUrl: string | undefined,
   fileUrl: string | undefined,
@@ -170,7 +141,6 @@ export function registerSubmitTranscript(server: McpServer): void {
         "transcript text. These features cannot be retro-fitted to a finished transcript — re-submit " +
         "with the flag set. For SUMMARIES do not set a flag here: after the transcript completes, " +
         "call the `summarize_transcript` tool.",
-      // Starts an async transcription job; AssemblyAI fetches the audio URL (external).
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
@@ -474,11 +444,8 @@ export function registerSubmitTranscript(server: McpServer): void {
 
       let audioUrl: string;
       const fileUrl = args.file?.download_url || undefined;
-      // What the client sent, for the logs: which sources, and whether ChatGPT
-      // sent an empty file param (absent / set / null / no_download_url).
       const sent = fileUrl ? (args.audio_url ? "both" : "file") : args.audio_url ? "audio_url" : "none";
-      // Fixed categories only: `file` is a loose object, so a caller can put any
-      // value in `_empty`. Never log it; a file with a download_url is "set".
+      // `file` is a loose object: log fixed categories only, never a caller-set `_empty`.
       const fileParam = !args.file
         ? "absent"
         : fileUrl
@@ -490,9 +457,7 @@ export function registerSubmitTranscript(server: McpServer): void {
       try {
         ({ url: audioUrl, source } = pickAudioUrl(args.audio_url, fileUrl));
         validateAudioUrl(audioUrl);
-        // Whichever param carried it — `file.download_url` is a loose object any
-        // client can fill, not only ChatGPT — the resolved URL must not be our
-        // upload link. Do not echo it: its token can upload into the user's account.
+        // Do not echo our upload link: its token can upload into the user's account.
         if (isOwnUploadLink(audioUrl, ownHostsOf(extra.requestInfo?.headers))) {
           throw new AudioSourceError(
             "That is the upload link from create_upload_url, not the uploaded file. " +
@@ -516,8 +481,6 @@ export function registerSubmitTranscript(server: McpServer): void {
       }
 
       try {
-        // Every redact_pii_* option needs the master flag: a model that sets
-        // one without it gets the same refusal, not an option sent silently.
         const needsRedactPii = (
           [
             "redact_pii_policies",

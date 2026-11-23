@@ -23,8 +23,6 @@ export function registerCreateUploadUrl(server: McpServer): void {
         "(you need shell access, e.g. in Claude Code, Cursor or Codex); it prints JSON with an `upload_url`. " +
         "Then call `submit_transcript` with that printed `upload_url` as `audio_url` (not the link itself). The file goes to the user's " +
         "private AssemblyAI storage, not a public host. Files up to 4.5 MB; the link expires in 10 minutes.",
-      // Not read-only: it issues a credential that can write files into the user's
-      // AssemblyAI storage, so clients should ask the user before calling it.
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
@@ -42,11 +40,8 @@ export function registerCreateUploadUrl(server: McpServer): void {
       const origin = publicOrigin(header(headers, "x-forwarded-host"), header(headers, "host"));
       const host = new URL(origin).host;
       const uploadLink = `${origin}/upload/${token}`;
-      // Plain curl, no --fail-with-body (curl 7.76+ only): error responses are JSON the agent can read.
-      // Single quotes: the link comes from request headers and must stay a shell literal.
-      // Content-Type is required: without it curl sends
-      // application/x-www-form-urlencoded, and Vercel rejects most binary
-      // bodies of that type (over about 270 KB) with a plain "Bad request".
+      // No --fail-with-body: it needs curl 7.76+.
+      // Without Content-Type curl sends form-urlencoded, and Vercel rejects most binary bodies of that type over ~270 KB.
       const command = `curl -sS -X POST -H 'Content-Type: application/octet-stream' --data-binary @"/path/to/file" '${uploadLink.replaceAll("'", "'\\''")}'`;
       log({
         event: "tool_call",
@@ -55,8 +50,7 @@ export function registerCreateUploadUrl(server: McpServer): void {
         status: "success",
         latencyMs: Date.now() - start,
       });
-      // Claude Code shows the model only structuredContent, so the same guidance
-      // goes into next_step as well as the text.
+      // Claude Code shows the model only structuredContent.
       const guidance =
         `It prints {"upload_url": "..."}. Pass that printed upload_url (not this link) as audio_url to submit_transcript. ` +
         `If it prints {"error": ...} instead, follow the message. If it prints "Bad request", ` +
