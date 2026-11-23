@@ -1,30 +1,3 @@
-/**
- * Offline tests for create_speech (text to speech), with a stubbed fetch.
- *
- * Run with: npx tsx src/tts-test.ts   (part of `npm test`)
- *
- *   1. create_speech is hidden unless TTS_ENABLED is exactly "1"
- *   2. when offered: titled, not read-only, and the description states the cost
- *   3. delivery "file": mints a TTS-only token, returns a curl command, calls no TTS
- *   4. the command is a safe shell literal for hostile text
- *   5. format, voice and language reach the command; wav sets the container
- *   6. text limits count Unicode code points; over the limit is refused with no request
- *   7. delivery "inline": one buffered MP3 request, the audio comes back as an audio block
- *   8. inline refusals: too long, wav, blank; an empty clip is an error
- *   9. API errors map to a next step (voice, funds, rate limit, key)
- *  10. token service failures; one deadline covers every attempt, the backoff and the body read
- *  11. logs never hold the text, the token or the key, even when an API error echoes the text
- *  12. each file command saves to its own file name
- *  13. inline audio is read only up to the size cap, never buffered whole
- *  14. sign-in time counts: the tool works only in what is left of the 60 s request
- *  15. the guidance is in structuredContent.next_step (Claude Code shows the model only that)
- *  16. a voice_id that is not a known voice gets a warning, not a refusal
- *  17. SSML (text that starts with <speak>) is refused before any request
- *  18. text over the schema bound gets the real limit (5,000), not 10,000
- *  19. command_powershell uses curl.exe and keeps the text a PowerShell literal
- *  20. a known voice with another language is refused with no request; matching or unknown voices are not
- *  21. voice IDs like "constructor" are not taken as known voices (own-property check)
- */
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -114,7 +87,6 @@ interface ToolResult {
 
 async function withClient<T>(fn: (client: Client) => Promise<T>): Promise<T> {
   const server = new McpServer({ name: "tts-test", version: "0.0.0" });
-  // Stand in for withMcpAuth: take the key from _meta and put it in extra.authInfo.
   const originalRegister = server.registerTool.bind(server);
   server.registerTool = ((name: string, config: unknown, cb: unknown) => {
     const wrapped = async (args: unknown, extra: { _meta?: { bearer?: string }; authInfo?: { token: string } }) => {
@@ -141,7 +113,6 @@ const speak = async (client: Client, args: Record<string, unknown>) =>
   (await client.callTool({ name: "create_speech", arguments: args, _meta: { bearer: KEY } })) as ToolResult;
 const textOf = (res: ToolResult) => res.content?.find((c) => c.type === "text")?.text ?? "";
 
-/** Run fn with console.log captured; returns the captured lines. */
 async function captureLogs(fn: () => Promise<void>): Promise<string> {
   const lines: string[] = [];
   const originalLog = console.log;
@@ -154,8 +125,7 @@ async function captureLogs(fn: () => Promise<void>): Promise<string> {
   return lines.join("\n");
 }
 
-// A promise that never settles lets the event loop drain and the process exit 0
-// with no summary. Make that a failure.
+// A never-settling promise lets Node exit 0 with no summary.
 let finished = false;
 process.on("exit", (code) => {
   if (!finished && code === 0) {
@@ -168,7 +138,6 @@ async function run() {
   installMockFetch();
   console.log("Running TTS tests…\n");
 
-  // 1. The flag
   for (const value of [undefined, "0", "true", ""]) {
     if (value === undefined) delete process.env.TTS_ENABLED;
     else process.env.TTS_ENABLED = value;
@@ -186,7 +155,6 @@ async function run() {
   delete process.env.ASSEMBLYAI_TTS_BASE_URL;
   delete process.env.ASSEMBLYAI_TOKEN_BASE_URL;
 
-  // 2. The definition
   await withClient(async (client) => {
     const { tools } = await client.listTools();
     const tool = tools.find((t) => t.name === "create_speech");
@@ -208,7 +176,6 @@ async function run() {
     );
   });
 
-  // 3. File delivery: a token, a command, no synthesis
   await withClient(async (client) => {
     resetMock([tokenOk()]);
     const res = await speak(client, { text: "Hello there." });
@@ -253,9 +220,6 @@ async function run() {
     );
   });
 
-  // 4. The text is the caller's: it must stay a shell literal. The payload only
-  // ever writes a marker file in a temp dir, so a quoting bug fails this test
-  // and harms nothing.
   await withClient(async (client) => {
     const dir = mkdtempSync(join(tmpdir(), "tts-test-"));
     const marker = join(dir, "injected");
@@ -264,7 +228,6 @@ async function run() {
     resetMock([tokenOk("tok'en")]);
     const res = await speak(client, { text: hostile });
     const command = String(res.structuredContent?.command ?? "");
-    // Same words, but printed instead of sent: each shell word on its own line.
     let printed = "";
     try {
       printed = execFileSync("sh", ["-c", command.replace(/^curl /, "printf '%s\\n' ")], {
@@ -273,7 +236,6 @@ async function run() {
         stdio: ["ignore", "pipe", "ignore"],
       });
     } catch {
-      // A shell error is a quoting failure; the assertions below report it.
     }
     const injected = existsSync(marker);
     rmSync(dir, { recursive: true, force: true });
@@ -284,7 +246,6 @@ async function run() {
     try {
       parsed = JSON.parse(words[bodyAt] ?? "");
     } catch {
-      // leave parsed empty: the assertion below fails with the words
     }
     assert(
       "4. the shell hands curl the exact text, as one JSON argument on one line",
@@ -309,7 +270,6 @@ async function run() {
     );
   });
 
-  // 5. Options reach the command
   await withClient(async (client) => {
     resetMock([tokenOk()]);
     const res = await speak(client, { text: "Hola.", voice_id: "aai-constanza", language: "spanish", format: "wav" });
@@ -328,10 +288,9 @@ async function run() {
     assert("5. a language outside the six is refused by the schema", badLanguage.isError === true && calls.length === 0);
   });
 
-  // 6. Limits are in code points
   await withClient(async (client) => {
     resetMock([tokenOk()]);
-    const emoji = "😀".repeat(MAX_SPEECH_CHARS); // 2 UTF-16 units each
+    const emoji = "😀".repeat(MAX_SPEECH_CHARS);
     const ok = await speak(client, { text: emoji });
     assert(
       `6. ${MAX_SPEECH_CHARS} code points are accepted, though they are ${emoji.length} UTF-16 units`,
@@ -348,7 +307,6 @@ async function run() {
     );
   });
 
-  // 7. Inline delivery
   await withClient(async (client) => {
     const bytes = new Uint8Array([0xff, 0xfb, 0x90, 0x00, 1, 2, 3, 4, 5]);
     resetMock([audioOk(bytes)]);
@@ -379,7 +337,6 @@ async function run() {
     assert("7. the structured content does not repeat the audio", !JSON.stringify(res.structuredContent).includes(audio?.data ?? "x"));
   });
 
-  // 8. Inline refusals
   await withClient(async (client) => {
     resetMock([]);
     const long = await speak(client, { text: "a".repeat(MAX_INLINE_SPEECH_CHARS + 1), delivery: "inline" });
@@ -401,7 +358,6 @@ async function run() {
     );
   });
 
-  // 9. API errors
   await withClient(async (client) => {
     const inline = { text: "Hi.", delivery: "inline" };
     resetMock([ttsError(422, "voice_not_found", "voice_id: no voice 'aai-nope'")]);
@@ -438,7 +394,6 @@ async function run() {
     );
   });
 
-  // 10. Token service
   await withClient(async (client) => {
     resetMock([json(401, { detail: "Invalid API key" })]);
     const rejected = await speak(client, { text: "Hi." });
@@ -482,14 +437,11 @@ async function run() {
     );
   });
 
-  // 10b. The token request has one deadline for all attempts, the backoff and the body read
   {
     const realFetch = globalThis.fetch;
-    // AbortSignal.timeout's timer does not hold the process open; in the server,
-    // the HTTP listener does. Here, hold it open until these checks finish.
+    // AbortSignal.timeout's timer does not hold the process open.
     const keepAlive = setInterval(() => {}, 1_000);
     let attempts = 0;
-    // Never answers; gives up only when its signal aborts, as real fetch does.
     const stall = (signal: AbortSignal | null | undefined) =>
       new Promise<never>((_, reject) => signal?.addEventListener("abort", () => reject(signal.reason), { once: true }));
     try {
@@ -510,7 +462,6 @@ async function run() {
         `${String(err)} after ${Date.now() - t0} ms, ${attempts} attempts`
       );
 
-      // Headers arrive, then the body stalls: the same deadline covers the read.
       attempts = 0;
       globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
         attempts++;
@@ -536,7 +487,6 @@ async function run() {
         `${String(err)} after ${Date.now() - t0} ms`
       );
 
-      // A 5xx, then a deadline shorter than the backoff: no second attempt.
       attempts = 0;
       globalThis.fetch = (async () => {
         attempts++;
@@ -560,7 +510,6 @@ async function run() {
     }
   }
 
-  // 11. Logs
   await withClient(async (client) => {
     const secretText = "The merger closes on Friday at noon.";
     const logs = await captureLogs(async () => {
@@ -568,7 +517,6 @@ async function run() {
       await speak(client, { text: secretText });
       resetMock([audioOk(new Uint8Array([1, 2, 3]))]);
       await speak(client, { text: secretText, delivery: "inline" });
-      // An API error that echoes the text back: in the message, and in a non-JSON body.
       resetMock([ttsError(422, "invalid_parameter", `text: cannot speak "${secretText}"`)]);
       await speak(client, { text: secretText, delivery: "inline" });
       resetMock([new Response(`<html>Bad Gateway for ${secretText}</html>`, { status: 502 })]);
@@ -606,7 +554,6 @@ async function run() {
     );
   });
 
-  // 12. Each file command saves to its own file, so split parts do not overwrite each other
   await withClient(async (client) => {
     const names = new Set<string>();
     for (let i = 0; i < 20; i++) {
@@ -621,10 +568,8 @@ async function run() {
     );
   });
 
-  // 13. Inline audio is read only up to the cap, never buffered whole
   await withClient(async (client) => {
     const CHUNK = 256 * 1024;
-    /** A body that makes chunks on demand and counts what was pulled. */
     const endless = (limitChunks = Infinity) => {
       const stats = { pulled: 0, cancelled: false };
       const body = new ReadableStream<Uint8Array>({
@@ -640,7 +585,6 @@ async function run() {
       return { body, stats };
     };
 
-    // a) The declared size is over the cap: refused before reading the body.
     let s = endless();
     resetMock([audioOk(s.body as unknown as Uint8Array, { "Content-Length": String(MAX_INLINE_AUDIO_BYTES + 1) })]);
     let res = await speak(client, { text: "Hello.", delivery: "inline" });
@@ -651,7 +595,6 @@ async function run() {
       `${textOf(res)} | pulled ${s.stats.pulled}, cancelled ${s.stats.cancelled}`
     );
 
-    // b) No declared size and a body that never ends: stops just past the cap.
     s = endless();
     resetMock([audioOk(s.body as unknown as Uint8Array)]);
     res = await speak(client, { text: "Hello.", delivery: "inline" });
@@ -662,7 +605,6 @@ async function run() {
       `${textOf(res)} | pulled ${s.stats.pulled}, cancelled ${s.stats.cancelled}`
     );
 
-    // c) A body read in chunks, under the cap: returned whole.
     s = endless(4);
     resetMock([audioOk(s.body as unknown as Uint8Array)]);
     res = await speak(client, { text: "Hello.", delivery: "inline" });
@@ -674,9 +616,7 @@ async function run() {
     );
   });
 
-  // 14. Sign-in time counts: the tool works only in what is left of the 60 s request
   {
-    /** Call fn as if the request arrived `usedMs` ago (sign-in took that long). */
     const afterSignIn = <T>(usedMs: number, fn: () => Promise<T>): Promise<T> => {
       const realNow = Date.now;
       Date.now = () => realNow() - usedMs;
@@ -706,7 +646,6 @@ async function run() {
         res = await afterSignIn(40_000, () => speak(client, { text: "Hello." }));
         assert("14. file delivery with 20 s left still works", res.isError !== true && calls.length === 1, textOf(res));
 
-        // 44 s used: 16 s left, minus 5 s to return: speech gets 11 s, not 50 s.
         const realFetch = globalThis.fetch;
         globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) =>
           new Promise<never>((_, reject) =>
@@ -731,7 +670,6 @@ async function run() {
     }
   }
 
-  // 15. next_step: the rules reach the model in clients that show only structuredContent
   await withClient(async (client) => {
     resetMock([tokenOk()]);
     const res = await speak(client, { text: "Hello there." });
@@ -760,7 +698,6 @@ async function run() {
     );
   });
 
-  // 16. Voice check: the catalog has thousands of voices and no list endpoint, so warn, do not refuse
   await withClient(async (client) => {
     resetMock([tokenOk()]);
     let res = await speak(client, { text: "Hello.", voice_id: "aai-nobody" });
@@ -777,7 +714,6 @@ async function run() {
     assert("16. a known library voice has no warning", res.isError !== true && !next.includes("not one of the voices"), next);
   });
 
-  // 17. SSML is not supported: refuse it before a token or a speech request
   await withClient(async (client) => {
     for (const text of ['<speak>Hello <break time="1s"/> world</speak>', '  \n<SPEAK version="1.1">Hi</SPEAK>', "<speak/>"]) {
       for (const delivery of ["file", "inline"]) {
@@ -796,7 +732,6 @@ async function run() {
     assert("17. text that only starts like <speaker is not refused", res.isError !== true, textOf(res));
   });
 
-  // 18. Over the schema bound, the message gives the real limit
   await withClient(async (client) => {
     resetMock([]);
     let res = await speak(client, { text: "a".repeat(MAX_SPEECH_CHARS * 2 + 1) });
@@ -823,7 +758,6 @@ async function run() {
     );
   });
 
-  // 19. PowerShell: curl.exe, the JSON body from a file, every value a single-quoted literal
   await withClient(async (client) => {
     const hostile = `It's ‘curly’ $(Get-Date) $env:PATH \`n "quoted" é 😀; Remove-Item -Recurse ~`;
     resetMock([tokenOk("tok'en")]);
@@ -831,7 +765,6 @@ async function run() {
     const ps = String(res.structuredContent?.command_powershell ?? "");
     const outputFile = String(res.structuredContent?.output_file ?? "");
     const bodyFile = outputFile.replace(/\.mp3$/, ".json");
-    // Split into PowerShell single-quoted literals ('' is one ') and bare words.
     const words: string[] = [];
     const rest: string[] = [];
     const quote = /['‘’‚‛]/;
@@ -861,7 +794,6 @@ async function run() {
     try {
       body = JSON.parse(words[1] ?? "");
     } catch {
-      // the assertion below reports it
     }
     assert(
       "19. the literals are: body file, JSON body (exact text), out file, -w, token header, content type, @body file, URL, body file",
@@ -880,7 +812,6 @@ async function run() {
     assert("19. the PowerShell command never holds the API key", !ps.includes(KEY));
   });
 
-  // 20. A known voice speaks one language: another language is refused before any request
   await withClient(async (client) => {
     for (const delivery of ["file", "inline"]) {
       resetMock([tokenOk(), audioOk(new Uint8Array([1]))]);
@@ -909,7 +840,6 @@ async function run() {
     );
   });
 
-  // 21. Names from the object prototype are not known voices
   await withClient(async (client) => {
     for (const voice_id of ["constructor", "toString", "__proto__"]) {
       resetMock([tokenOk()]);
