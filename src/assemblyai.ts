@@ -7,6 +7,7 @@ import type {
   AutoHighlightsResult,
 } from "./transcript-sections";
 import { isValidTranscriptId } from "./transcript-id";
+import { remainingMs, RETURN_RESERVE_MS } from "./deadline";
 
 const DEFAULT_BASE_URL =
   process.env.ASSEMBLYAI_BASE_URL ?? "https://api.assemblyai.com";
@@ -232,16 +233,53 @@ export async function uploadFile(
   return (await response.json()) as { upload_url: string };
 }
 
+/** Below this much time left, do not start an attempt or retry: it could not finish. */
+const MIN_ATTEMPT_MS = 1_000;
+
+function timeoutError(method: "GET" | "POST" | "DELETE", timeoutMs: number): AssemblyAIError {
+  return new AssemblyAIError(
+    `AssemblyAI did not answer within ${Math.round(timeoutMs / 1000)} s. ` +
+      (method === "GET"
+        ? "This is usually temporary; try again."
+        : "The request may still have gone through, so repeating it could run it twice."),
+    504
+  );
+}
+
+/**
+ * One deadline covers all attempts, backoffs and body reads. By default it is
+ * what remains of the 60 s request budget (deadline.ts), minus the return
+ * reserve, so sign-in time counts. A timeout ends the call with a 504 and
+ * no retry: the deadline is spent. There is no backoff after the last attempt
+ * or when it would leave less than MIN_ATTEMPT_MS for the next attempt.
+ */
 export async function requestWithRetry<T>(
   apiKey: string,
   method: "GET" | "POST" | "DELETE",
   path: string,
   body?: unknown,
   retries = 3,
-  baseUrl: string = DEFAULT_BASE_URL
+  baseUrl: string = DEFAULT_BASE_URL,
+  timeoutMs: number = remainingMs() - RETURN_RESERVE_MS
 ): Promise<T> {
+  if (!(timeoutMs >= MIN_ATTEMPT_MS)) {
+    throw new AssemblyAIError(
+      "Not enough time left in this request to call AssemblyAI, so nothing was sent. Call the tool again.",
+      504
+    );
+  }
+  const deadline = Date.now() + timeoutMs;
+  const signal = AbortSignal.timeout(timeoutMs);
   let lastError: unknown;
+  let attempts = 0;
   for (let attempt = 0; attempt < retries; attempt++) {
+    if (attempt > 0) {
+      // Back off only between attempts, and only if the next one still fits.
+      const delayMs = 2 ** (attempt - 1) * 1000;
+      if (deadline - Date.now() < delayMs + MIN_ATTEMPT_MS) break;
+      await sleep(delayMs);
+    }
+    attempts++;
     let response: Response;
     try {
       response = await fetch(`${baseUrl}${path}`, {
@@ -251,29 +289,31 @@ export async function requestWithRetry<T>(
           ...(body ? { "Content-Type": "application/json" } : {}),
         },
         body: body ? JSON.stringify(body) : undefined,
+        signal,
       });
     } catch (err) {
+      if (signal.aborted) throw timeoutError(method, timeoutMs);
       lastError = err;
-      await sleep(2 ** attempt * 1000);
       continue;
     }
 
-    if (response.status >= 500) {
-      lastError = await errorFromResponse(response);
-      await sleep(2 ** attempt * 1000);
-      continue;
+    try {
+      if (response.status >= 500) {
+        lastError = await errorFromResponse(response);
+        continue;
+      }
+      if (response.status >= 400) throw await errorFromResponse(response);
+      return (await response.json()) as T;
+    } catch (err) {
+      // The deadline covers the body too: a body that stalls mid-read is a timeout.
+      if (signal.aborted && !(err instanceof AssemblyAIError)) throw timeoutError(method, timeoutMs);
+      throw err;
     }
-
-    if (response.status >= 400) {
-      throw await errorFromResponse(response);
-    }
-
-    return (await response.json()) as T;
   }
 
   if (lastError instanceof AssemblyAIError) throw lastError;
   throw new AssemblyAIError(
-    `AssemblyAI request failed after ${retries} retries: ${String(lastError)}`,
+    `AssemblyAI request failed after ${attempts} attempt${attempts === 1 ? "" : "s"}: ${String(lastError)}`,
     502
   );
 }

@@ -5,7 +5,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
 import { AssemblyAIError } from "../assemblyai";
-import { remainingMs } from "../deadline";
+import { remainingMs, RETURN_RESERVE_MS } from "../deadline";
 import { log, logError, keyHash } from "../log";
 import {
   AudioTooLargeError,
@@ -26,7 +26,6 @@ import {
   TtsError,
 } from "../tts";
 
-export const RETURN_RESERVE_MS = 5_000;
 export const MIN_SPEECH_MS = 10_000;
 export const MIN_TOKEN_MS = 3_000;
 

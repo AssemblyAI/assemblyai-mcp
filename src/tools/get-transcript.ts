@@ -66,8 +66,8 @@ export function registerGetTranscript(server: McpServer): void {
             redactedAudioUrl = audio.redacted_audio_url;
             redactedAudioPending = redactedAudioUrl === undefined;
           } catch (err) {
-            // 400, or 200 with no URL, means not ready yet; any other failure means unavailable (the link expires after ~24h).
-            if (err instanceof AssemblyAIError && err.status === 400) {
+            // 400, 200 with no URL, or 504 from our own deadline means not ready yet; any other failure means unavailable (the link expires after ~24h).
+            if (err instanceof AssemblyAIError && (err.status === 400 || err.status === 504)) {
               redactedAudioPending = true;
             } else {
               redactedAudioError = err instanceof AssemblyAIError ? `HTTP ${err.status}` : "unknown error";
