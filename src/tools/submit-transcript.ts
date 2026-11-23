@@ -69,16 +69,41 @@ function validateAudioUrl(audioUrl: string): void {
 
 const UPLOAD_LINK_PATH = /^\/upload\/[^/]+\/?$/i;
 
+function routedPath(rawPath: string): string | undefined {
+  let path = rawPath;
+  for (let i = 0; i < 3; i++) {
+    let decoded: string;
+    try {
+      decoded = decodeURIComponent(path);
+    } catch {
+      return undefined;
+    }
+    if (decoded === path) break;
+    path = decoded;
+  }
+  const out: string[] = [];
+  for (const segment of path.replace(/\\/g, "/").split("/")) {
+    if (segment === "" || segment === ".") continue;
+    if (segment === "..") out.pop();
+    else out.push(segment);
+  }
+  return `/${out.join("/")}${path.endsWith("/") && out.length > 0 ? "/" : ""}`;
+}
+
 function isOwnUploadLink(audioUrl: string, ownHosts: ReadonlySet<string>): boolean {
   try {
     const parsed = new URL(audioUrl);
     const hostname = parsed.hostname.replace(/\.+$/, "").toLowerCase();
-    const path = parsed.pathname.replace(/\/{2,}/g, "/");
-    if (!UPLOAD_LINK_PATH.test(path)) return false;
+    let ours = false;
     for (const own of ownHosts) {
-      if (hostname === own.replace(/:\d+$/, "").replace(/\.+$/, "")) return true;
+      if (hostname === own.replace(/:\d+$/, "").replace(/\.+$/, "")) ours = true;
     }
-    return false;
+    if (!ours) return false;
+    const path = routedPath(parsed.pathname);
+    // A path on our host that won't decode: refuse it if it could be the
+    // link. Our hosts serve no audio, so this costs nothing real.
+    if (path === undefined) return /upload/i.test(parsed.pathname);
+    return UPLOAD_LINK_PATH.test(path);
   } catch {
     return false;
   }
