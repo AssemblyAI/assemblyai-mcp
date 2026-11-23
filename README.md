@@ -296,7 +296,7 @@ One row per feature. A PR names the rows it changes (see `.github/pull_request_t
 | Text to speech | `create_speech` | `src/tools/create-speech.ts`, `src/tts.ts` | `tts-test.ts` | `TTS_ENABLED=1` |
 | MCP endpoint | `/mcp` | `app/mcp/[[...path]]/route.ts`, `src/server.ts`, `src/json-body.ts`, `src/deadline.ts` | `smoke-test.ts` | |
 | Auth: API key and OAuth sign-in | `Authorization` header | `src/oauth.ts`, `src/tool-errors.ts` | `oauth-test.ts`, `npm run test:oauth` | |
-| Input safety | all transcript tools | `src/transcript-id.ts`, `src/origin.ts` | `smoke-test.ts` | |
+| Input safety | all transcript tools | `src/transcript-id.ts`, `src/origin.ts` | `smoke-test.ts` | `PUBLIC_HOSTS` |
 | Logging | all tools | `src/log.ts` | `smoke-test.ts` | |
 | API request deadline and retry | every AssemblyAI and LLM Gateway call | `src/assemblyai.ts`, `src/deadline.ts` | `request-timeout-test.ts` | |
 | End-to-end | real API | | `npm run test:live` | `ASSEMBLYAI_API_KEY` |
