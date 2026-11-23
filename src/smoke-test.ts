@@ -1,77 +1,3 @@
-/**
- * In-process smoke test that exercises both MCP tools end-to-end with a
- * stubbed AssemblyAI HTTP layer. Run with `npm test`.
- *
- * Coverage:
- *   1. submit_transcript happy path — POSTs to /v2/transcript
- *   2. Bearer prefix is stripped (regression guard for the Bearer auth bridge)
- *   3. submit_transcript URL validation rejects file://
- *   4. AssemblyAI 401 surfaces as friendly error
- *   5. get_transcript happy path (status=completed, incl. speech_model_used)
- *   5b. get_transcript with speaker utterances — appears in text content with timestamps
- *   6. get_transcript while processing returns status without error
- *   7. 5xx retry-then-succeed
- *   8. 4xx no retry
- *   9. submit_transcript sentiment_analysis flag + pinned speech_models
- *   10. submit_transcript entity_detection flag
- *   11. submit_transcript redact_pii defaults (policies + sub)
- *   12. summarization flag is inert — no deprecated params reach AssemblyAI
- *   13. get_transcript renders sentiment + entities sections in text content
- *   14. summarize_transcript calls LLM Gateway with transcript_id + {{ transcript }} tag
- *   15. summarize_transcript with style=custom but no custom_prompt → validation error, no gateway call
- *   16.–18. scalar/boolean pass-through params
- *   19. nested objects pass through unchanged (language_detection_options, speaker_options, etc.)
- *   20. speech_understanding.request nests correctly with translation, summarization, action_items
- *   21. speech_understanding without request wrapper rejected before API call
- *   22. get_transcript renders translation / speaker_identification / custom_formatting
- *   23. get_transcript renders su_summary + action_items
- *   24. get_transcript renders content_safety / topics / highlights / unredacted / warnings
- *   25. get_transcript fetches redacted audio URL when flag present; degrades gracefully when not ready
- *   26. understand_transcript posts to the Gateway /v1/understanding and renders results
- *   27. understand_transcript 404 → friendly message
- *   27b. understand_transcript 401 → friendly bad-key error
- *   28. understand_transcript 429 → rate-limit message; summarize_transcript description points here
- *   29. delete_transcript DELETEs to /v2/transcript/{id} and confirms with transcript_id + deleted: true
- *   30. delete_transcript 404 → already deleted or not found message
- *   31. renderSpeechUnderstanding: mapping-only custom_formatting, failed-feature marker, empty action_items note
- *   32. submit_transcript rejects redact_pii_policies/redact_pii_sub without redact_pii, no fetch
- *   32b. every redact_pii_* option is refused without redact_pii; passes through with it
- *   33. understand_transcript's /v1/understanding is not retried on 5xx (billable, non-idempotent)
- *   34. submit_transcript punctuate:false/format_text:false pass through explicitly
- *   35. submit_transcript rejects speech_models: [] before calling AssemblyAI
- *   36. delete_transcript's DELETE is not retried on 5xx
- *   37. get_transcript redacted-audio 5xx renders an "unavailable" note (not "pending") + redacted_audio_error
- *   38. submit_transcript rejects a speech_understanding feature key placed outside the request wrapper
- *   39. get_transcript renders translated_utterances for utterances carrying translated_texts
- *   40. get_transcript drops explicit API nulls (content_safety_labels, translated_texts) instead of passing them through
- *   41. renderContentSafety tolerates a non-numeric confidence value without throwing
- *   42. summarize_transcript 429 → friendly rate-limit message (shared tool-error mapper)
- *   43. every tool carries a title + readOnlyHint/destructiveHint; delete is destructive, reads are read-only
- *   44. logError scrubs URLs and long tokens from error messages and stacks
- *   45. create_upload_url is hidden unless UPLOAD_TOKEN_SECRET is set
- *   46. create_upload_url returns an /upload/<token> link + curl command, key not in the link
- *   47. upload tokens round-trip; expired, tampered and other-secret tokens are refused
- *   48. the upload route forwards to /v2/upload with the raw key; bad token 401, empty body 400
- *   49. get_transcript drops per-word timestamps unless include_words is set
- *   50. include_words falls back to top-level words when there are no utterances
- *   51. publicOrigin takes the first x-forwarded-host entry
- *   52. ChatGPT files: openai/fileParams + file schema; download_url is sent as audio_url
- *   53. submit_transcript's POST /v2/transcript is not retried on 5xx (billable, non-idempotent)
- *   54. summarize_transcript's POST /v1/chat/completions is not retried on 5xx (billable, non-idempotent)
- *   55. submit_transcript refuses our own /upload/<token> link as audio_url, without echoing it —
- *       including respellings (trailing-dot host, doubled slashes, uppercase path, explicit port)
- *   56. create_upload_url says what to do when the network blocks the upload
- *   57. a non-JSON POST body gets a JSON-RPC parse error, not a hang; an oversized one 413 before parsing
- *   58. log fields are capped, so a huge caller value can't make a huge log line
- *   59. submit_transcript accepts speech_models: ['assemblyai-stt-3-7'] and sends it unchanged
- *   60. create_upload_url's curl command sends Content-Type: application/octet-stream (Vercel rejects form-urlencoded binary)
- *   61. su_summary renders summary_type "bullets" chapters (no "— undefined"), splits multiline bullet strings, still renders "paragraph"
- *   62. LLM Gateway 400s give the caller the reason from metadata.errors, but the logs do not get it (it can echo input)
- *   63. next_step is in structuredContent for create_upload_url, submit_transcript and an unfinished get_transcript
- *   64. a transcript_id that could leave /v2/transcript/ ("..", ".", "a/b", "%2e%2e", "") is refused before any fetch,
- *       by every transcript tool and by the API helpers themselves (issue #73)
- */
-
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -86,7 +12,6 @@ interface FetchCall {
   method: string;
   headers: Record<string, string>;
   body: string | null;
-  // Upload bodies as bytes: String() turns an ArrayBuffer into "[object ArrayBuffer]".
   bytes: Uint8Array | null;
 }
 
@@ -156,10 +81,6 @@ async function callTool(
   args: Record<string, unknown>,
   bearerForExtra: string
 ): Promise<ToolResult> {
-  // The MCP client doesn't normally let us inject `extra.authInfo`. For the
-  // smoke test we set it directly on the server's currently-handled request
-  // via the test transport pair: we simulate the withMcpAuth result by
-  // monkey-patching the registered tool callback to inject authInfo.
   return (await client.callTool({
     name,
     arguments: args,
@@ -170,10 +91,6 @@ async function callTool(
 async function withClientServer<T>(fn: (client: Client) => Promise<T>): Promise<T> {
   const server = new McpServer({ name: "smoke", version: "0.0.0" });
 
-  // We can't actually use withMcpAuth in-process. Patch registerTool so we
-  // wrap each tool callback to read `_meta.bearerForExtra` from the request
-  // context and inject it as `extra.authInfo.token`. This mirrors what
-  // withMcpAuth does at the HTTP layer.
   const originalRegister = server.registerTool.bind(server);
   server.registerTool = ((name: string, config: unknown, cb: unknown) => {
     const wrapped = async (args: unknown, extra: { _meta?: { bearerForExtra?: string }; authInfo?: { token: string } }) => {
@@ -204,7 +121,6 @@ async function run() {
   installMockFetch();
   console.log("Running smoke tests…\n");
 
-  // 1. submit_transcript happy path + 2. Bearer stripping
   await withClientServer(async (client) => {
     resetMock([jsonResponse(200, { id: "txn-1", status: "queued" })]);
     const result = await callTool(
@@ -219,7 +135,7 @@ async function run() {
       result.structuredContent?.transcript_id === "txn-1"
     );
     assert(
-      "2. Bearer prefix is stripped (Authorization header is the raw key)",
+      "2. the key reaches AssemblyAI as the raw Authorization header",
       calls[0]?.headers["authorization"] === "raw-key-no-prefix",
       `got: ${calls[0]?.headers["authorization"]}`
     );
@@ -231,7 +147,6 @@ async function run() {
     );
   });
 
-  // 3. URL validation rejects file:// (must be before any fetch attempt)
   await withClientServer(async (client) => {
     resetMock([]);
     const result = await callTool(client, "submit_transcript", { audio_url: "file:///etc/passwd" }, "k");
@@ -243,7 +158,6 @@ async function run() {
     );
   });
 
-  // 4. AssemblyAI 401 surfaces as friendly error
   await withClientServer(async (client) => {
     resetMock([jsonResponse(401, { error: "Invalid API key" })]);
     const result = await callTool(
@@ -260,7 +174,6 @@ async function run() {
     );
   });
 
-  // 5. get_transcript completed
   await withClientServer(async (client) => {
     resetMock([
       jsonResponse(200, {
@@ -297,7 +210,6 @@ async function run() {
     );
   });
 
-  // 5b. get_transcript completed WITH speaker utterances → must appear in text content
   await withClientServer(async (client) => {
     resetMock([
       jsonResponse(200, {
@@ -325,7 +237,6 @@ async function run() {
     );
   });
 
-  // Language metadata must reach both structured and text-only MCP clients.
   for (const languageFields of [
     { language_code: "es", language_confidence: 0.98, language_detection: true },
     { language_code: "en", language_confidence: 0, language_detection: false },
@@ -354,7 +265,6 @@ async function run() {
     });
   }
 
-  // 6. get_transcript while processing
   await withClientServer(async (client) => {
     resetMock([jsonResponse(200, { id: "txn-2", status: "processing" })]);
     const result = await callTool(client, "get_transcript", { transcript_id: "txn-2" }, "k");
@@ -364,7 +274,6 @@ async function run() {
     );
   });
 
-  // 7. 5xx retry-then-succeed
   await withClientServer(async (client) => {
     resetMock([
       jsonResponse(500, { error: "server error" }),
@@ -378,7 +287,6 @@ async function run() {
     );
   });
 
-  // 8. 4xx no retry
   await withClientServer(async (client) => {
     resetMock([jsonResponse(404, { error: "not found" })]);
     const result = await callTool(client, "get_transcript", { transcript_id: "missing" }, "k");
@@ -391,7 +299,6 @@ async function run() {
     );
   });
 
-  // 9. submit_transcript sentiment_analysis → payload flag + pinned speech_models
   await withClientServer(async (client) => {
     resetMock([jsonResponse(200, { id: "txn-s", status: "queued" })]);
     await callTool(
@@ -409,7 +316,6 @@ async function run() {
     );
   });
 
-  // 10. submit_transcript entity_detection → payload flag
   await withClientServer(async (client) => {
     resetMock([jsonResponse(200, { id: "txn-e", status: "queued" })]);
     await callTool(
@@ -422,7 +328,6 @@ async function run() {
     assert("10. entity_detection flag set in payload", body.entity_detection === true, JSON.stringify(body));
   });
 
-  // 11. submit_transcript redact_pii → flag + default policies + default sub
   await withClientServer(async (client) => {
     resetMock([jsonResponse(200, { id: "txn-r", status: "queued" })]);
     await callTool(
@@ -441,7 +346,6 @@ async function run() {
     assert("11. default redact_pii_sub = entity_name", body.redact_pii_sub === "entity_name", JSON.stringify(body));
   });
 
-  // 12. summarization flag is inert — no deprecated params reach AssemblyAI
   await withClientServer(async (client) => {
     resetMock([jsonResponse(200, { id: "txn-sum", status: "queued" })]);
     await callTool(
@@ -458,7 +362,6 @@ async function run() {
     );
   });
 
-  // 13. get_transcript renders sentiment + entities sections in the text content
   await withClientServer(async (client) => {
     resetMock([
       jsonResponse(200, {
@@ -478,7 +381,6 @@ async function run() {
     assert("13. entities section present", text.includes("--- entities") && text.includes("organization: Acme"), text);
   });
 
-  // 14. summarize_transcript calls LLM Gateway with transcript_id + {{ transcript }} tag
   await withClientServer(async (client) => {
     resetMock([jsonResponse(200, { choices: [{ message: { content: "- point one\n- point two" } }] })]);
     const result = await callTool(client, "summarize_transcript", { transcript_id: "txn-ai" }, "k");
@@ -494,7 +396,6 @@ async function run() {
     assert("14. returns summary content", text.includes("point one"), text);
   });
 
-  // 15. summarize_transcript with style=custom but no custom_prompt → error, no gateway call
   await withClientServer(async (client) => {
     resetMock([]);
     const result = await callTool(
@@ -511,7 +412,6 @@ async function run() {
     );
   });
 
-  // 16. submit_transcript scalar/boolean params pass through with API names
   await withClientServer(async (client) => {
     resetMock([jsonResponse(200, { id: "txn-p1", status: "queued" })]);
     await callTool(
@@ -592,7 +492,6 @@ async function run() {
     );
   });
 
-  // 17. omitted params are NOT sent — bare submit payload is exactly audio_url + speech_models
   await withClientServer(async (client) => {
     resetMock([jsonResponse(200, { id: "txn-p2", status: "queued" })]);
     await callTool(client, "submit_transcript", { audio_url: "https://example.com/x.mp3" }, "k");
@@ -604,7 +503,6 @@ async function run() {
     );
   });
 
-  // 18. speech_models is overridable but defaults to the pinned list
   await withClientServer(async (client) => {
     resetMock([jsonResponse(200, { id: "txn-p3", status: "queued" })]);
     await callTool(
@@ -621,7 +519,6 @@ async function run() {
     );
   });
 
-  // 19. nested objects pass through unchanged
   await withClientServer(async (client) => {
     resetMock([jsonResponse(200, { id: "txn-n1", status: "queued" })]);
     await callTool(
@@ -671,7 +568,6 @@ async function run() {
     );
   });
 
-  // 20. inline speech_understanding passes through with the request wrapper
   await withClientServer(async (client) => {
     resetMock([jsonResponse(200, { id: "txn-su", status: "queued" })]);
     await callTool(
@@ -701,9 +597,7 @@ async function run() {
     );
   });
 
-  // 21. speech_understanding without the request wrapper → schema error, no API call.
-  // NOTE: zod violations are rejected at the MCP protocol layer (InvalidParams),
-  // so client.callTool THROWS here rather than returning isError — catch both shapes.
+  // zod violations are rejected at the MCP protocol layer, so callTool throws instead of returning isError.
   await withClientServer(async (client) => {
     resetMock([]);
     let rejected = false;
@@ -728,7 +622,6 @@ async function run() {
     );
   });
 
-  // 22. get_transcript renders translation / speaker_identification / custom_formatting
   await withClientServer(async (client) => {
     resetMock([
       jsonResponse(200, {
@@ -771,7 +664,6 @@ async function run() {
     );
   });
 
-  // 23. get_transcript renders su_summary + action_items
   await withClientServer(async (client) => {
     resetMock([
       jsonResponse(200, {
@@ -808,7 +700,6 @@ async function run() {
     );
   });
 
-  // 24. get_transcript renders content_safety / topics / highlights / unredacted / warnings
   await withClientServer(async (client) => {
     resetMock([
       jsonResponse(200, {
@@ -869,7 +760,6 @@ async function run() {
     );
   });
 
-  // 25. redacted audio: second fetch when redact_pii_audio, graceful when not ready
   await withClientServer(async (client) => {
     resetMock([
       jsonResponse(200, { id: "txn-ra", status: "completed", text: "hi", audio_duration: 3, redact_pii_audio: true }),
@@ -932,7 +822,6 @@ async function run() {
     );
   });
 
-  // 26. understand_transcript posts to the Gateway /v1/understanding and renders results
   await withClientServer(async (client) => {
     resetMock([
       jsonResponse(200, {
@@ -984,7 +873,6 @@ async function run() {
     );
   });
 
-  // 27. understand_transcript 404 → friendly message
   await withClientServer(async (client) => {
     resetMock([jsonResponse(404, { error: "transcript not found" })]);
     const result = await callTool(
@@ -1001,7 +889,6 @@ async function run() {
     );
   });
 
-  // 27b. understand_transcript 401 → friendly bad-key error
   await withClientServer(async (client) => {
     resetMock([jsonResponse(401, { error: "Invalid API key" })]);
     const result = await callTool(
@@ -1018,7 +905,6 @@ async function run() {
     );
   });
 
-  // 28. understand_transcript 429 → rate-limit message; summarize description points here
   await withClientServer(async (client) => {
     resetMock([jsonResponse(429, { error: "rate limit exceeded" })]);
     const result = await callTool(
@@ -1042,7 +928,6 @@ async function run() {
     );
   });
 
-  // 29. delete_transcript issues DELETE and confirms
   await withClientServer(async (client) => {
     resetMock([jsonResponse(200, { id: "txn-del", status: "completed" })]);
     const result = await callTool(client, "delete_transcript", { transcript_id: "txn-del" }, "k");
@@ -1059,7 +944,6 @@ async function run() {
     );
   });
 
-  // 30. delete_transcript 404 → already deleted / not found
   await withClientServer(async (client) => {
     resetMock([jsonResponse(404, { error: "not found" })]);
     const result = await callTool(client, "delete_transcript", { transcript_id: "gone" }, "k");
@@ -1071,7 +955,6 @@ async function run() {
     );
   });
 
-  // 31. renderSpeechUnderstanding: mapping-only custom_formatting, failed-feature marker, empty action_items note
   await withClientServer(async (client) => {
     resetMock([
       jsonResponse(200, {
@@ -1131,7 +1014,6 @@ async function run() {
     );
   });
 
-  // 32. submit_transcript rejects redact_pii_policies/redact_pii_sub without redact_pii, no fetch
   await withClientServer(async (client) => {
     resetMock([]);
     const result = await callTool(
@@ -1148,9 +1030,6 @@ async function run() {
     );
   });
 
-  // 32b. The rest of the redact_pii_* family gets the same refusal (they used
-  // to pass straight through without redact_pii — issue #30). With the flag
-  // set they pass through unchanged.
   await withClientServer(async (client) => {
     for (const option of [
       { redact_pii_audio: true },
@@ -1197,7 +1076,6 @@ async function run() {
     );
   });
 
-  // 33. understand_transcript's /v1/understanding is not retried on 5xx (billable, non-idempotent)
   await withClientServer(async (client) => {
     resetMock([jsonResponse(500, { error: "server error" })]);
     const result = await callTool(
@@ -1213,7 +1091,6 @@ async function run() {
     );
   });
 
-  // 34. submit_transcript punctuate:false/format_text:false pass through explicitly
   await withClientServer(async (client) => {
     resetMock([jsonResponse(200, { id: "txn-pf", status: "queued" })]);
     await callTool(
@@ -1230,7 +1107,6 @@ async function run() {
     );
   });
 
-  // 35. submit_transcript rejects speech_models: [] before calling AssemblyAI
   await withClientServer(async (client) => {
     resetMock([]);
     let rejected = false;
@@ -1252,7 +1128,6 @@ async function run() {
     );
   });
 
-  // 36. delete_transcript's DELETE is not retried on 5xx
   await withClientServer(async (client) => {
     resetMock([jsonResponse(500, { error: "server error" })]);
     const result = await callTool(client, "delete_transcript", { transcript_id: "txn-del2" }, "k");
@@ -1263,7 +1138,6 @@ async function run() {
     );
   });
 
-  // 37. get_transcript redacted-audio 5xx renders an "unavailable" note (not "pending") + redacted_audio_error
   await withClientServer(async (client) => {
     resetMock([
       jsonResponse(200, { id: "txn-rd", status: "completed", text: "hi", audio_duration: 3, redact_pii_audio: true }),
@@ -1281,7 +1155,6 @@ async function run() {
     );
   });
 
-  // 38. submit_transcript rejects a speech_understanding feature key placed outside the request wrapper
   await withClientServer(async (client) => {
     resetMock([]);
     let rejected = false;
@@ -1309,7 +1182,6 @@ async function run() {
     );
   });
 
-  // 39. get_transcript renders translated_utterances for utterances carrying translated_texts
   await withClientServer(async (client) => {
     resetMock([
       jsonResponse(200, {
@@ -1332,7 +1204,6 @@ async function run() {
     );
   });
 
-  // 40. get_transcript drops explicit API nulls instead of passing them through
   await withClientServer(async (client) => {
     resetMock([
       jsonResponse(200, {
@@ -1359,7 +1230,6 @@ async function run() {
     );
   });
 
-  // 41. renderContentSafety tolerates a non-numeric confidence value without throwing
   await withClientServer(async (client) => {
     resetMock([
       jsonResponse(200, {
@@ -1379,7 +1249,6 @@ async function run() {
     );
   });
 
-  // 42. summarize_transcript 429 → friendly rate-limit message (shared tool-error mapper)
   await withClientServer(async (client) => {
     resetMock([jsonResponse(429, { error: "rate limit exceeded" })]);
     const result = await callTool(client, "summarize_transcript", { transcript_id: "txn-ai" }, "k");
@@ -1391,8 +1260,6 @@ async function run() {
     );
   });
 
-  // 43. every tool has a title and read-only/destructive annotations (required by the
-  //     Anthropic and OpenAI directories); delete is destructive, reads are read-only
   await withClientServer(async (client) => {
     const { tools } = await client.listTools();
     const byName = Object.fromEntries(tools.map((t) => [t.name, t]));
@@ -1418,7 +1285,6 @@ async function run() {
     }
   });
 
-  // 44. logError scrubs URLs and long tokens from error messages and stacks
   {
     const lines: string[] = [];
     const originalLog = console.log;
@@ -1442,7 +1308,6 @@ async function run() {
     );
   }
 
-  // 45. create_upload_url is hidden unless UPLOAD_TOKEN_SECRET is set
   delete process.env.UPLOAD_TOKEN_SECRET;
   await withClientServer(async (client) => {
     const { tools } = await client.listTools();
@@ -1451,7 +1316,6 @@ async function run() {
       !tools.some((t) => t.name === "create_upload_url"),
       tools.map((t) => t.name).join(", ")
     );
-    // The whole definition, not just the description: input-schema descriptions reach clients too.
     const submit = JSON.stringify(tools.find((t) => t.name === "submit_transcript"));
     assert(
       "45. submit_transcript (description and parameters) doesn't mention uploads when they aren't offered",
@@ -1460,7 +1324,6 @@ async function run() {
     );
   });
 
-  // 46. create_upload_url returns a link whose token carries the caller's key, not read-only
   process.env.UPLOAD_TOKEN_SECRET = "test-secret-" + "s".repeat(32);
   let uploadToken = "";
   await withClientServer(async (client) => {
@@ -1503,7 +1366,6 @@ async function run() {
     );
   });
 
-  // 47. upload tokens: valid round-trips; expired, tampered or other-secret tokens are refused
   {
     const { createUploadToken, readUploadToken, UPLOAD_TTL_MS } = await import("./upload-token");
     const now = Date.now();
@@ -1518,7 +1380,6 @@ async function run() {
     process.env.UPLOAD_TOKEN_SECRET = "test-secret-" + "s".repeat(32);
   }
 
-  // 48. the upload route forwards the body to /v2/upload with the raw key and returns upload_url
   {
     const { POST } = await import("../app/upload/[token]/route");
     const ctx = (token: string) => ({ params: Promise.resolve({ token }) });
@@ -1608,7 +1469,6 @@ async function run() {
     );
     assert("48. an aborted client stream answers 400", aborted.status === 400, String(aborted.status));
 
-    // With uploads turned off, even a once-valid link gets a 404 that doesn't point at the missing tool.
     delete process.env.UPLOAD_TOKEN_SECRET;
     resetMock([]);
     const off = await POST(new Request("https://mcp.assemblyai.com/upload/x", { method: "POST", body }), ctx(uploadToken));
@@ -1621,7 +1481,6 @@ async function run() {
   }
   delete process.env.UPLOAD_TOKEN_SECRET;
 
-  // 49. get_transcript drops per-word timestamps unless include_words is set
   {
     const record = {
       id: "txn-w",
@@ -1661,7 +1520,6 @@ async function run() {
     });
   }
 
-  // 50. include_words falls back to top-level words when there are no utterances
   {
     const record = {
       id: "txn-nw",
@@ -1692,7 +1550,6 @@ async function run() {
     });
   }
 
-  // 51. publicOrigin takes the first x-forwarded-host entry
   {
     const { publicOrigin } = await import("./origin");
     assert(
@@ -1710,8 +1567,6 @@ async function run() {
     assert("51. IPv6 and ports still work", publicOrigin(null, "[::1]:3000") === "https://[::1]:3000" && publicOrigin("127.0.0.1:3001", null) === "http://127.0.0.1:3001");
   }
 
-  // 52. ChatGPT file uploads: submit_transcript names `file` in openai/fileParams with the
-  //     schema OpenAI's tool scan requires, and sends its download_url as the audio_url
   await withClientServer(async (client) => {
     const { tools } = await client.listTools();
     const tool = tools.find((t) => t.name === "submit_transcript");
@@ -1793,7 +1648,6 @@ async function run() {
     );
     assert("52. a file whose download_url is not http(s) is refused", badFile.isError === true && calls.length === 0);
 
-    // ChatGPT may send null or {} when nothing is attached: the public URL must still work.
     for (const [label, emptyFile] of [["null", null], ["{}", {}], ['{download_url: ""}', { download_url: "", file_id: "" }]] as const) {
       resetMock([jsonResponse(200, { id: "txn-empty", status: "queued" })]);
       const res = await callTool(client, "submit_transcript", { audio_url: "https://example.com/a.mp3", file: emptyFile }, "k");
@@ -1805,7 +1659,6 @@ async function run() {
       );
     }
 
-    // A model may echo the attachment's name or link into audio_url: the file wins.
     for (const [label, echo] of [["its file name", "call.mp3"], ["its download_url", download]] as const) {
       resetMock([jsonResponse(200, { id: "txn-echo", status: "queued" })]);
       const res = await callTool(
@@ -1821,7 +1674,6 @@ async function run() {
       );
     }
 
-    // Refusals log what the client sent and why.
     const lines: string[] = [];
     const originalLog = console.log;
     console.log = (line: string) => lines.push(line);
@@ -1836,7 +1688,6 @@ async function run() {
       );
       await callTool(client, "submit_transcript", { file: { download_url: "file:///etc/passwd", file_id: "f" } }, "k");
       await callTool(client, "submit_transcript", { file: null }, "k");
-      // A caller-supplied _empty must never reach the logs.
       await callTool(
         client,
         "submit_transcript",
@@ -1871,7 +1722,6 @@ async function run() {
     );
   });
 
-  // 53. submit_transcript's POST /v2/transcript is not retried on 5xx (billable, non-idempotent)
   await withClientServer(async (client) => {
     resetMock([jsonResponse(500, { error: "server error" })]);
     const result = await callTool(
@@ -1887,7 +1737,6 @@ async function run() {
     );
   });
 
-  // 54. summarize_transcript's POST /v1/chat/completions is not retried on 5xx (billable, non-idempotent)
   await withClientServer(async (client) => {
     resetMock([jsonResponse(500, { error: "server error" })]);
     const result = await callTool(client, "summarize_transcript", { transcript_id: "txn-sum" }, "k");
@@ -1898,7 +1747,6 @@ async function run() {
     );
   });
 
-  // 55. Our own upload link is the mailbox, not the file: refuse it, don't echo the token.
   process.env.UPLOAD_TOKEN_SECRET = "test-secret-" + "s".repeat(32);
   await withClientServer(async (client) => {
     const link = "https://mcp.assemblyai.com/upload/tok-SECRET-abc123";
@@ -1933,8 +1781,6 @@ async function run() {
       const ok = await callTool(client, "submit_transcript", { audio_url: other }, "k");
       assert(`55. ${label} is still accepted`, ok.isError !== true && calls.length === 1, JSON.stringify(ok));
     }
-    // Respellings of the same link must be refused too: the harm is the token
-    // reaching a transcript record, not whether the route would answer (issue #29).
     for (const [label, variant] of [
       ["trailing-dot host", "https://mcp.assemblyai.com./upload/tok-SECRET-abc123"],
       ["doubled leading slash", "https://mcp.assemblyai.com//upload/tok-SECRET-abc123"],
@@ -1951,8 +1797,6 @@ async function run() {
         `isError=${res.isError} calls=${calls.length} text=${variantText}`
       );
     }
-    // The file channel is a loose object any client can fill — the link must be
-    // refused there too (the check used to run only for source "audio_url").
     resetMock([]);
     const viaFile = await callTool(
       client,
@@ -1967,7 +1811,6 @@ async function run() {
     );
   });
 
-  // 56. A blocked network gets a clear next step, not retries or workarounds.
   await withClientServer(async (client) => {
     resetMock([]);
     const res = await callTool(client, "create_upload_url", {}, "k");
@@ -1980,7 +1823,6 @@ async function run() {
     );
   });
 
-  // 57. mcp-handler's req.json() rejects outside its try/catch: answer first.
   {
     let reached = 0;
     const inner = async () => { reached++; return new Response("ok"); };
@@ -2000,7 +1842,6 @@ async function run() {
     await checked(new Request("http://localhost/mcp", { method: "GET" }));
     assert("57. other content types and GET are passed on unchanged", reached === 3);
 
-    // Oversized: refuse before buffering it all, with or without Content-Length.
     const big = "x".repeat(MAX_BODY_BYTES + 1);
     const declared = await checked(post(big));
     assert(
@@ -2033,14 +1874,12 @@ async function run() {
     assert("57. a JSON body just under the limit is passed on", atLimit.status === 200 && reached === 4);
   }
 
-  // 58. Caller values reach the logs (transcript_id); cap every string field.
   {
     const lines: string[] = [];
     const originalLog = console.log;
     console.log = (line: string) => lines.push(line);
     try {
       log({ event: "t", transcript_id: "x".repeat(100_000), nested: { v: "y".repeat(5_000) }, short: "ok" });
-      // Prose, not one long token: the scrubber already redacts long tokens.
       const prose = "the audio file could not be read ".repeat(3_000);
       const err = new Error(prose);
       err.name = "Bad".repeat(1_000);
@@ -2065,7 +1904,6 @@ async function run() {
     assert("58. a capped log line stays small", lines.every((l) => l.length < 5_000), String(lines.map((l) => l.length)));
   }
 
-  // 59. submit_transcript accepts speech_models: ['assemblyai-stt-3-7'] and sends it unchanged
   await withClientServer(async (client) => {
     resetMock([jsonResponse(200, { id: "txn-59", status: "queued" })]);
     const result = await callTool(
@@ -2087,8 +1925,6 @@ async function run() {
     );
   });
 
-  // 60. Without a Content-Type, curl sends application/x-www-form-urlencoded and
-  // Vercel answers "Bad request" for most real audio files (over ~270 KB).
   process.env.UPLOAD_TOKEN_SECRET = "test-secret-" + "s".repeat(32);
   await withClientServer(async (client) => {
     resetMock([]);
@@ -2108,7 +1944,6 @@ async function run() {
   });
   delete process.env.UPLOAD_TOKEN_SECRET;
 
-  // 61. summary_type "bullets" sends `bullets`, not `text`.
   {
     const bulletLines = renderSuSummary([
       { start: 0, end: 280000, headline: "Wildfire smoke", bullets: ["- Smoke reaches the US.", "Air quality drops."] },
@@ -2163,7 +1998,6 @@ async function run() {
     );
   });
 
-  // 62. The Gateway puts the reason in metadata.errors; message is only "invalid request body".
   await withClientServer(async (client) => {
     resetMock([
       jsonResponse(400, {
@@ -2215,7 +2049,6 @@ async function run() {
     );
   });
 
-  // 63. Claude Code shows the model only structuredContent: the next step must be there too.
   process.env.UPLOAD_TOKEN_SECRET = "test-secret-" + "s".repeat(32);
   await withClientServer(async (client) => {
     resetMock([]);
@@ -2252,7 +2085,6 @@ async function run() {
     );
   });
 
-  // 64. encodeURIComponent leaves "." alone, so ".." would become /v2/ (issue #73).
   const badIds = ["..", ".", "a/b", "%2e%2e", "", "abc?x=1", "../upload"];
   await withClientServer(async (client) => {
     for (const tool of ["get_transcript", "delete_transcript", "understand_transcript", "summarize_transcript"]) {
