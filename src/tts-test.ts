@@ -188,8 +188,20 @@ async function run() {
       call?.url === "https://token.us.assemblyai.com/v1/token" && call.method === "POST" &&
         call.headers.authorization === KEY &&
         JSON.stringify(JSON.parse(call.body ?? "{}")) ===
-          JSON.stringify({ product: "tts", expires_in_seconds: SPEECH_TOKEN_TTL_SECONDS }),
+          JSON.stringify({
+            product: "tts",
+            expires_in_seconds: SPEECH_TOKEN_TTL_SECONDS,
+            access: { tts: { enabled: true }, llm_gateway: { enabled: false } },
+          }),
       JSON.stringify(call)
+    );
+    const access = (JSON.parse(call?.body ?? "{}") as { access?: Record<string, { enabled?: unknown }> }).access;
+    assert(
+      "3. the token request denies the LLM Gateway and allows only TTS (#108)",
+      access?.llm_gateway?.enabled === false &&
+        access?.tts?.enabled === true &&
+        Object.entries(access ?? {}).every(([product, rule]) => product === "tts" || rule.enabled === false),
+      JSON.stringify(access)
     );
     assert(
       "3. the command carries the token, never the API key",

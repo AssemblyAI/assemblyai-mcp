@@ -177,6 +177,12 @@ export async function createSpeech(
   };
 }
 
+// product: "tts" alone does not keep the token off the LLM Gateway, so deny it explicitly.
+export const TTS_TOKEN_ACCESS = {
+  tts: { enabled: true },
+  llm_gateway: { enabled: false },
+} as const;
+
 export async function createTtsToken(
   apiKey: string,
   expiresInSeconds: number,
@@ -191,7 +197,7 @@ export async function createTtsToken(
       const response = await fetch(`${tokenBaseUrl()}/v1/token`, {
         method: "POST",
         headers: { Authorization: apiKey, "Content-Type": "application/json" },
-        body: JSON.stringify({ product: "tts", expires_in_seconds: expiresInSeconds }),
+        body: JSON.stringify({ product: "tts", expires_in_seconds: expiresInSeconds, access: TTS_TOKEN_ACCESS }),
         signal,
       });
       if (response.status >= 500) {
