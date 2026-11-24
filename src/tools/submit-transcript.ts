@@ -68,6 +68,8 @@ function validateAudioUrl(audioUrl: string): void {
 }
 
 const UPLOAD_LINK_PATH = /^\/upload\/[^/]+\/?$/i;
+/** Division slash, fraction slash, big solidus and big reverse solidus. */
+const SLASH_LOOKALIKES = /[\u2044\u2215\u29F8\u29F9]/g;
 
 function routedPath(rawPath: string): string | undefined {
   let path = rawPath;
@@ -81,6 +83,9 @@ function routedPath(rawPath: string): string | undefined {
     if (decoded === path) break;
     path = decoded;
   }
+  // Fold look-alike slashes into "/" so they can't hide the link (issue #107):
+  // NFKC turns fullwidth "／" and "＼" into "/" and "\\"; the rest have no NFKC form.
+  path = path.normalize("NFKC").replace(SLASH_LOOKALIKES, "/");
   const out: string[] = [];
   for (const segment of path.replace(/\\/g, "/").split("/")) {
     if (segment === "" || segment === ".") continue;

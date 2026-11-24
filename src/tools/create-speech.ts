@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 
-import { requireApiKey } from "../tool-errors";
+import { REJECTED_KEY_MESSAGE, requireApiKey } from "../tool-errors";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
@@ -364,10 +364,7 @@ export function registerCreateSpeech(server: McpServer): void {
             : logError({ ...payload, event, http_status: err.status }, err);
         if (err.status === 401) {
           logFailure("assemblyai_rejected_key");
-          throw new Error(
-            "AssemblyAI rejected the API key (401). " +
-              "Check the Bearer token configured in your MCP client connection."
-          );
+          throw new Error(REJECTED_KEY_MESSAGE);
         }
         logFailure("create_speech_error");
         throw new Error(err.message + (err instanceof TtsError ? hintFor(err) : ""));
