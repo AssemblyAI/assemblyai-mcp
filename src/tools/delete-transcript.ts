@@ -1,9 +1,9 @@
-import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import { deleteTranscript } from "../assemblyai";
 import { log, keyHash } from "../log";
-import { handleToolError } from "../tool-errors";
+import { handleToolError, requireApiKey } from "../tool-errors";
+import { transcriptIdSchema } from "../transcript-id";
 
 export function registerDeleteTranscript(server: McpServer): void {
   server.registerTool(
@@ -14,7 +14,6 @@ export function registerDeleteTranscript(server: McpServer): void {
         "PERMANENTLY delete a transcript and its associated data from AssemblyAI. Irreversible. " +
         "Only call this when the user explicitly asks for deletion (e.g. compliance cleanup after " +
         "processing) — never delete proactively.",
-      // Permanently deletes a transcript. Deleting twice has the same effect as once.
       annotations: {
         readOnlyHint: false,
         destructiveHint: true,
@@ -22,18 +21,12 @@ export function registerDeleteTranscript(server: McpServer): void {
         openWorldHint: false,
       },
       inputSchema: {
-        transcript_id: z.string().describe("The id of the transcript to permanently delete."),
+        transcript_id: transcriptIdSchema("The id of the transcript to permanently delete."),
       },
     },
     async (args, extra) => {
       const start = Date.now();
-      const apiKey = extra.authInfo?.token;
-      if (!apiKey) {
-        throw new Error(
-          "No AssemblyAI API key in request context. Configure your AssemblyAI API key " +
-            "as the Bearer token in your MCP client connection (or re-authenticate if using Claude.ai)."
-        );
-      }
+      const apiKey = requireApiKey(extra);
 
       try {
         await deleteTranscript(apiKey, args.transcript_id);

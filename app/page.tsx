@@ -3,8 +3,6 @@ import { headers } from "next/headers";
 import { publicOrigin } from "../src/origin";
 import { uploadsConfigured } from "../src/upload-token";
 
-// A short page for people who open the server's address in a browser. AI apps
-// never see it: they talk to /mcp. Keep the tool list in sync with src/server.ts.
 const TOOLS = [
   { name: "submit_transcript", what: "Start transcribing a public audio or video URL" },
   { name: "get_transcript", what: "Get status and results: text, speakers, timestamps" },
