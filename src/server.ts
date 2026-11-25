@@ -10,15 +10,12 @@ import { registerCreateSpeech } from "./tools/create-speech";
 import { uploadsConfigured } from "./upload-token";
 import { ttsEnabled } from "./tts";
 
-/** Wire all tools onto an MCP server instance. */
 export function registerTools(server: McpServer): void {
   registerSubmitTranscript(server);
   registerGetTranscript(server);
   registerSummarizeTranscript(server);
   registerUnderstandTranscript(server);
   registerDeleteTranscript(server);
-  // Only offered when the deployment can sign upload links.
   if (uploadsConfigured()) registerCreateUploadUrl(server);
-  // Text to speech is off unless the deployment turns it on (TTS_ENABLED=1).
   if (ttsEnabled()) registerCreateSpeech(server);
 }
