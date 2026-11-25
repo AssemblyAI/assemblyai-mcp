@@ -1961,6 +1961,49 @@ async function run() {
     );
     const atLimit = await checked(post(JSON.stringify({ pad: "y".repeat(MAX_BODY_BYTES - 20) })));
     assert("57. a JSON body just under the limit is passed on", atLimit.status === 200 && reached === 4);
+
+    // Issue #127: the size cap used to only apply when Content-Type said
+    // application/json, so any other declared type (or none at all) read an
+    // unbounded body into memory before anything rejected it.
+    const bigNonJson = await checked(post(big, "text/plain"));
+    assert(
+      "57. a declared-oversized body with a non-JSON Content-Type also gets 413, not passed to the handler",
+      bigNonJson.status === 413 && (await bigNonJson.json())?.error?.code === -32000 && reached === 4
+    );
+    const bigNoContentType = await checked(
+      new Request("http://localhost/mcp", { method: "POST", body: big })
+    );
+    assert(
+      "57. a declared-oversized body with no Content-Type header also gets 413",
+      bigNoContentType.status === 413 && (await bigNoContentType.json())?.error?.code === -32000 && reached === 4
+    );
+    let pulledNonJson = 0;
+    const chunkNonJson = new Uint8Array(1024 * 1024).fill(120);
+    const endlessNonJson = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulledNonJson++;
+        if (pulledNonJson > 50) controller.close();
+        else controller.enqueue(chunkNonJson);
+      },
+    });
+    const chunkedNonJson = await checked(
+      new Request("http://localhost/mcp", {
+        method: "POST",
+        headers: { "content-type": "text/plain" },
+        body: endlessNonJson,
+        duplex: "half",
+      } as RequestInit)
+    );
+    assert(
+      "57. a chunked non-JSON body with no Content-Length also stops being read once it passes the limit",
+      chunkedNonJson.status === 413 && pulledNonJson <= 8 && reached === 4,
+      `status=${chunkedNonJson.status} pulled=${pulledNonJson}`
+    );
+    const atLimitNonJson = await checked(post("y".repeat(MAX_BODY_BYTES - 20), "text/plain"));
+    assert(
+      "57. a non-JSON body just under the limit is still passed on, unparsed",
+      atLimitNonJson.status === 200 && reached === 5
+    );
   }
 
   {
