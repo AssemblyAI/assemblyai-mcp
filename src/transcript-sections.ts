@@ -66,6 +66,7 @@ export interface AutoHighlightsResult {
 }
 
 export function formatMs(ms: number): string {
+  if (typeof ms !== "number" || !Number.isFinite(ms) || ms < 0) return "0:00";
   const totalSec = Math.floor(ms / 1000);
   const m = Math.floor(totalSec / 60);
   const s = totalSec % 60;
@@ -235,7 +236,7 @@ export function renderSpeechUnderstanding(response: SpeechUnderstandingResponse)
   return lines;
 }
 
-function formatScore(value: unknown): string {
+export function formatScore(value: unknown): string {
   return typeof value === "number" ? value.toFixed(2) : String(value);
 }
 
