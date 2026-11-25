@@ -401,7 +401,9 @@ async function run() {
     const key = await speak(client, inline);
     assert(
       "9. a rejected key gets the standard Bearer-token message, without the key",
-      key.isError === true && textOf(key).includes("rejected the API key") && !textOf(key).includes(KEY),
+      key.isError === true && textOf(key).includes("rejected the API key") && !textOf(key).includes(KEY) &&
+        // OAuth (Claude.ai) users set no Bearer token, so they also get the re-authenticate hint (issue #101).
+        textOf(key).includes("re-authenticate"),
       textOf(key)
     );
   });
@@ -411,7 +413,8 @@ async function run() {
     const rejected = await speak(client, { text: "Hi." });
     assert(
       "10. a key the token service rejects gets the standard message, and no command",
-      rejected.isError === true && textOf(rejected).includes("rejected the API key") && !textOf(rejected).includes("curl"),
+      rejected.isError === true && textOf(rejected).includes("rejected the API key") && !textOf(rejected).includes("curl") &&
+        textOf(rejected).includes("re-authenticate"),
       textOf(rejected)
     );
     // The real token host answers a bad key with 404 "Invalid API key".

@@ -22,7 +22,9 @@ export function registerUnderstandTranscript(server: McpServer): void {
         "speaker_identification (and translation's match_original_utterance) only work if the " +
         "transcript was created with speaker_labels=true.",
       annotations: {
-        readOnlyHint: true,
+        // Not read-only: every call is a billable LLM Gateway run, so clients should ask first (issue #100).
+        readOnlyHint: false,
+        destructiveHint: false,
         openWorldHint: false,
       },
       inputSchema: {
