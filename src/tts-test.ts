@@ -159,8 +159,12 @@ async function run() {
     const { tools } = await client.listTools();
     const tool = tools.find((t) => t.name === "create_speech");
     assert(
-      "2. create_speech is offered, titled, not read-only and not destructive",
-      Boolean(tool?.title) && tool?.annotations?.readOnlyHint === false && tool?.annotations?.destructiveHint === false,
+      "2. create_speech is offered, titled, not read-only, not destructive, with an explicit openWorldHint",
+      // The smoke test runs with TTS off, so its all-hints check (test 43) never sees this tool.
+      Boolean(tool?.title) &&
+        tool?.annotations?.readOnlyHint === false &&
+        tool?.annotations?.destructiveHint === false &&
+        typeof tool?.annotations?.openWorldHint === "boolean",
       JSON.stringify(tool?.annotations)
     );
     const description = tool?.description ?? "";
