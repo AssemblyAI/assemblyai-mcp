@@ -16,6 +16,19 @@ const STYLE_PROMPTS = {
     "List the action items mentioned in the transcript as bullet points. If there are none, say so.",
 };
 
+const LLM_GATEWAY_RATE_LIMITS_URL = "https://www.assemblyai.com/docs/llm-gateway/rate-limits";
+
+function llmGatewayRateLimitMessage(retryAfterSeconds: number | undefined): string {
+  const wait =
+    retryAfterSeconds !== undefined
+      ? `Wait ${retryAfterSeconds} second${retryAfterSeconds === 1 ? "" : "s"}, then retry once.`
+      : "Wait a moment, then retry once.";
+  return (
+    "LLM Gateway rate limit reached. It limits requests and tokens per minute, by account tier " +
+    `(${LLM_GATEWAY_RATE_LIMITS_URL}). ${wait}`
+  );
+}
+
 export function registerSummarizeTranscript(server: McpServer): void {
   server.registerTool(
     "summarize_transcript",
@@ -88,8 +101,7 @@ export function registerSummarizeTranscript(server: McpServer): void {
           start,
           transcriptId: args.transcript_id,
           notFoundMessage: `LLM Gateway could not find transcript ${args.transcript_id} (404). Make sure it has completed and belongs to this API key.`,
-          rateLimitMessage:
-            "Speech Understanding rate limit reached (30 requests/min on paid accounts, 2/min free). Retry shortly.",
+          rateLimitMessage: llmGatewayRateLimitMessage,
           errorEvent: "llm_gateway_error",
         });
       }

@@ -25,14 +25,30 @@ export class AssemblyAIError extends Error {
   transcriptId: string | undefined;
   /** LLM Gateway reasons can echo caller input, so they stay out of `message`, which is logged. */
   detail: string | undefined;
+  retryAfterSeconds: number | undefined;
 
-  constructor(message: string, status: number, transcriptId?: string, detail?: string) {
+  constructor(message: string, status: number, transcriptId?: string, detail?: string, retryAfterSeconds?: number) {
     super(message);
     this.name = "AssemblyAIError";
     this.status = status;
     this.transcriptId = transcriptId;
     this.detail = detail;
+    this.retryAfterSeconds = retryAfterSeconds;
   }
+}
+
+/** Retry-After is either delay-seconds or an HTTP-date (RFC 9110 §10.2.3). */
+function parseRetryAfter(value: string | null, now: number = Date.now()): number | undefined {
+  const text = value?.trim() ?? "";
+  if (/^\d+$/.test(text)) {
+    const seconds = Number(text);
+    return seconds > 0 ? seconds : undefined;
+  }
+  if (!/[A-Za-z]/.test(text)) return undefined;
+  const at = Date.parse(text);
+  if (Number.isNaN(at)) return undefined;
+  const seconds = Math.ceil((at - now) / 1000);
+  return seconds > 0 ? seconds : undefined;
 }
 
 interface TranscriptSubmitOptions {
@@ -319,6 +335,7 @@ export async function requestWithRetry<T>(
 }
 
 async function errorFromResponse(response: Response): Promise<AssemblyAIError> {
+  const retryAfterSeconds = parseRetryAfter(response.headers.get("retry-after"));
   const text = await response.text();
   try {
     const body = JSON.parse(text);
@@ -330,13 +347,20 @@ async function errorFromResponse(response: Response): Promise<AssemblyAIError> {
           `HTTP ${response.status}: ${body[key]}`,
           response.status,
           undefined,
-          reasons.length > 0 ? reasons.join("; ") : undefined
+          reasons.length > 0 ? reasons.join("; ") : undefined,
+          retryAfterSeconds
         );
       }
     }
   } catch {
   }
-  return new AssemblyAIError(`HTTP ${response.status}: ${text.slice(0, 500)}`, response.status);
+  return new AssemblyAIError(
+    `HTTP ${response.status}: ${text.slice(0, 500)}`,
+    response.status,
+    undefined,
+    undefined,
+    retryAfterSeconds
+  );
 }
 
 function sleep(ms: number): Promise<void> {
