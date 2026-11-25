@@ -3,9 +3,10 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import { summarizeViaLlmGateway, LLM_GATEWAY_MODEL } from "../llm-gateway";
 import { log, keyHash } from "../log";
-import { handleToolError } from "../tool-errors";
+import { handleToolError, requireApiKey } from "../tool-errors";
+import { transcriptIdSchema } from "../transcript-id";
 
-const STYLE_PROMPTS: Record<string, string> = {
+const STYLE_PROMPTS = {
   bullets:
     "Provide a brief summary of the transcript in bullet-point format. Focus on the key points and main takeaways.",
   paragraph:
@@ -27,15 +28,14 @@ export function registerSummarizeTranscript(server: McpServer): void {
         " For a CHAPTERED summary with timestamps/headlines, or decision-aware action items, use the " +
         "`understand_transcript` tool (summarization / action_items features) instead — this tool is " +
         "the freeform/custom-prompt option.",
-      // Reads a completed transcript and returns an LLM summary; changes nothing.
       annotations: {
-        readOnlyHint: true,
+        // Not read-only: every call is a billable LLM Gateway run, so clients should ask first (issue #100).
+        readOnlyHint: false,
+        destructiveHint: false,
         openWorldHint: false,
       },
       inputSchema: {
-        transcript_id: z
-          .string()
-          .describe("The id of a completed transcript (from submit_transcript / get_transcript)."),
+        transcript_id: transcriptIdSchema("The id of a completed transcript (from submit_transcript / get_transcript)."),
         style: z
           .enum(["bullets", "paragraph", "headline", "action_items", "custom"])
           .optional()
@@ -49,13 +49,7 @@ export function registerSummarizeTranscript(server: McpServer): void {
     },
     async (args, extra) => {
       const start = Date.now();
-      const apiKey = extra.authInfo?.token;
-      if (!apiKey) {
-        throw new Error(
-          "No AssemblyAI API key in request context. Configure your AssemblyAI API key " +
-            "as the Bearer token in your MCP client connection."
-        );
-      }
+      const apiKey = requireApiKey(extra);
 
       if (args.style === "custom" && !args.custom_prompt) {
         throw new Error(
@@ -63,11 +57,7 @@ export function registerSummarizeTranscript(server: McpServer): void {
         );
       }
 
-      const prompt: string =
-        args.custom_prompt ??
-        (args.style != null ? STYLE_PROMPTS[args.style] : undefined) ??
-        // STYLE_PROMPTS.bullets is always defined — the key is a literal in STYLE_PROMPTS.
-        (STYLE_PROMPTS.bullets as string);
+      const prompt = args.custom_prompt ?? STYLE_PROMPTS[args.style === "custom" ? "bullets" : args.style];
 
       try {
         const summary = await summarizeViaLlmGateway(apiKey, {
@@ -98,7 +88,6 @@ export function registerSummarizeTranscript(server: McpServer): void {
           start,
           transcriptId: args.transcript_id,
           notFoundMessage: `LLM Gateway could not find transcript ${args.transcript_id} (404). Make sure it has completed and belongs to this API key.`,
-          // Same wording as understand_transcript — both hit the same rate-limited Gateway.
           rateLimitMessage:
             "Speech Understanding rate limit reached (30 requests/min on paid accounts, 2/min free). Retry shortly.",
           errorEvent: "llm_gateway_error",

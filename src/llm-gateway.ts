@@ -1,12 +1,4 @@
-/**
- * AssemblyAI LLM Gateway wrapper. Used for summaries today (and, later, Q&A /
- * translation) so we stay off the deprecated transcript-level summarization
- * params. Same pass-through API key as the REST API; different host.
- *
- * Pass a `transcript_id` and include the `{{ transcript }}` tag in the prompt —
- * the Gateway substitutes the transcript's text server-side, so transcript text
- * never has to round-trip through this server.
- */
+/** The Gateway substitutes the `{{ transcript }}` tag with transcript_id's text server-side. */
 import { requestWithRetry } from "./assemblyai";
 import type { SpeechUnderstandingResponse } from "./transcript-sections";
 
@@ -15,15 +7,20 @@ const DEFAULT_LLM_GATEWAY_BASE_URL =
 
 export const LLM_GATEWAY_MODEL = "claude-sonnet-4-6";
 
+/**
+ * LLM calls can run longer than the 60 s request budget (deadline.ts leaves
+ * the 300 s Fluid compute platform limit above it so they are not cut off).
+ * Give them their own deadline below that platform limit instead.
+ */
+export const LLM_GATEWAY_TIMEOUT_MS = 240_000;
+
 interface ChatCompletionResponse {
   choices?: Array<{ message?: { content?: string } }>;
 }
 
-export interface SummarizeOptions {
+interface SummarizeOptions {
   transcript_id: string;
   prompt: string;
-  model?: string;
-  maxTokens?: number;
 }
 
 export async function summarizeViaLlmGateway(
@@ -34,21 +31,20 @@ export async function summarizeViaLlmGateway(
     ? options.prompt
     : `${options.prompt}\n\n{{ transcript }}`;
   const body = {
-    model: options.model ?? LLM_GATEWAY_MODEL,
+    model: LLM_GATEWAY_MODEL,
     messages: [{ role: "user", content: promptContent }],
     transcript_id: options.transcript_id,
-    max_tokens: options.maxTokens ?? 1000,
+    max_tokens: 1000,
   };
-  // retries=1: POST /v1/chat/completions is a billable, non-idempotent LLM
-  // completion — retrying it on a transient 5xx would double-charge, unlike
-  // the read-only GETs.
+  // retries=1: POST /v1/chat/completions is billable and non-idempotent; a retry on 5xx could double-charge.
   const data = await requestWithRetry<ChatCompletionResponse>(
     apiKey,
     "POST",
     "/v1/chat/completions",
     body,
     1,
-    DEFAULT_LLM_GATEWAY_BASE_URL
+    DEFAULT_LLM_GATEWAY_BASE_URL,
+    LLM_GATEWAY_TIMEOUT_MS
   );
   const content = data.choices?.[0]?.message?.content;
   if (!content) {
@@ -57,12 +53,12 @@ export async function summarizeViaLlmGateway(
   return content;
 }
 
-export interface UnderstandOptions {
+interface UnderstandOptions {
   transcript_id: string;
   speech_understanding: { request: Record<string, unknown> };
 }
 
-export interface UnderstandingResponse {
+interface UnderstandingResponse {
   request_id?: string;
   translated_texts?: Record<string, string>;
   utterances?: Array<{
@@ -75,20 +71,18 @@ export interface UnderstandingResponse {
   speech_understanding?: { response?: SpeechUnderstandingResponse };
 }
 
-/** Post-hoc Speech Understanding on a completed transcript. */
 export async function understandTranscript(
   apiKey: string,
   options: UnderstandOptions
 ): Promise<UnderstandingResponse> {
-  // retries=1: POST /v1/understanding is a billable, non-idempotent Speech
-  // Understanding run — retrying it on a transient 5xx would double-charge
-  // and could return two divergent results, unlike the read-only GETs.
+  // retries=1: POST /v1/understanding is billable and non-idempotent; a retry on 5xx could double-charge.
   return requestWithRetry<UnderstandingResponse>(
     apiKey,
     "POST",
     "/v1/understanding",
     { transcript_id: options.transcript_id, speech_understanding: options.speech_understanding },
     1,
-    DEFAULT_LLM_GATEWAY_BASE_URL
+    DEFAULT_LLM_GATEWAY_BASE_URL,
+    LLM_GATEWAY_TIMEOUT_MS
   );
 }

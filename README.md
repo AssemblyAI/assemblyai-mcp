@@ -70,6 +70,7 @@ https://assembly.ai/wildfires.mp3"*.
 | `summarize_transcript(transcript_id, style?, custom_prompt?)` | Freeform or custom-prompt summary of a completed transcript via the LLM Gateway. `style`: `bullets` (default), `paragraph`, `headline`, `action_items`, or `custom`. |
 | `delete_transcript(transcript_id)` | Permanently delete a transcript and its data. Irreversible — only on explicit user request. |
 | `create_upload_url()` | For a local file: returns a 10-minute link and a `curl` command. The agent uploads the file (up to 4.5 MB) and gets an `upload_url` to pass to `submit_transcript`. Only offered when `UPLOAD_TOKEN_SECRET` is set. |
+| `create_speech(text, voice_id?, language?, format?, delivery?)` | Text to speech (Streaming TTS). `delivery: "file"` (default) returns a `curl` command with a 5-minute TTS-only token; the agent runs it and the audio is saved on the user's computer (up to 5,000 characters, billed when it runs). `delivery: "inline"` returns MP3 audio in the tool result (up to 1,000 characters). Billed per character. Only offered when `TTS_ENABLED=1`. |
 
 **Typical agent flow:** `submit_transcript` → poll `get_transcript` until
 `completed` → optionally `understand_transcript` / `summarize_transcript` →
@@ -87,7 +88,8 @@ names, grouped roughly as:
 - **Language** — `language_code`, `language_codes`, `language_detection`,
   `language_detection_options`, `language_confidence_threshold`
 - **Models** — `speech_models` (defaults to the pinned
-  `["universal-3-5-pro", "universal-2"]` priority list), `temperature`
+  `["assemblyai-stt-3-7", "universal-2"]` priority list; `universal-3-5-pro` is
+  deprecated but still accepted), `temperature`
 - **Diarization** — `speaker_labels`, `speaker_options`
 - **Guardrails** — `redact_pii` (+ `redact_pii_policies`, `redact_pii_sub`,
   `redact_pii_audio`, `redact_pii_return_unredacted`,
@@ -160,6 +162,10 @@ keys only work against its own API.
 | `ASSEMBLYAI_BASE_URL` | `https://api.assemblyai.com` | The AssemblyAI API |
 | `ASSEMBLYAI_LLM_GATEWAY_BASE_URL` | `https://llm-gateway.assemblyai.com` | The LLM Gateway |
 | `UPLOAD_TOKEN_SECRET` | unset | 32+ random characters. Encrypts the API key inside upload links; without it, `create_upload_url` is not offered. Rotating it invalidates open links. |
+| `PUBLIC_HOSTS` | unset | Comma-separated hostnames (no scheme) this deployment may put in the links it hands out, for a self-hosted domain. `mcp.assemblyai.com`, local hosts and the deployment's own Vercel hostnames are always allowed. A request for any other host gets `https://mcp.assemblyai.com` in its links. |
+| `TTS_ENABLED` | unset | `1` offers the `create_speech` tool (text to speech). Any other value, or unset: the tool is not listed. |
+| `ASSEMBLYAI_TTS_BASE_URL` | `https://tts.us.assemblyai.com` | The Streaming TTS API (`https://tts.eu.assemblyai.com` for the EU data zone) |
+| `ASSEMBLYAI_TOKEN_BASE_URL` | `https://token.us.assemblyai.com` | Where `create_speech` mints its short-lived TTS tokens |
 
 The service token needs no setting: Vercel provides it to the deployment
 (`VERCEL_OIDC_TOKEN`), and `@vercel/oidc` reads it.
@@ -275,38 +281,27 @@ redirect, so this test can't sign in as one. It also requires the redirect
 to carry an `iss` naming the advertised authorization server (RFC 9207), as
 stricter clients do.
 
-## Project layout
+## Feature map
 
-```
-assemblyai-mcp/
-├── app/
-│   ├── mcp/[[...path]]/route.ts             # mcp-handler entry, wrapped with withOAuthExchange + withMcpAuth
-│   └── .well-known/oauth-protected-resource/route.ts
-├── src/
-│   ├── server.ts                            # registerTools factory
-│   ├── oauth.ts                             # Sign in with AssemblyAI: access token → API key exchange
-│   ├── log.ts                               # JSON logging helpers + key hashing
-│   ├── tool-errors.ts                       # shared 401/404/429 error mapper
-│   ├── assemblyai.ts                        # fetch wrapper (submit, get, delete, retry)
-│   ├── llm-gateway.ts                       # LLM Gateway client (summarize, understand)
-│   ├── transcript-sections.ts               # section renderers for tool text output
-│   ├── speech-understanding-schema.ts       # shared speech_understanding zod schema
-│   ├── tools/
-│   │   ├── submit-transcript.ts
-│   │   ├── get-transcript.ts
-│   │   ├── summarize-transcript.ts
-│   │   ├── understand-transcript.ts
-│   │   └── delete-transcript.ts
-│   ├── smoke-test.ts                        # InMemoryTransport, mocked fetch
-│   ├── oauth-test.ts                        # token exchange, stubbed (npm test)
-│   ├── oauth-preview-test.ts                # sign-in against a deployment (npm run test:oauth)
-│   └── live-test.ts                         # real API, Streamable HTTP client
-├── package.json
-├── tsconfig.json
-├── next.config.js
-├── vercel.json
-└── README.md
-```
+One row per feature. A PR names the rows it changes (see `.github/pull_request_template.md`). Update this table in the same PR when a row's files, tests or flag change.
+
+| Feature | Entry point | Code | Tests | Flag |
+|---|---|---|---|---|
+| Submit a transcript | `submit_transcript` | `src/tools/submit-transcript.ts`, `src/assemblyai.ts` | `smoke-test.ts` | |
+| Read a transcript | `get_transcript` | `src/tools/get-transcript.ts`, `src/transcript-sections.ts` | `smoke-test.ts` | |
+| Summarize | `summarize_transcript` | `src/tools/summarize-transcript.ts`, `src/llm-gateway.ts` | `smoke-test.ts` | |
+| Speech Understanding | `understand_transcript` | `src/tools/understand-transcript.ts`, `src/llm-gateway.ts`, `src/speech-understanding-schema.ts` | `smoke-test.ts` | |
+| Delete a transcript | `delete_transcript` | `src/tools/delete-transcript.ts` | `smoke-test.ts` | |
+| Local file upload | `create_upload_url`, `POST /upload/<token>` | `src/tools/create-upload-url.ts`, `src/upload-token.ts`, `app/upload/[token]/route.ts` | `smoke-test.ts` | `UPLOAD_TOKEN_SECRET` |
+| Text to speech | `create_speech` | `src/tools/create-speech.ts`, `src/tts.ts` | `tts-test.ts` | `TTS_ENABLED=1` |
+| MCP endpoint | `/mcp` | `app/mcp/[[...path]]/route.ts`, `src/server.ts`, `src/json-body.ts`, `src/deadline.ts` | `smoke-test.ts` | |
+| OpenAI domain verification | `GET /.well-known/openai-apps-challenge` | `public/.well-known/openai-apps-challenge` | Unauthenticated HTTP check: 200 and exact portal token | |
+| Auth: API key and OAuth sign-in | `Authorization` header | `src/oauth.ts`, `src/tool-errors.ts` | `oauth-test.ts`, `npm run test:oauth` | |
+| Input safety | all transcript tools | `src/transcript-id.ts`, `src/origin.ts` | `smoke-test.ts` | `PUBLIC_HOSTS` |
+| Logging | all tools | `src/log.ts` | `smoke-test.ts` | |
+| Tool behavior annotations | `tools/list` | `src/tools/*.ts` | `smoke-test.ts` (explicit boolean hints and deletion classification) | |
+| API request deadline and retry | every AssemblyAI and LLM Gateway call | `src/assemblyai.ts`, `src/deadline.ts` | `request-timeout-test.ts` | |
+| End-to-end | real API | | `npm run test:live` | `ASSEMBLYAI_API_KEY` |
 
 ## Logging
 
