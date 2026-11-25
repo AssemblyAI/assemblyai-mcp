@@ -276,13 +276,22 @@ function formatTranscript(s: ShapedTranscript): string {
   if (s.speech_understanding?.response) {
     lines.push(...renderSpeechUnderstanding(s.speech_understanding.response));
   }
-  if (s.content_safety_labels?.summary && Object.keys(s.content_safety_labels.summary).length > 0) {
+  if (s.content_safety_labels && (
+    (s.content_safety_labels.status !== undefined && s.content_safety_labels.status !== "success") ||
+    (s.content_safety_labels.summary && Object.keys(s.content_safety_labels.summary).length > 0)
+  )) {
     lines.push(...renderContentSafety(s.content_safety_labels));
   }
-  if (s.iab_categories_result?.summary && Object.keys(s.iab_categories_result.summary).length > 0) {
+  if (s.iab_categories_result && (
+    (s.iab_categories_result.status !== undefined && s.iab_categories_result.status !== "success") ||
+    (s.iab_categories_result.summary && Object.keys(s.iab_categories_result.summary).length > 0)
+  )) {
     lines.push(...renderTopics(s.iab_categories_result));
   }
-  if (s.auto_highlights_result?.results && s.auto_highlights_result.results.length > 0) {
+  if (s.auto_highlights_result && (
+    (s.auto_highlights_result.status !== undefined && s.auto_highlights_result.status !== "success") ||
+    (s.auto_highlights_result.results && s.auto_highlights_result.results.length > 0)
+  )) {
     lines.push(...renderHighlights(s.auto_highlights_result));
   }
   if (s.unredacted_text) {
