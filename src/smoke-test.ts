@@ -1852,6 +1852,10 @@ async function run() {
       ["division slash", "https://mcp.assemblyai.com/upload\u2215tok-SECRET-abc123"],
       ["fraction slash", "https://mcp.assemblyai.com/upload\u2044tok-SECRET-abc123"],
       ["fullwidth letters", "https://mcp.assemblyai.com/\uFF55\uFF50\uFF4C\uFF4F\uFF41\uFF44/tok-SECRET-abc123"],
+      // Normalizing creates a new escape after a decode round (PR #121 review).
+      ["fullwidth percent escape", "https://mcp.assemblyai.com/upload\uFF052Ftok-SECRET-abc123"],
+      ["fullwidth letters on an undecodable path", "https://mcp.assemblyai.com/\uFF55\uFF50\uFF4C\uFF4F\uFF41\uFF44\uFF0Ftok-SECRET-abc123%"],
+      ["deeply stacked encoding", "https://mcp.assemblyai.com/upload%2525252525252Ftok-SECRET-abc123"],
     ]) {
       resetMock([]);
       const res = await callTool(client, "submit_transcript", { audio_url: variant }, "k");
