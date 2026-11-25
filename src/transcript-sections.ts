@@ -29,7 +29,10 @@ export interface SpeechUnderstandingResponse {
     status?: string;
     formatted_text?: string;
     mapping?: Record<string, string>;
-    formatted_utterances?: Array<{ speaker: string; text: string; start: number; end: number }>;
+    formatted_utterances?: Array<{
+      speaker: string; text: string; start: number; end: number;
+      words?: Array<{ text: string; start: number; end: number; confidence: number; speaker: string | null }>;
+    }>;
   };
   summarization?: {
     status?: string;

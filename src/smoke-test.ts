@@ -2211,6 +2211,60 @@ async function run() {
       assert(`64. ${name}("..") throws with no fetch`, threw && calls.length === 0);
     }
   }
+  // #82. The formatted utterance word gate applies through the real handler,
+  // and must not mutate an API record reused by another caller.
+  await withClientServer(async (client) => {
+    const id = "55517222-f677-48a6-9287-39c0aafd9ac1";
+    const words = Object.freeze([{ text: "Call", start: 0, end: 150, confidence: 0.99, speaker: "A" }]);
+    const utterance = Object.freeze({ speaker: "A", text: "Call me", start: 0, end: 500, words, confidence: 0.98 });
+    const source = Object.freeze({
+      id, status: "completed", text: "Call me",
+      metadata: { domain_used: "medical", warnings: [{ message: "note" }] },
+      speech_understanding: Object.freeze({
+        request: { custom_formatting: { formats: ["phone"] } }, extra: "preserve",
+        response: Object.freeze({
+          custom_formatting: Object.freeze({
+            status: "success", formatted_text: "Call me", mapping: { call: "Call" },
+            formatted_utterances: Object.freeze([utterance, Object.freeze({ speaker: "B", text: "Yes", start: 500, end: 600 })]),
+          }),
+          action_items: { status: "unavailable" },
+        }),
+      }),
+    });
+    const before = JSON.stringify(source);
+    for (const includeWords of [undefined, false, true]) {
+      // Return the exact frozen record, not a JSON clone, to detect mutation.
+      resetMock([Object.assign(jsonResponse(200, source), { json: async () => source })]);
+      const result = await callTool(client, "get_transcript", {
+        transcript_id: id, ...(includeWords === undefined ? {} : { include_words: includeWords }),
+      }, "k");
+      const su = result.structuredContent?.speech_understanding as typeof source.speech_understanding;
+      const formatting = su?.response.custom_formatting;
+      assert(`#82 ${includeWords}: handler fetches valid UUID`, !result.isError && calls.length === 1);
+      const first = formatting?.formatted_utterances[0];
+      assert(`#82 ${includeWords}: nested words are opt-in`,
+        includeWords === true ? !!first && "words" in first && JSON.stringify(first.words) === JSON.stringify(words)
+          : !("words" in (formatting?.formatted_utterances[0] ?? {})));
+      const expected = { ...utterance, words: undefined };
+      assert(`#82 ${includeWords}: utterance fields survive`,
+        JSON.stringify({ ...formatting?.formatted_utterances[0], words: undefined }) === JSON.stringify(expected));
+      assert(`#82 ${includeWords}: request, status, mapping, other response and metadata survive`,
+        JSON.stringify({ ...su, response: { ...su?.response, custom_formatting: { ...formatting, formatted_utterances: undefined } } }) ===
+        JSON.stringify({ ...source.speech_understanding, response: { ...source.speech_understanding.response,
+          custom_formatting: { ...source.speech_understanding.response.custom_formatting, formatted_utterances: undefined } } }) &&
+        JSON.stringify(result.structuredContent?.metadata) === JSON.stringify(source.metadata));
+      assert(`#82 ${includeWords}: API source is unchanged`, JSON.stringify(source) === before);
+      assert(`#82 ${includeWords}: legacy formatting text survives`,
+        (result.content?.[0]?.text ?? "").includes("[A] 0:00–0:00: Call me"));
+    }
+    for (const speech_understanding of [undefined, null, {}, { request: {} }, { response: {} },
+      { response: { custom_formatting: { status: "success", formatted_utterances: [] } } }]) {
+      resetMock([jsonResponse(200, { id, status: "completed", speech_understanding })]);
+      const result = await callTool(client, "get_transcript", { transcript_id: id }, "k");
+      assert(`#82 missing/empty SU ${JSON.stringify(speech_understanding)} is preserved`,
+        !result.isError && JSON.stringify(result.structuredContent?.speech_understanding) === JSON.stringify(speech_understanding ?? undefined));
+    }
+  });
   delete process.env.UPLOAD_TOKEN_SECRET;
 
   globalThis.fetch = originalFetch;
