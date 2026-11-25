@@ -1,19 +1,14 @@
-/**
- * Shared renderers for the labeled text sections emitted by get_transcript
- * and understand_transcript. some MCP clients read only
- * content[].text, so every feature result must render as plain text here.
- * Section headers are contract (README "Extending the tool surface"): once
- * shipped, never rename or reshape a section — only add new ones.
- */
+/** Some MCP clients read only content[].text, so every feature result renders as plain text. */
 
-export interface SuChapter {
+interface SuChapter {
   start: number;
   end: number;
-  text: string;
+  text?: string;
+  bullets?: string[] | string;
   headline: string;
 }
 
-export interface SuActionItem {
+interface SuActionItem {
   action_item: string;
   quote: string;
   timestamp: number;
@@ -34,23 +29,40 @@ export interface SpeechUnderstandingResponse {
     status?: string;
     formatted_text?: string;
     mapping?: Record<string, string>;
-    formatted_utterances?: Array<{ speaker: string; text: string; start: number; end: number }>;
+    formatted_utterances?: Array<{
+      speaker: string; text: string; start: number; end: number;
+      words?: Array<{ text: string; start: number; end: number; confidence: number; speaker: string | null }>;
+    }>;
   };
-  summarization?: { status?: string; summary_type?: string; effort?: string; summary?: SuChapter[] };
+  summarization?: {
+    status?: string;
+    summary_type?: string;
+    effort?: string;
+    summary?: SuChapter[];
+    block_summary?: string;
+  };
   action_items?: { status?: string; effort?: string; items?: SuActionItem[] };
 }
 
 export interface ContentSafetyLabels {
+  status?: string;
   summary?: Record<string, number>;
   severity_score_summary?: Record<string, { low?: number; medium?: number; high?: number }>;
+  results?: Array<{
+    text?: string;
+    timestamp?: { start?: number; end?: number };
+    labels?: Array<{ label: string; confidence: number }>;
+  }>;
 }
 
 export interface IabCategoriesResult {
+  status?: string;
   summary?: Record<string, number>;
 }
 
 export interface AutoHighlightsResult {
-  results?: Array<{ count: number; rank: number; text: string }>;
+  status?: string;
+  results?: Array<{ count: number; rank: number; text: string; timestamps?: Array<{ start?: number; end?: number }> }>;
 }
 
 export function formatMs(ms: number): string {
@@ -61,6 +73,35 @@ export function formatMs(ms: number): string {
   return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
+/** Add precise evidence without changing the legacy m:ss rendering. API
+ * payloads are not runtime-validated, so never fabricate a malformed range. */
+export function formatTimestampRange(start: unknown, end: unknown): string | undefined {
+  if (typeof start !== "number" || typeof end !== "number" ||
+      !Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end < start) return undefined;
+  return `${formatMs(start)}–${formatMs(end)} (start=${start}ms end=${end}ms from audio start)`;
+}
+
+export function renderEntityEvidence(entities: Array<{ text: string; entity_type: string; start: number; end: number }>): string[] {
+  const evidence: string[] = [];
+  for (const e of entities) {
+    const range = formatTimestampRange(e.start, e.end);
+    if (range) evidence.push(`${e.entity_type}: ${e.text} @ ${range}`);
+  }
+  return evidence.length ? ["", "--- entity_evidence ---", ...evidence] : [];
+}
+
+export function renderContentSafetyEvidence(labels: ContentSafetyLabels): string[] {
+  const evidence: string[] = [];
+  for (const r of Array.isArray(labels.results) ? labels.results : []) {
+    const range = formatTimestampRange(r?.timestamp?.start, r?.timestamp?.end);
+    if (!range) continue;
+    const categories = (Array.isArray(r.labels) ? r.labels : [])
+      .map((label) => `${label.label}: ${formatScore(label.confidence)}`).join(", ");
+    evidence.push(`${range}${categories ? ` [${categories}]` : ""}${r.text ? `: ${r.text}` : ""}`);
+  }
+  return evidence.length ? ["", "--- content_safety_evidence ---", ...evidence] : [];
+}
+
 export function renderTranslations(translatedTexts: Record<string, string>): string[] {
   const lines: string[] = [];
   for (const [lang, text] of Object.entries(translatedTexts)) {
@@ -69,7 +110,6 @@ export function renderTranslations(translatedTexts: Record<string, string>): str
   return lines;
 }
 
-/** Per-utterance translations (translation.match_original_utterance=true). */
 export function renderTranslatedUtterances(utterances: TranslatedUtterance[]): string[] {
   const withTranslations = utterances.filter(
     (u) => u.translated_texts && Object.keys(u.translated_texts).length > 0
@@ -84,23 +124,39 @@ export function renderTranslatedUtterances(utterances: TranslatedUtterance[]): s
   return lines;
 }
 
-export function renderSpeakerIdentification(mapping: Record<string, string>): string[] {
+function renderSpeakerIdentification(mapping: Record<string, string>): string[] {
   const lines = ["", "--- speaker_identification (diarization label → identified speaker) ---"];
   for (const [label, who] of Object.entries(mapping)) lines.push(`${label} → ${who}`);
   return lines;
 }
 
-export function renderCustomFormatting(formattedText: string): string[] {
+function renderCustomFormatting(formattedText: string): string[] {
   return ["", CUSTOM_FORMATTING_HEADER, formattedText];
 }
 
 export function renderSuSummary(chapters: SuChapter[]): string[] {
   const lines = ["", "--- su_summary (chaptered summary; start–end are m:ss) ---"];
-  for (const c of chapters) lines.push(`[${formatMs(c.start)}–${formatMs(c.end)}] ${c.headline} — ${c.text}`);
+  for (const c of chapters) {
+    const head = `[${formatMs(c.start)}–${formatMs(c.end)}] ${c.headline}`;
+    const raw = Array.isArray(c.bullets) ? c.bullets : typeof c.bullets === "string" ? [c.bullets] : [];
+    const bullets = raw
+      .filter((b): b is string => typeof b === "string")
+      .flatMap((b) => b.split(/\r?\n/))
+      .filter((b) => b.trim() !== "");
+    if (bullets.length > 0) {
+      lines.push(head);
+      // The API may already prefix each bullet with "- " or "• ".
+      for (const b of bullets) lines.push(`  - ${b.trim().replace(/^[-•*]\s+/, "")}`);
+    } else if (typeof c.text === "string" && c.text !== "") {
+      lines.push(`${head} — ${c.text}`);
+    } else {
+      lines.push(head);
+    }
+  }
   return lines;
 }
 
-export function renderActionItems(items: SuActionItem[]): string[] {
+function renderActionItems(items: SuActionItem[]): string[] {
   const lines = ["", "--- action_items ---"];
   for (const i of items) lines.push(`- ${i.action_item} (quote: "${i.quote}" @ ${formatMs(i.timestamp)})`);
   return lines;
@@ -108,13 +164,6 @@ export function renderActionItems(items: SuActionItem[]): string[] {
 
 const CUSTOM_FORMATTING_HEADER = "--- custom_formatting (transcript with requested formats applied) ---";
 
-/**
- * Renders every present feature of a speech_understanding.response object.
- * A feature with a non-"success" status is surfaced as a one-line failure
- * marker (rather than silently dropped) so failed/partial SU runs are still
- * visible to the caller. Mapping-only / empty-but-successful results also
- * render a short note instead of vanishing.
- */
 export function renderSpeechUnderstanding(response: SpeechUnderstandingResponse): string[] {
   const lines: string[] = [];
   const featureOrder = [
@@ -160,6 +209,9 @@ export function renderSpeechUnderstanding(response: SpeechUnderstandingResponse)
       }
       case "summarization": {
         const su = response.summarization;
+        if (su?.block_summary) {
+          lines.push("", "--- su_block_summary ---", su.block_summary);
+        }
         if (su?.summary && su.summary.length > 0) {
           lines.push(...renderSuSummary(su.summary));
         } else if (su?.summary) {
@@ -176,9 +228,6 @@ export function renderSpeechUnderstanding(response: SpeechUnderstandingResponse)
         }
         break;
       }
-      // translation has no content of its own here — its text is rendered
-      // separately via renderTranslations/renderTranslatedUtterances from
-      // the top-level translated_texts / utterances fields.
       default:
         break;
     }
@@ -187,13 +236,14 @@ export function renderSpeechUnderstanding(response: SpeechUnderstandingResponse)
   return lines;
 }
 
-/** AssemblyAI's response types aren't runtime-validated; guard against a
- * non-number slipping through (would otherwise throw on .toFixed). */
 export function formatScore(value: unknown): string {
   return typeof value === "number" ? value.toFixed(2) : String(value);
 }
 
 export function renderContentSafety(labels: ContentSafetyLabels): string[] {
+  if (labels.status !== undefined && labels.status !== "success") {
+    return ["", `(content_safety: ${labels.status})`];
+  }
   const lines = ["", "--- content_safety (label: confidence 0–1) ---"];
   for (const [label, confidence] of Object.entries(labels.summary ?? {})) {
     const sev = labels.severity_score_summary?.[label];
@@ -206,6 +256,9 @@ export function renderContentSafety(labels: ContentSafetyLabels): string[] {
 }
 
 export function renderTopics(result: IabCategoriesResult): string[] {
+  if (result.status !== undefined && result.status !== "success") {
+    return ["", `(topics: ${result.status})`];
+  }
   const lines = ["", "--- topics (IAB categories; relevance 0–1; top 10) ---"];
   const entries = Object.entries(result.summary ?? {})
     .sort((a, b) => b[1] - a[1])
@@ -215,9 +268,20 @@ export function renderTopics(result: IabCategoriesResult): string[] {
 }
 
 export function renderHighlights(result: AutoHighlightsResult): string[] {
+  if (result.status !== undefined && result.status !== "success") {
+    return ["", `(highlights: ${result.status})`];
+  }
   const lines = ["", "--- highlights (key phrases; count = occurrences) ---"];
   const results = [...(result.results ?? [])].sort((a, b) => b.rank - a.rank);
   for (const r of results) lines.push(`${r.count}× "${r.text}"`);
+  const evidence: string[] = [];
+  for (const r of results) {
+    for (const timestamp of Array.isArray(r.timestamps) ? r.timestamps : []) {
+      const range = formatTimestampRange(timestamp?.start, timestamp?.end);
+      if (range) evidence.push(`"${r.text}" @ ${range}`);
+    }
+  }
+  if (evidence.length) lines.push("", "--- highlight_evidence ---", ...evidence);
   return lines;
 }
 

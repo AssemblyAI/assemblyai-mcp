@@ -1,29 +1,32 @@
-/**
- * Shared 401/404/429 error mapping for the five AssemblyAI-backed tools.
- * Each tool used to hand-roll this switch, and the copies had drifted — most
- * notably, several tools' 401 branch omitted transcript_id from the log
- * payload while their 404/429 branches included it. Centralizing the mapping
- * here means all five tools log and word errors the same way, and future
- * drift has exactly one place to fix.
- */
 import { AssemblyAIError } from "./assemblyai";
 import { logError, keyHash } from "./log";
 
-export interface ToolErrorContext {
+interface ToolErrorContext {
   tool: string;
   apiKey: string;
   start: number;
-  /** Included in every log payload below (including the 401 case) when provided. */
   transcriptId?: string;
-  /** 404 message to throw. Omit to let a 404 rethrow as the raw AssemblyAIError (e.g. get_transcript). */
   notFoundMessage?: string;
-  /** 429 message to throw. Omit to let a 429 rethrow as the raw AssemblyAIError. */
   rateLimitMessage?: string;
-  /** Log event name for every branch except the 401 case (which always logs "assemblyai_rejected_key"). */
   errorEvent: string;
 }
 
-/** Maps a caught error to the tool's standard log + user-facing error, then throws. */
+/** Shown on a 401 from AssemblyAI. It covers API-key users and OAuth (Claude.ai) users, who set no Bearer token. */
+export const REJECTED_KEY_MESSAGE =
+  "AssemblyAI rejected the API key (401). " +
+  "Check the Bearer token configured in your MCP client connection (or re-authenticate if connected via Claude.ai).";
+
+export function requireApiKey(extra: { authInfo?: { token: string } }): string {
+  const apiKey = extra.authInfo?.token;
+  if (!apiKey) {
+    throw new Error(
+      "No AssemblyAI API key in request context. Configure your AssemblyAI API key " +
+        "as the Bearer token in your MCP client connection (or re-authenticate if using Claude.ai)."
+    );
+  }
+  return apiKey;
+}
+
 export function handleToolError(err: unknown, ctx: ToolErrorContext): never {
   const payload: Record<string, unknown> = {
     tool: ctx.tool,
@@ -35,10 +38,7 @@ export function handleToolError(err: unknown, ctx: ToolErrorContext): never {
 
   if (err instanceof AssemblyAIError && err.status === 401) {
     logError({ ...payload, event: "assemblyai_rejected_key" }, err);
-    throw new Error(
-      "AssemblyAI rejected the API key (401). " +
-        "Check the Bearer token configured in your MCP client connection."
-    );
+    throw new Error(REJECTED_KEY_MESSAGE);
   }
   if (err instanceof AssemblyAIError && err.status === 404 && ctx.notFoundMessage) {
     logError({ ...payload, event: ctx.errorEvent }, err);
@@ -49,5 +49,9 @@ export function handleToolError(err: unknown, ctx: ToolErrorContext): never {
     throw new Error(ctx.rateLimitMessage);
   }
   logError({ ...payload, event: ctx.errorEvent }, err);
+  // Gateway reasons can echo caller input, so they go to the caller only, never to the log.
+  if (err instanceof AssemblyAIError && err.detail) {
+    throw new AssemblyAIError(`${err.message} (${err.detail})`, err.status, err.transcriptId);
+  }
   throw err;
 }
