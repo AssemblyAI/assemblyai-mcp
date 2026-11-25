@@ -365,7 +365,11 @@ async function run() {
   }
 
   {
+    const savedHosts = process.env.PUBLIC_HOSTS;
+    process.env.PUBLIC_HOSTS = "mcp.example.com";
     const res = resourceMetadata(new Request("https://mcp.example.com/.well-known/oauth-protected-resource"));
+    if (savedHosts === undefined) delete process.env.PUBLIC_HOSTS;
+    else process.env.PUBLIC_HOSTS = savedHosts;
     const body = (await res.json()) as Record<string, unknown>;
     assert(
       "10. the metadata names the authorization server and scopes",
