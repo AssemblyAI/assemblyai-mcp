@@ -1,5 +1,7 @@
 /** AssemblyAI expects the raw API key in `Authorization`, with no `Bearer ` prefix. */
 
+import { AsyncLocalStorage } from "node:async_hooks";
+
 import type {
   SpeechUnderstandingResponse,
   ContentSafetyLabels,
@@ -253,7 +255,7 @@ function timeoutError(method: "GET" | "POST" | "DELETE", timeoutMs: number): Ass
  * no retry: the deadline is spent. There is no backoff after the last attempt
  * or when it would leave less than MIN_ATTEMPT_MS for the next attempt.
  */
-export async function requestWithRetry<T>(
+async function attemptRequest<T>(
   apiKey: string,
   method: "GET" | "POST" | "DELETE",
   path: string,
@@ -316,6 +318,76 @@ export async function requestWithRetry<T>(
     `AssemblyAI request failed after ${attempts} attempt${attempts === 1 ? "" : "s"}: ${String(lastError)}`,
     502
   );
+}
+
+/**
+ * Per HTTP request: whether each API key seen so far has been found to be
+ * rejected (401) by AssemblyAI. A JSON-RPC batch can pack up to 100 tool
+ * calls into one request, all sharing one Bearer token; without this, a bad
+ * key meant every one of them made its own doomed outbound call before
+ * failing the same way (issue #128). `withRequestKeyProbes` gives each
+ * incoming request a fresh, empty map; `requestWithRetry` below is the only
+ * reader and writer.
+ *
+ * Each promise settles once the first call for that key in this request gets
+ * a definitive answer, to `true` only if that answer was a 401 — the one
+ * outcome that's true for every other call using the same key, whatever
+ * they're asking for. Any other outcome (success, 404, 429, 5xx, a timeout)
+ * is specific to that one call and is never shared.
+ */
+const requestKeyProbes = new AsyncLocalStorage<Map<string, Promise<boolean>>>();
+
+/** Wrap the MCP route: every tool call reached from one incoming request
+ * shares one fresh probe map, cleared when the request ends. */
+export function withRequestKeyProbes<Req, Res>(
+  handler: (req: Req) => Promise<Res>
+): (req: Req) => Promise<Res> {
+  return (req) => requestKeyProbes.run(new Map(), () => handler(req));
+}
+
+/**
+ * Same call as attemptRequest, but when several calls in one request share
+ * an API key, only the first actually asks AssemblyAI whether the key works.
+ * A sibling that arrives while that first call is still pending — the
+ * common case for a batch, since the MCP SDK dispatches every message in it
+ * before any of their network calls can return — waits for its answer
+ * instead of finding out the same way itself. Only a definite 401 is
+ * shared: anything else, each caller still gets its own full attempt, so a
+ * batch with a valid key keeps working exactly as before (give or take the
+ * other calls starting a beat after the first, rather than all at once).
+ * Outside a request this wrapper has set up (tests, scripts), there's no
+ * map to probe and this is exactly attemptRequest.
+ */
+export async function requestWithRetry<T>(
+  apiKey: string,
+  method: "GET" | "POST" | "DELETE",
+  path: string,
+  body?: unknown,
+  retries = 3,
+  baseUrl: string = DEFAULT_BASE_URL,
+  timeoutMs?: number
+): Promise<T> {
+  const probes = requestKeyProbes.getStore();
+  if (!probes) return attemptRequest<T>(apiKey, method, path, body, retries, baseUrl, timeoutMs);
+
+  const existing = probes.get(apiKey);
+  if (existing) {
+    if (await existing) {
+      throw new AssemblyAIError("AssemblyAI rejected the API key (401).", 401);
+    }
+    return attemptRequest<T>(apiKey, method, path, body, retries, baseUrl, timeoutMs);
+  }
+
+  let resolve!: (bad: boolean) => void;
+  probes.set(apiKey, new Promise<boolean>((r) => (resolve = r)));
+  try {
+    const result = await attemptRequest<T>(apiKey, method, path, body, retries, baseUrl, timeoutMs);
+    resolve(false);
+    return result;
+  } catch (err) {
+    resolve(err instanceof AssemblyAIError && err.status === 401);
+    throw err;
+  }
 }
 
 async function errorFromResponse(response: Response): Promise<AssemblyAIError> {
