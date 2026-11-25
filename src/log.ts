@@ -3,11 +3,8 @@ type LogEvent = Record<string, unknown> & {
   level?: "info" | "warn" | "error";
 };
 
-/** Longest string kept per log field. A caller controls some values (a bad
- * transcript_id can be megabytes); one request must not make one huge log line. */
 export const MAX_LOG_FIELD_CHARS = 256;
 
-/** Strings over the limit are cut, with the number of dropped characters. */
 export function capForLog(value: unknown, depth = 0): unknown {
   if (typeof value === "string") {
     return value.length > MAX_LOG_FIELD_CHARS
@@ -19,8 +16,6 @@ export function capForLog(value: unknown, depth = 0): unknown {
   return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, capForLog(v, depth + 1)]));
 }
 
-/** Stacks are worth more room than a field, but they repeat the message, so
- * they need a cap too. */
 export const MAX_LOG_STACK_CHARS = 2048;
 
 function capText(value: string | undefined, max: number): string | undefined {
@@ -42,11 +37,7 @@ export function log(event: LogEvent) {
   );
 }
 
-/**
- * Upstream error text is logged verbatim, and some API errors can echo request
- * values. Strip anything that could be customer data before it reaches logs:
- * URLs (audio links, webhook targets) and long opaque tokens (keys, secrets).
- */
+/** Some API errors echo request values: strip URLs and long opaque tokens before they reach logs. */
 export function scrubForLog(text: string | undefined): string | undefined {
   if (!text) return text;
   return text
@@ -72,7 +63,6 @@ export function logError(event: Record<string, unknown>, error: unknown) {
 
 import { createHash } from "node:crypto";
 
-/** Short, non-reversible identifier for a Bearer token. Never logs the key. */
 export function keyHash(apiKey: string): string {
   return createHash("sha256").update(apiKey).digest("hex").slice(0, 12);
 }

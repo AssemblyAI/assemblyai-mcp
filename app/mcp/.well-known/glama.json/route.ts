@@ -1,4 +1,3 @@
-// Public proof of control for the existing Glama connector listing.
 // This exact route takes precedence over the authenticated MCP catch-all.
 export function GET() {
   return Response.json({
