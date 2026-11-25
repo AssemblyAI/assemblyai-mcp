@@ -2,8 +2,6 @@ import { AssemblyAIError, uploadFile } from "../../../src/assemblyai";
 import { log, logError, keyHash } from "../../../src/log";
 import { MAX_UPLOAD_BYTES, readUploadToken, uploadsConfigured } from "../../../src/upload-token";
 
-// Receives a local file from an agent (via the link from create_upload_url)
-// and forwards it to AssemblyAI's private /v2/upload. Nothing is stored here.
 export const maxDuration = 60;
 
 function json(status: number, body: unknown): Response {
@@ -21,10 +19,15 @@ async function handle(req: Request, { params }: { params: Promise<{ token: strin
     });
   }
 
-  // Vercel caps bodies at 4.5 MB, but other hosts don't: check the declared
-  // size first, then stop reading once the body passes the limit.
+  // Vercel caps bodies at 4.5 MB, but other hosts don't.
   if (Number(req.headers.get("content-length")) > MAX_UPLOAD_BYTES) return tooLarge();
-  const data = await readCapped(req, MAX_UPLOAD_BYTES);
+  let data: ArrayBuffer | undefined;
+  try {
+    data = await readCapped(req, MAX_UPLOAD_BYTES);
+  } catch (err) {
+    logError({ event: "upload_read_error", keyHash: keyHash(apiKey), status: "error" }, err);
+    return json(400, { error: "Upload interrupted or aborted by client." });
+  }
   if (!data) return tooLarge();
   if (data.byteLength === 0) {
     return json(400, { error: 'The request body is empty. Send the file with curl --data-binary @"/path/to/file".' });
@@ -54,7 +57,6 @@ function tooLarge(): Response {
   });
 }
 
-/** The request body, or undefined once it passes `max` bytes. */
 async function readCapped(req: Request, max: number): Promise<ArrayBuffer | undefined> {
   if (!req.body) return new ArrayBuffer(0);
   const reader = req.body.getReader();
@@ -79,7 +81,6 @@ async function readCapped(req: Request, max: number): Promise<ArrayBuffer | unde
   return out.buffer;
 }
 
-// AssemblyAI's 4xx passes through; network failures and its 5xx become 502.
 function uploadError(err: unknown): Response {
   const status = err instanceof AssemblyAIError ? err.status : 502;
   if (status === 401) return json(401, { error: "AssemblyAI rejected the API key (401)." });
