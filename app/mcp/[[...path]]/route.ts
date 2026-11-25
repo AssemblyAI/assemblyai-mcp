@@ -5,9 +5,7 @@ import { withJsonBodyCheck } from "../../../src/json-body";
 import { RESOURCE_METADATA_PATH, withOAuthExchange } from "../../../src/oauth";
 import { registerTools } from "../../../src/server";
 
-// Explicit endpoint paths so clients connect at /mcp directly.
-// mcp-handler matches req.url pathname exactly — see the docs MCP's
-// /docs route for the same pattern.
+// mcp-handler matches the req.url pathname exactly.
 const handler = createMcpHandler(
   (server) => {
     registerTools(server);
@@ -24,12 +22,6 @@ const handler = createMcpHandler(
 
 async function verifyToken(_req: Request, bearer?: string) {
   if (!bearer || bearer.trim().length === 0) return undefined;
-  // By here the Bearer is an API key: either the client pasted one, or the
-  // client sent an OAuth access token and `withOAuthExchange` got back an API
-  // key for it and put that in the Bearer instead. We do NOT validate the key
-  // ourselves — AssemblyAI's 401 surfaces a bad key directly to the agent.
-  // Returning an AuthInfo object means "Bearer is present, let the tool call
-  // the upstream API and let AssemblyAI decide."
   return {
     token: bearer.trim(),
     scopes: [],
@@ -37,8 +29,6 @@ async function verifyToken(_req: Request, bearer?: string) {
   };
 }
 
-// The clock starts before the OAuth exchange: tools get what is left of the
-// 60 s budget after sign-in (see src/deadline.ts).
 const authed = withRequestClock(
   withOAuthExchange(
     withMcpAuth(withJsonBodyCheck(handler), verifyToken, {
