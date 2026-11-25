@@ -1,26 +1,3 @@
-/**
- * Live "Sign in with AssemblyAI" test against a deployed server, the way an
- * MCP client does it, for deployments real clients can't reach yet (Vercel
- * previews behind Deployment Protection).
- *
- * Discovers everything from the server: the 401 challenge names the protected
- * resource metadata, which names the authorization server, whose metadata
- * names the registration, consent and token endpoints. Then it registers a
- * client, signs in through the browser (PKCE, loopback redirect, `resource`
- * set as MCP clients send it), and drives the MCP endpoint with the access
- * token. No AssemblyAI API key needed; no transcription credit spent.
- *
- * Usage:
- *   MCP_URL=https://<deployment>/mcp \
- *   VERCEL_PROTECTION_BYPASS=<secret> \
- *   npm run test:oauth
- *
- * VERCEL_PROTECTION_BYPASS is the deployment's "Protection Bypass for
- * Automation" secret, sent as `x-vercel-protection-bypass` on every request
- * to the deployment. Leave it unset for an unprotected deployment.
- * Tokens are held in memory only and never printed.
- */
-
 import { createHash, randomBytes } from "node:crypto";
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
@@ -45,7 +22,6 @@ function assert(name: string, condition: boolean, detail?: string) {
   }
 }
 
-/** Headers for requests to the deployment (not to the authorization server). */
 function deploymentHeaders(extra: Record<string, string> = {}): Record<string, string> {
   return BYPASS ? { "x-vercel-protection-bypass": BYPASS, ...extra } : extra;
 }
@@ -63,7 +39,6 @@ function openBrowser(url: string) {
   spawn(command, [url], { stdio: "ignore", detached: true }).unref();
 }
 
-/** Wait for the browser to come back to the loopback redirect. */
 function catchRedirect(state: string): Promise<{ code: string; iss: string | null }> {
   return new Promise((resolve, reject) => {
     const server = createServer((req, res) => {
@@ -91,7 +66,6 @@ async function run() {
   if (!MCP_URL) throw new Error("Set MCP_URL to the deployment's /mcp endpoint");
   console.log(`oauth preview test against ${MCP_URL}`);
 
-  // 1. The unauthenticated challenge.
   const unauthenticated = await fetch(MCP_URL, {
     method: "POST",
     headers: deploymentHeaders({ "Content-Type": "application/json", Accept: "application/json, text/event-stream" }),
@@ -102,7 +76,6 @@ async function run() {
   assert("1. no token is a 401 naming the resource metadata", unauthenticated.status === 401 && !!metadataUrl, `${unauthenticated.status} ${challenge}`);
   if (!metadataUrl) throw new Error("no resource_metadata in the challenge (protection bypass missing?)");
 
-  // 2. Protected resource metadata → authorization server.
   const resourceMetadata = await json(await fetch(metadataUrl, { headers: deploymentHeaders() }));
   const issuer = (resourceMetadata.authorization_servers as string[] | undefined)?.[0];
   const resource = resourceMetadata.resource as string | undefined;
@@ -111,7 +84,6 @@ async function run() {
   if (!issuer || !resource) throw new Error("no authorization server advertised");
   console.log(`    authorization server: ${issuer}`);
 
-  // 3. Authorization server metadata.
   const asMetadata = await json(await fetch(`${issuer}/.well-known/oauth-authorization-server`));
   const registrationEndpoint = asMetadata.registration_endpoint as string | undefined;
   const authorizationEndpoint = asMetadata.authorization_endpoint as string | undefined;
@@ -119,7 +91,6 @@ async function run() {
   assert("3. the authorization server supports registration", !!registrationEndpoint && !!authorizationEndpoint && !!tokenEndpoint);
   if (!registrationEndpoint || !authorizationEndpoint || !tokenEndpoint) throw new Error("incomplete authorization server metadata");
 
-  // 4. Dynamic client registration, as an MCP client does.
   const registration = await fetch(registrationEndpoint, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -135,7 +106,6 @@ async function run() {
   assert("4. the client registers", registration.ok && !!clientId, String(registration.status));
   if (!clientId) throw new Error("registration failed");
 
-  // 5. Sign in: PKCE through the consent page, with `resource` as MCP clients send it.
   const verifier = b64url(randomBytes(32));
   const state = b64url(randomBytes(16));
   const authorize = new URL(authorizationEndpoint);
@@ -177,10 +147,7 @@ async function run() {
   );
   if (!accessToken) throw new Error("no access token");
 
-  // 6. The MCP endpoint with the access token: tools list, and a tool call
-  // that reaches AssemblyAI with the exchanged key. A made-up transcript id
-  // comes back as AssemblyAI's "transcript id not found" (a 400) only for a
-  // key it accepted; a refused key, an outage or an empty reply look different.
+  // AssemblyAI answers a made-up transcript id with 400 "transcript id not found" only for a key it accepted.
   const client = new Client({ name: "oauth-preview-test", version: "0.0.0" });
   const transport = new StreamableHTTPClientTransport(new URL(MCP_URL), {
     requestInit: { headers: deploymentHeaders({ Authorization: `Bearer ${accessToken}` }) },
@@ -200,7 +167,6 @@ async function run() {
   );
   await client.close();
 
-  // 7. A tampered token is refused with a challenge, so a client signs in again.
   const tampered = `${accessToken.slice(0, -4)}AAAA`;
   const refused = await fetch(MCP_URL, {
     method: "POST",

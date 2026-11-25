@@ -10,24 +10,32 @@
     "build": "next build",
     "dev": "next dev",
     "start": "next start",
-    "test": "tsx src/smoke-test.ts && tsx src/oauth-test.ts",
+    "test": "tsx src/smoke-test.ts && tsx src/tts-test.ts && tsx src/oauth-test.ts && tsx src/request-timeout-test.ts",
     "test:live": "tsx src/live-test.ts",
     "test:oauth": "tsx src/oauth-preview-test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "1.26.0",
+    "@modelcontextprotocol/sdk": "1.32.2",
     "@vercel/oidc": "4.0.1",
     "mcp-handler": "1.1.0",
-    "next": "16.3.4",
+    "next": "16.4.5",
     "react": "19.2.5",
     "react-dom": "19.2.5",
-    "zod": "4.5.4"
+    "zod": "4.6.7"
   },
   "devDependencies": {
     "@types/node": "24.12.2",
     "@types/react": "19.2.14",
-    "tsx": "4.21.0",
+    "tsx": "4.23.15",
     "typescript": "6.0.2"
+  },
+  "overrides": {
+    "mcp-handler": {
+      "@modelcontextprotocol/sdk": "$@modelcontextprotocol/sdk"
+    },
+    "zod": "$zod",
+    "@hono/node-server": "2.1.6",
+    "hono": "4.13.16"
   }
 }

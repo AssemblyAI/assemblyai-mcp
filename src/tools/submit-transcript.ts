@@ -3,21 +3,157 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import { submitTranscript } from "../assemblyai";
 import { log, keyHash } from "../log";
+import { publicOrigin } from "../origin";
 import { speechUnderstandingSchema } from "../speech-understanding-schema";
-import { handleToolError } from "../tool-errors";
+import { handleToolError, requireApiKey } from "../tool-errors";
+import { uploadsConfigured } from "../upload-token";
 
 const ALLOWED_SCHEMES = new Set(["http:", "https:"]);
 
-function validateAudioUrl(audioUrl: string): void {
-  let parsed: URL;
+/** ChatGPT fills `_meta["openai/fileParams"]` params with this object; OpenAI's tool scan requires all four properties, with exactly download_url and file_id required. */
+const chatgptFileSchema = z
+  .looseObject({
+    download_url: z.string(),
+    file_id: z.string(),
+    mime_type: z.string().optional(),
+    file_name: z.string().optional(),
+  })
+  .describe(
+    "ChatGPT only: a file the user attached in ChatGPT, filled in by ChatGPT. " +
+      "Other clients: do not set this; pass a public URL in `audio_url`.",
+  );
+
+/** ChatGPT may send null or {} when nothing is attached. A preprocess, not `.nullish()`: OpenAI's tool scan needs a plain object schema. */
+const chatgptFileParam = z.preprocess((value) => {
+  if (value === null) return { download_url: "", file_id: "", _empty: "null" };
+  if (typeof value === "object" && !Array.isArray(value)) {
+    const file = value as { download_url?: unknown; file_id?: unknown };
+    if (file.download_url === undefined || file.download_url === null || file.download_url === "") {
+      return {
+        ...file,
+        download_url: "",
+        file_id: typeof file.file_id === "string" ? file.file_id : "",
+        _empty: "no_download_url",
+      };
+    }
+  }
+  return value;
+}, chatgptFileSchema.optional());
+
+class AudioSourceError extends Error {
+  constructor(
+    message: string,
+    readonly reason: "none" | "conflict" | "bad_url" | "upload_link",
+  ) {
+    super(message);
+  }
+}
+
+function isHttpUrl(value: string): boolean {
   try {
-    parsed = new URL(audioUrl);
+    const parsed = new URL(value);
+    return ALLOWED_SCHEMES.has(parsed.protocol) && Boolean(parsed.hostname);
   } catch {
-    throw new Error(`audio_url must be an http:// or https:// URL, got ${JSON.stringify(audioUrl)}`);
+    return false;
   }
-  if (!ALLOWED_SCHEMES.has(parsed.protocol) || !parsed.hostname) {
-    throw new Error(`audio_url must be an http:// or https:// URL, got ${JSON.stringify(audioUrl)}`);
+}
+
+function validateAudioUrl(audioUrl: string): void {
+  if (!isHttpUrl(audioUrl)) {
+    throw new AudioSourceError(
+      `audio_url must be an http:// or https:// URL, got ${JSON.stringify(audioUrl)}`,
+      "bad_url",
+    );
   }
+}
+
+const UPLOAD_LINK_PATH = /^\/upload\/[^/]+\/?$/i;
+/** Division slash, fraction slash, big solidus and big reverse solidus. */
+const SLASH_LOOKALIKES = /[\u2044\u2215\u29F8\u29F9]/g;
+
+/**
+ * Fold look-alike characters into ASCII so they can't hide the link (issue #107).
+ * NFKC turns fullwidth "／", "＼", "％" and letters into ASCII; the rest have no NFKC form.
+ */
+function fold(path: string): string {
+  return path.normalize("NFKC").replace(SLASH_LOOKALIKES, "/");
+}
+
+/** The path our router would see, or undefined if it won't decode to a fixed point. */
+function routedPath(rawPath: string): string | undefined {
+  let path = fold(rawPath);
+  for (let i = 0; ; i++) {
+    let decoded: string;
+    try {
+      // Fold before checking, so "％2F" becomes an escape we decode next round.
+      decoded = fold(decodeURIComponent(path));
+    } catch {
+      return undefined;
+    }
+    if (decoded === path) break;
+    if (i === 5) return undefined;
+    path = decoded;
+  }
+  const out: string[] = [];
+  for (const segment of path.replace(/\\/g, "/").split("/")) {
+    if (segment === "" || segment === ".") continue;
+    if (segment === "..") out.pop();
+    else out.push(segment);
+  }
+  return `/${out.join("/")}${path.endsWith("/") && out.length > 0 ? "/" : ""}`;
+}
+
+function isOwnUploadLink(audioUrl: string, ownHosts: ReadonlySet<string>): boolean {
+  try {
+    const parsed = new URL(audioUrl);
+    const hostname = parsed.hostname.replace(/\.+$/, "").toLowerCase();
+    let ours = false;
+    for (const own of ownHosts) {
+      if (hostname === own.replace(/:\d+$/, "").replace(/\.+$/, "")) ours = true;
+    }
+    if (!ours) return false;
+    const path = routedPath(parsed.pathname);
+    // A path on our host that won't decode cleanly: refuse it. Our hosts
+    // serve no audio, so this costs nothing real.
+    if (path === undefined) return true;
+    return UPLOAD_LINK_PATH.test(path);
+  } catch {
+    return false;
+  }
+}
+
+type Headers = Record<string, string | string[] | undefined> | undefined;
+
+function header(headers: Headers, name: string): string | undefined {
+  const value = headers?.[name];
+  return Array.isArray(value) ? value[0] : value;
+}
+
+function ownHostsOf(headers: Headers): Set<string> {
+  const requestHost = new URL(publicOrigin(header(headers, "x-forwarded-host"), header(headers, "host"))).host;
+  return new Set(["mcp.assemblyai.com", requestHost.toLowerCase()]);
+}
+
+function pickAudioUrl(
+  audioUrl: string | undefined,
+  fileUrl: string | undefined,
+): { url: string; source: "audio_url" | "file" } {
+  if (fileUrl) {
+    // ||-style check: models often fill an unused optional param with "".
+    if (!audioUrl || audioUrl === fileUrl || !isHttpUrl(audioUrl)) {
+      return { url: fileUrl, source: "file" };
+    }
+    throw new AudioSourceError(
+      "audio_url and file point to different files. Pass only one of them.",
+      "conflict",
+    );
+  }
+  if (audioUrl) return { url: audioUrl, source: "audio_url" };
+  throw new AudioSourceError(
+    "Pass audio_url: a public http(s) URL to the audio or video. " +
+      "(In ChatGPT, an attached file goes in file.)",
+    "none",
+  );
 }
 
 export function registerSubmitTranscript(server: McpServer): void {
@@ -26,7 +162,13 @@ export function registerSubmitTranscript(server: McpServer): void {
     {
       title: "Submit AssemblyAI Transcript",
       description:
-        "Submit a public audio or video URL to AssemblyAI for transcription. " +
+        "Submit a public audio or video URL to AssemblyAI for transcription: pass it in `audio_url`. " +
+        (uploadsConfigured()
+          ? "For a LOCAL file, first call `create_upload_url` and run its curl command, then pass the " +
+            "`upload_url` that the command prints here as `audio_url`. "
+          : "") +
+        "In ChatGPT only, a file the user attached can go in `file` instead. If both are set, the file is " +
+        "used, unless `audio_url` is a different http(s) URL: then the call is refused. " +
         "Returns immediately with a `transcript_id` and the current status (usually `queued`). " +
         "The caller MUST then call `get_transcript` with the returned id in a loop " +
         "(every ~3 seconds) until status becomes `completed` or `error`. " +
@@ -37,17 +179,26 @@ export function registerSubmitTranscript(server: McpServer): void {
         "transcript text. These features cannot be retro-fitted to a finished transcript — re-submit " +
         "with the flag set. For SUMMARIES do not set a flag here: after the transcript completes, " +
         "call the `summarize_transcript` tool.",
-      // Starts an async transcription job; AssemblyAI fetches the audio URL (external).
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
         idempotentHint: false,
         openWorldHint: true,
       },
+      _meta: { "openai/fileParams": ["file"] },
       inputSchema: {
         audio_url: z
           .string()
-          .describe("Public http(s) URL to an audio or video file."),
+          .optional()
+          .describe(
+            "Public http(s) URL to an audio or video file" +
+              (uploadsConfigured()
+                ? ", or, for a local file, the upload_url printed by create_upload_url's curl command " +
+                  "(not the /upload/ link itself)."
+                : ".") +
+              " Omit when `file` is set; if both are set, the file is used."
+          ),
+        file: chatgptFileParam,
         speaker_labels: z
           .boolean()
           .optional()
@@ -117,7 +268,7 @@ export function registerSubmitTranscript(server: McpServer): void {
           .optional()
           .describe(
             "Contextual DESCRIPTION of the audio (domain, scenario, or details — e.g. " +
-              "'Cardiology consultation about chest pain'). Improves accuracy on Universal-3.5 Pro. " +
+              "'Cardiology consultation about chest pain'). Improves accuracy on AssemblyAI-STT-3.7. " +
               "NOT instructions: formatting/behavioral commands are ignored."
           ),
         keyterms_prompt: z
@@ -125,7 +276,7 @@ export function registerSubmitTranscript(server: McpServer): void {
           .optional()
           .describe(
             "Names/brands/domain terms to boost recognition (exact spelling). " +
-              "Up to 1000 terms on universal-3-5-pro, 200 on universal-2. Complementary with prompt."
+              "Up to 1000 terms on assemblyai-stt-3-7, 200 on universal-2. Complementary with prompt."
           ),
         language_code: z
           .string()
@@ -135,7 +286,9 @@ export function registerSubmitTranscript(server: McpServer): void {
           .array(z.string())
           .optional()
           .describe(
-            "Languages for code-switching audio (must include 'en'), e.g. ['en','es']. universal-3-5-pro only."
+            "Languages for code-switching audio, e.g. ['en','es']. On assemblyai-stt-3-7, any number of supported languages " +
+              "(English not required); on universal-2, at most two, one of them 'en'. " +
+              "Don't combine with language_code or language_detection."
           ),
         language_detection: z
           .boolean()
@@ -148,20 +301,21 @@ export function registerSubmitTranscript(server: McpServer): void {
           .optional()
           .describe("Fail transcription if detected-language confidence is below this (0–1)."),
         speech_models: z
-          .array(z.enum(["universal-3-5-pro", "universal-2"]))
+          .array(z.enum(["assemblyai-stt-3-7", "universal-2", "universal-3-5-pro"]))
           .min(1)
           .optional()
           .describe(
-            "Priority-ordered model list; first supported model runs, falls back to next. " +
-              "Default ['universal-3-5-pro','universal-2'] is right for almost all cases. " +
-              "Must not be empty — omit the field entirely to use the default."
+            "Priority-ordered model list. Default ['assemblyai-stt-3-7','universal-2'] (AssemblyAI-STT-3.7, with Universal-2 " +
+              "for languages 3.7 doesn't support) is right for almost all cases. 'assemblyai-stt-3-7' runs for every " +
+              "language it supports wherever it appears in the list, and keeps disfluencies (filler words) by default. " +
+              "'universal-3-5-pro' is deprecated. Must not be empty — omit the field entirely to use the default."
           ),
         temperature: z
           .number()
           .min(0)
           .max(1)
           .optional()
-          .describe("Sampling randomness 0–1. universal-3-5-pro only. Leave unset normally."),
+          .describe("Sampling randomness 0–1. Leave unset normally."),
         filter_profanity: z
           .boolean()
           .optional()
@@ -214,7 +368,10 @@ export function registerSubmitTranscript(server: McpServer): void {
         disfluencies: z
           .boolean()
           .optional()
-          .describe("Keep filler words ('um', 'uh') in the transcript."),
+          .describe(
+            "Keep filler words ('um', 'uh') in the transcript. Defaults to true with assemblyai-stt-3-7 (the default model), " +
+              "which also keeps repetitions and false starts; set false for a cleaner transcript."
+          ),
         audio_start_from: z
           .number()
           .int()
@@ -265,7 +422,7 @@ export function registerSubmitTranscript(server: McpServer): void {
           .looseObject({
             expected_languages: z.array(z.string()).optional().describe("Restrict detection to these codes."),
             fallback_language: z.string().optional().describe("Fallback code if detection fails."),
-            code_switching: z.boolean().optional().describe("Detect language switches (universal-2 only)."),
+            code_switching: z.boolean().optional().describe("Detect language switches (universal-2 only; assemblyai-stt-3-7 code-switches natively)."),
             code_switching_confidence_threshold: z.number().min(0).max(1).optional(),
             localization: z
               .array(z.string())
@@ -321,16 +478,32 @@ export function registerSubmitTranscript(server: McpServer): void {
     },
     async (args, extra) => {
       const start = Date.now();
-      const apiKey = extra.authInfo?.token;
-      if (!apiKey) {
-        throw new Error(
-          "No AssemblyAI API key in request context. Configure your AssemblyAI API key " +
-            "as the Bearer token in your MCP client connection."
-        );
-      }
+      const apiKey = requireApiKey(extra);
 
+      let audioUrl: string;
+      const fileUrl = args.file?.download_url || undefined;
+      const sent = fileUrl ? (args.audio_url ? "both" : "file") : args.audio_url ? "audio_url" : "none";
+      // `file` is a loose object: log fixed categories only, never a caller-set `_empty`.
+      const fileParam = !args.file
+        ? "absent"
+        : fileUrl
+          ? "set"
+          : args.file._empty === "null"
+            ? "null"
+            : "no_download_url";
+      let source: "audio_url" | "file";
       try {
-        validateAudioUrl(args.audio_url);
+        ({ url: audioUrl, source } = pickAudioUrl(args.audio_url, fileUrl));
+        validateAudioUrl(audioUrl);
+        // Do not echo our upload link: its token can upload into the user's account.
+        if (isOwnUploadLink(audioUrl, ownHostsOf(extra.requestInfo?.headers))) {
+          throw new AudioSourceError(
+            "That is the upload link from create_upload_url, not the uploaded file. " +
+              "Run the curl command it gave you with the file path, then pass the `upload_url` " +
+              "that the command prints as audio_url.",
+            "upload_link",
+          );
+        }
       } catch (err) {
         log({
           event: "bad_audio_url",
@@ -338,18 +511,32 @@ export function registerSubmitTranscript(server: McpServer): void {
           keyHash: keyHash(apiKey),
           latencyMs: Date.now() - start,
           status: "error",
+          sent,
+          file_param: fileParam,
+          reason: err instanceof AudioSourceError ? err.reason : "unknown",
         });
         throw err;
       }
 
       try {
-        if (!args.redact_pii && (args.redact_pii_policies || args.redact_pii_sub)) {
+        const needsRedactPii = (
+          [
+            "redact_pii_policies",
+            "redact_pii_sub",
+            "redact_pii_audio",
+            "redact_pii_audio_quality",
+            "redact_pii_audio_options",
+            "redact_pii_return_unredacted",
+            "redact_static_entities",
+          ] as const
+        ).filter((k) => args[k]);
+        if (!args.redact_pii && needsRedactPii.length > 0) {
           throw new Error(
-            "redact_pii_policies/redact_pii_sub require redact_pii: true. Set redact_pii to enable redaction."
+            `${needsRedactPii.join(", ")} require redact_pii: true. Set redact_pii to enable redaction.`
           );
         }
-        const { audio_url, summarization: _ignored, ...rest } = args;
-        const record = await submitTranscript(apiKey, { audio_url, ...rest });
+        const { audio_url: _url, file: _file, summarization: _ignored, ...rest } = args;
+        const record = await submitTranscript(apiKey, { audio_url: audioUrl, ...rest });
         log({
           event: "tool_call",
           tool: "submit_transcript",
@@ -357,6 +544,9 @@ export function registerSubmitTranscript(server: McpServer): void {
           transcript_id: record.id,
           status: "success",
           latencyMs: Date.now() - start,
+          sent,
+          file_param: fileParam,
+          source,
         });
         return {
           content: [
@@ -370,6 +560,7 @@ export function registerSubmitTranscript(server: McpServer): void {
           structuredContent: {
             transcript_id: record.id,
             status: record.status,
+            next_step: "Call get_transcript with this transcript_id every ~3s until status is completed or error.",
           },
         };
       } catch (err) {

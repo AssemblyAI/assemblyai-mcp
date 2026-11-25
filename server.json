@@ -1,0 +1,18 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "com.assemblyai/mcp",
+  "title": "AssemblyAI",
+  "description": "Transcribe, summarize and analyze audio with AssemblyAI speech-to-text and Speech Understanding.",
+  "websiteUrl": "https://www.assemblyai.com/docs/mcp-server",
+  "repository": {
+    "url": "https://github.com/AssemblyAI/assemblyai-mcp",
+    "source": "github"
+  },
+  "version": "1.0.0",
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://mcp.assemblyai.com/mcp"
+    }
+  ]
+}
