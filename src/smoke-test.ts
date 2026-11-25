@@ -1266,8 +1266,8 @@ async function run() {
     for (const t of tools) {
       const a = t.annotations ?? {};
       assert(
-        `43. ${t.name} has a title and readOnlyHint/destructiveHint`,
-        Boolean(t.title) && (typeof a.readOnlyHint === "boolean" || typeof a.destructiveHint === "boolean"),
+        `43. ${t.name} has a title and explicit boolean behavior hints`,
+        Boolean(t.title) && [a.readOnlyHint, a.destructiveHint, a.openWorldHint].every((hint) => typeof hint === "boolean"),
         JSON.stringify({ title: t.title, annotations: t.annotations })
       );
     }
@@ -1277,8 +1277,8 @@ async function run() {
       JSON.stringify(byName.delete_transcript?.annotations)
     );
     assert(
-      "43. get_transcript is marked read-only",
-      byName.get_transcript?.annotations?.readOnlyHint === true,
+      "43. get_transcript is read-only and explicitly non-destructive",
+      byName.get_transcript?.annotations?.readOnlyHint === true && byName.get_transcript?.annotations?.destructiveHint === false,
       JSON.stringify(byName.get_transcript?.annotations)
     );
     // Billable LLM Gateway calls must not claim read-only, or clients run them without asking (issue #100).
