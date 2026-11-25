@@ -2211,6 +2211,87 @@ async function run() {
       assert(`64. ${name}("..") throws with no fetch`, threw && calls.length === 0);
     }
   }
+  // #84. Precise timestamp evidence is additive to the existing summaries.
+  await withClientServer(async (client) => {
+    const id = "55517222-f677-48a6-9287-39c0aafd9ac1";
+    const record = {
+      id, status: "completed",
+      entities: [
+        { entity_type: "person_name", text: "Ada", start: 0, end: 250 },
+        { entity_type: "location", text: "London", start: 61234, end: 62999 },
+      ],
+      auto_highlights_result: { results: [
+        { text: "second", count: 1, rank: 1, timestamps: [{ start: 90000, end: 90500 }] },
+        { text: "key phrase", count: 2, rank: 2, timestamps: [{ start: 0, end: 250 }, { start: 61234, end: 62999 }] },
+      ] },
+      content_safety_labels: {
+        summary: { violence: 0.9 },
+        results: [
+          { text: "first segment", labels: [{ label: "violence", confidence: 0.9 }], timestamp: { start: 0, end: 250 } },
+          { text: "second segment", labels: [{ label: "violence", confidence: 0.8 }], timestamp: { start: 61234, end: 62999 } },
+        ],
+      },
+    };
+    resetMock([jsonResponse(200, record)]);
+    const result = await callTool(client, "get_transcript", { transcript_id: id }, "k");
+    const text = result.content?.[0]?.text ?? "";
+    assert("#84 legacy entities are unchanged", text.includes("--- entities ---\nperson_name: Ada\nlocation: London"));
+    assert("#84 legacy highlights retain rank order and counts",
+      text.includes('--- highlights (key phrases; count = occurrences) ---\n2× "key phrase"\n1× "second"'));
+    assert("#84 legacy safety summary is unchanged",
+      text.includes("--- content_safety (label: confidence 0–1) ---\nviolence: 0.90"));
+    for (const [header, evidence] of [
+      ["entity_evidence", [
+        "person_name: Ada @ 0:00–0:00 (start=0ms end=250ms from audio start)",
+        "location: London @ 1:01–1:02 (start=61234ms end=62999ms from audio start)",
+      ]],
+      ["highlight_evidence", [
+        '"key phrase" @ 0:00–0:00 (start=0ms end=250ms from audio start)',
+        '"key phrase" @ 1:01–1:02 (start=61234ms end=62999ms from audio start)',
+        '"second" @ 1:30–1:30 (start=90000ms end=90500ms from audio start)',
+      ]],
+      ["content_safety_evidence", [
+        "0:00–0:00 (start=0ms end=250ms from audio start) [violence: 0.90]: first segment",
+        "1:01–1:02 (start=61234ms end=62999ms from audio start) [violence: 0.80]: second segment",
+      ]],
+    ] as const) {
+      assert(`#84 ${header}: all precise ranges and labels render`,
+        !result.isError && text.includes(`--- ${header} ---\n${evidence.join("\n")}`), text);
+    }
+    assert("#84 structured evidence is unchanged",
+      ["entities", "auto_highlights_result", "content_safety_labels"].every((key) =>
+        JSON.stringify(result.structuredContent?.[key]) === JSON.stringify(record[key as keyof typeof record])));
+
+    for (const range of [undefined, null, {}, { start: 0 }, { start: "0", end: 250 },
+      { start: -1, end: 250 }, { start: 250, end: 0 }, { start: null, end: 250 },
+      { start: NaN, end: Infinity }]) {
+      resetMock([jsonResponse(200, {
+        id, status: "completed",
+        entities: [{ entity_type: "person_name", text: "Ada", ...(range ?? {}) }],
+        auto_highlights_result: { results: [{ count: 1, rank: 1, text: "key phrase", timestamps: [range] }] },
+        content_safety_labels: { summary: { violence: 0.9 }, results: [{ text: "segment", timestamp: range }] },
+      })]);
+      const r = await callTool(client, "get_transcript", { transcript_id: id }, "k");
+      const output = r.content?.[0]?.text ?? "";
+      assert(`#84 malformed/absent range ${JSON.stringify(range)} is not fabricated`,
+        !r.isError && !output.includes("_evidence ---") && !output.includes("NaN") &&
+        output.includes("person_name: Ada") && output.includes('1× "key phrase"') && output.includes("violence: 0.90"));
+    }
+    for (const timestamps of [undefined, null, "invalid", [], [null, { start: 0, end: 0 }]]) {
+      resetMock([jsonResponse(200, { id, status: "completed",
+        auto_highlights_result: { results: [{ count: 1, rank: 1, text: "zero", timestamps }] },
+        content_safety_labels: { results: [{ text: "zero segment", timestamp: { start: 0, end: 0 } }] },
+      })]);
+      const r = await callTool(client, "get_transcript", { transcript_id: id }, "k");
+      const output = r.content?.[0]?.text ?? "";
+      assert(`#84 timestamp collection ${JSON.stringify(timestamps)} is safe`,
+        !r.isError && output.includes("content_safety_evidence") && !output.includes("--- content_safety (") &&
+        output.includes("start=0ms end=0ms") &&
+        output.includes("highlight_evidence") === (Array.isArray(timestamps) && timestamps.length > 0),
+        output);
+    }
+  });
+
   // #83. Feature statuses must be visible to text-only clients.
   await withClientServer(async (client) => {
     const id = "55517222-f677-48a6-9287-39c0aafd9ac1";
