@@ -37,6 +37,7 @@ export function registerGetTranscript(server: McpServer): void {
           "they come per utterance with speaker_labels, otherwise as a top-level `words` list.",
       annotations: {
         readOnlyHint: true,
+        destructiveHint: false,
         openWorldHint: false,
       },
       inputSchema: {

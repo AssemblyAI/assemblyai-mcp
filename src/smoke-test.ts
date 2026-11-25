@@ -1266,8 +1266,8 @@ async function run() {
     for (const t of tools) {
       const a = t.annotations ?? {};
       assert(
-        `43. ${t.name} has a title and readOnlyHint/destructiveHint`,
-        Boolean(t.title) && (typeof a.readOnlyHint === "boolean" || typeof a.destructiveHint === "boolean"),
+        `43. ${t.name} has a title and explicit boolean behavior hints`,
+        Boolean(t.title) && [a.readOnlyHint, a.destructiveHint, a.openWorldHint].every((hint) => typeof hint === "boolean"),
         JSON.stringify({ title: t.title, annotations: t.annotations })
       );
     }
@@ -1280,6 +1280,11 @@ async function run() {
       assert(
         `43. ${name} is marked read-only`,
         byName[name]?.annotations?.readOnlyHint === true,
+        JSON.stringify(byName[name]?.annotations)
+      );
+      assert(
+        `43. ${name} is explicitly non-destructive`,
+        byName[name]?.annotations?.destructiveHint === false,
         JSON.stringify(byName[name]?.annotations)
       );
     }

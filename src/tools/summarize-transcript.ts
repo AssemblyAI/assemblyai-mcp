@@ -30,6 +30,7 @@ export function registerSummarizeTranscript(server: McpServer): void {
         "the freeform/custom-prompt option.",
       annotations: {
         readOnlyHint: true,
+        destructiveHint: false,
         openWorldHint: false,
       },
       inputSchema: {

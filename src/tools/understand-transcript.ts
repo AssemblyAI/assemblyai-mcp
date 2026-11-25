@@ -23,6 +23,7 @@ export function registerUnderstandTranscript(server: McpServer): void {
         "transcript was created with speaker_labels=true.",
       annotations: {
         readOnlyHint: true,
+        destructiveHint: false,
         openWorldHint: false,
       },
       inputSchema: {
