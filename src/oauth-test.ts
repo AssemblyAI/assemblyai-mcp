@@ -1,36 +1,3 @@
-/**
- * Offline tests for the OAuth exchange (`src/oauth.ts`), with a stubbed
- * exchange endpoint and service token. Run with `npm test`.
- *
- * Coverage:
- *   1. looksLikeAccessToken tells a JWT from an API key
- *   2. an API key passes through untouched; no exchange
- *   3. an access token is exchanged (both credentials sent) and the handler sees the key
- *   3b. a request that isn't this runtime's own Request class (Next's, on Vercel) still works
- *   3c. the success log names the connection and hashes, never the token or key
- *   3d. extra whitespace after "Bearer" still exchanges the token
- *   4. the key is cached per token for at most 5 minutes, and never past its rotation
- *   5. the cache never outlives the access token
- *   6. AssemblyAI's 401 → 401 with a challenge pointing at the resource metadata
- *   7. a 403 for a missing scope → 403 insufficient_scope; other 403s → 401
- *   8. 5xx, network errors, a missing or refused service token → 503, never 401
- *   8b. a successful exchange with no usable key (no body, JSON null) → 503
- *   8c. a stalled exchange gives up after its deadline → 503
- *   8d. a 401 whose body can't be read is an outage (503), not a refused token
- *   6b. a refusal whose detail isn't printable ASCII still answers its challenge
- *   9. no Bearer at all reaches the handler (withMcpAuth answers it)
- *  10. the protected resource metadata names the authorization server and scopes
- *  11. plainly fake tokens (unsigned, no exp, expired, junk) are refused with no upstream call (issue #44)
- *  12. a refused token is answered from memory on repeat, for a minute, then exchanged again
- *  13. one client IP gets at most MAX_EXCHANGES_PER_IP_PER_MINUTE upstream exchanges a minute → 429;
- *      other IPs and cached keys are not affected, and the window resets;
- *      13b. exchanges that return a key do not count, so many members behind one IP all sign in
- *  14. at most MAX_CONCURRENT_EXCHANGES exchanges are in flight at once → 429 for the rest;
- *      14b. timed-out exchanges free their slots; 14c. so does a stalled service-token lookup
- *  15. discovery follows RFC 9728 / RFC 6750 (issue #117): the metadata is also served at the path-aware
- *      /.well-known/oauth-protected-resource/mcp, and a 401 for a request with no Bearer names no error code
- */
-
 import { withMcpAuth } from "mcp-handler";
 
 import { GET as pathAwareResourceMetadata } from "../app/.well-known/oauth-protected-resource/mcp/route";
@@ -60,7 +27,6 @@ function assert(name: string, condition: boolean, detail?: string) {
 
 const NOW = Date.parse("2026-10-29T12:00:00Z");
 
-/** An unsigned JWT-shaped token; only its shape and `exp` matter here. */
 function accessToken(expMs = NOW + 8 * 60 * 60 * 1000, nonce = "a"): string {
   const part = (o: object) => Buffer.from(JSON.stringify(o)).toString("base64url");
   return `${part({ alg: "RS256" })}.${part({ exp: Math.floor(expMs / 1000), nonce })}.c2ln`;
@@ -87,7 +53,6 @@ function stub(
       const next = responses.shift();
       if (!next) throw new Error("unexpected exchange");
       if (next === "stall") {
-        // Never answers; only the request's abort signal ends it.
         return new Promise<Response>((_, reject) => {
           init?.signal?.addEventListener("abort", () => reject(init.signal?.reason));
         });
@@ -110,7 +75,6 @@ function keyResponse(apiKey: string, rotatesAt: string | null = "2026-11-10T12:0
   });
 }
 
-/** A handler that records the Bearer and body it was given. */
 function recorder() {
   const seen: Array<string | null> = [];
   const bodies: string[] = [];
@@ -164,9 +128,7 @@ async function run() {
   }
 
   {
-    // On Vercel the incoming request is Next's Request subclass from another
-    // copy of undici; `new Request(req, init)` throws on it. Stand in with an
-    // object that only has Request's public members.
+    // On Vercel the request is Next's Request subclass, and `new Request(req, init)` throws on it.
     clearExchangeCache();
     const { deps } = stub([keyResponse("connection-key")]);
     const { handler, seen, bodies } = recorder();
@@ -365,10 +327,7 @@ async function run() {
     const { deps } = stub(["stall"], { timeoutMs: 50 });
     const { handler, seen } = recorder();
     const started = Date.now();
-    // AbortSignal.timeout's timer doesn't keep Node alive (a server's open
-    // socket does), so the race's timer also holds the process open.
-    // The 2s race is the test's own limit: without a deadline it fails
-    // rather than hanging.
+    // AbortSignal.timeout's timer doesn't keep Node alive.
     let keepAlive: NodeJS.Timeout | undefined;
     const res = await Promise.race([
       withOAuthExchange(handler, deps)(mcpRequest(accessToken(undefined, "stall"))),
@@ -385,8 +344,6 @@ async function run() {
   }
 
   {
-    // The deadline firing mid-body, or the connection dropping, after a 401
-    // status line: the detail ("Unknown client"?) never arrived.
     clearExchangeCache();
     const brokenBody = new ReadableStream({
       start(controller) {
@@ -424,7 +381,6 @@ async function run() {
   }
 
 
-  /** A request from a given client IP, as Vercel's x-forwarded-for gives it. */
   const fromIp = (bearer: string, ip: string) => {
     const req = mcpRequest(bearer);
     const headers = new Headers(req.headers);
@@ -479,7 +435,6 @@ async function run() {
     clearExchangeCache();
     const n = MAX_EXCHANGES_PER_IP_PER_MINUTE;
     const refusal = () => Response.json({ detail: "Invalid access token" }, { status: 401 });
-    // n flood + 1 other IP + 1 after the window, then the good token's key, then fillers.
     const responses = [...Array.from({ length: n + 2 }, refusal), keyResponse("key-after-window"), ...Array.from({ length: n }, refusal)];
     const { deps, exchanges, advance } = stub(responses);
     const { handler } = recorder();
@@ -556,8 +511,6 @@ async function run() {
   }
 
   {
-    // 14b. The slots come back: after the stalled exchanges end, a new one
-    // reaches AssemblyAI instead of getting 429 (fails without inFlight--).
     clearExchangeCache();
     const c = MAX_CONCURRENT_EXCHANGES;
     const responses: Array<Response | "stall"> = [...Array.from({ length: c }, () => "stall" as const), keyResponse("key-after-stall")];
@@ -572,8 +525,6 @@ async function run() {
   }
 
   {
-    // 14c. A stalled service-token lookup is bound by the same deadline and
-    // frees its slot, so it can't fill every slot for good.
     clearExchangeCache();
     const c = MAX_CONCURRENT_EXCHANGES;
     let stall = true;
@@ -583,8 +534,6 @@ async function run() {
     });
     const { handler } = recorder();
     const wrapped = withOAuthExchange(handler, deps);
-    // Race a timer: without the deadline these never settle, and the test
-    // must fail rather than let Node exit quietly with nothing pending.
     let timer: ReturnType<typeof setTimeout> | undefined;
     const hung = new Promise<"hung">((resolve) => (timer = setTimeout(() => resolve("hung"), 2_000)));
     const stalled = await Promise.race([
@@ -602,7 +551,7 @@ async function run() {
     assert("14c. and frees its slot: the next exchange reaches AssemblyAI", next.status === 200 && exchanges.length === 1, `${next.status} ${exchanges.length}`);
   }
 
-  // 15. discovery follows RFC 9728 / RFC 6750 (issue #117)
+  // #117. Discovery follows RFC 9728 / RFC 6750.
   {
     const root = await resourceMetadata(new Request("https://mcp.example.com/.well-known/oauth-protected-resource")).text();
     const pathAware = pathAwareResourceMetadata(new Request("https://mcp.example.com/.well-known/oauth-protected-resource/mcp"));
