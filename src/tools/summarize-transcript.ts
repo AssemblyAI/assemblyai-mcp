@@ -29,7 +29,8 @@ export function registerSummarizeTranscript(server: McpServer): void {
         "`understand_transcript` tool (summarization / action_items features) instead — this tool is " +
         "the freeform/custom-prompt option.",
       annotations: {
-        readOnlyHint: true,
+        // Not read-only: every call is a billable LLM Gateway run, so clients should ask first (issue #100).
+        readOnlyHint: false,
         destructiveHint: false,
         openWorldHint: false,
       },

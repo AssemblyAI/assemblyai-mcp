@@ -68,17 +68,30 @@ function validateAudioUrl(audioUrl: string): void {
 }
 
 const UPLOAD_LINK_PATH = /^\/upload\/[^/]+\/?$/i;
+/** Division slash, fraction slash, big solidus and big reverse solidus. */
+const SLASH_LOOKALIKES = /[\u2044\u2215\u29F8\u29F9]/g;
 
+/**
+ * Fold look-alike characters into ASCII so they can't hide the link (issue #107).
+ * NFKC turns fullwidth "／", "＼", "％" and letters into ASCII; the rest have no NFKC form.
+ */
+function fold(path: string): string {
+  return path.normalize("NFKC").replace(SLASH_LOOKALIKES, "/");
+}
+
+/** The path our router would see, or undefined if it won't decode to a fixed point. */
 function routedPath(rawPath: string): string | undefined {
-  let path = rawPath;
-  for (let i = 0; i < 3; i++) {
+  let path = fold(rawPath);
+  for (let i = 0; ; i++) {
     let decoded: string;
     try {
-      decoded = decodeURIComponent(path);
+      // Fold before checking, so "％2F" becomes an escape we decode next round.
+      decoded = fold(decodeURIComponent(path));
     } catch {
       return undefined;
     }
     if (decoded === path) break;
+    if (i === 5) return undefined;
     path = decoded;
   }
   const out: string[] = [];
@@ -100,9 +113,9 @@ function isOwnUploadLink(audioUrl: string, ownHosts: ReadonlySet<string>): boole
     }
     if (!ours) return false;
     const path = routedPath(parsed.pathname);
-    // A path on our host that won't decode: refuse it if it could be the
-    // link. Our hosts serve no audio, so this costs nothing real.
-    if (path === undefined) return /upload/i.test(parsed.pathname);
+    // A path on our host that won't decode cleanly: refuse it. Our hosts
+    // serve no audio, so this costs nothing real.
+    if (path === undefined) return true;
     return UPLOAD_LINK_PATH.test(path);
   } catch {
     return false;

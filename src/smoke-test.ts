@@ -1276,15 +1276,16 @@ async function run() {
       byName.delete_transcript?.annotations?.destructiveHint === true,
       JSON.stringify(byName.delete_transcript?.annotations)
     );
-    for (const name of ["get_transcript", "summarize_transcript", "understand_transcript"]) {
+    assert(
+      "43. get_transcript is read-only and explicitly non-destructive",
+      byName.get_transcript?.annotations?.readOnlyHint === true && byName.get_transcript?.annotations?.destructiveHint === false,
+      JSON.stringify(byName.get_transcript?.annotations)
+    );
+    // Billable LLM Gateway calls must not claim read-only, or clients run them without asking (issue #100).
+    for (const name of ["summarize_transcript", "understand_transcript"]) {
       assert(
-        `43. ${name} is marked read-only`,
-        byName[name]?.annotations?.readOnlyHint === true,
-        JSON.stringify(byName[name]?.annotations)
-      );
-      assert(
-        `43. ${name} is explicitly non-destructive`,
-        byName[name]?.annotations?.destructiveHint === false,
+        `43. ${name} is not marked read-only, and not destructive`,
+        byName[name]?.annotations?.readOnlyHint === false && byName[name]?.annotations?.destructiveHint === false,
         JSON.stringify(byName[name]?.annotations)
       );
     }
@@ -1844,6 +1845,17 @@ async function run() {
       ["encoded backslash", "https://mcp.assemblyai.com/upload%5Ctok-SECRET-abc123"],
       ["encoded dot segment", "https://mcp.assemblyai.com/x/%2e%2e/upload/tok-SECRET-abc123"],
       ["undecodable path", "https://mcp.assemblyai.com/upload/tok-SECRET-abc123%"],
+      // Look-alike slashes (issue #107).
+      ["fullwidth solidus", "https://mcp.assemblyai.com/upload\uFF0Ftok-SECRET-abc123"],
+      ["encoded fullwidth solidus", "https://mcp.assemblyai.com/upload%EF%BC%8Ftok-SECRET-abc123"],
+      ["fullwidth reverse solidus", "https://mcp.assemblyai.com/upload\uFF3Ctok-SECRET-abc123"],
+      ["division slash", "https://mcp.assemblyai.com/upload\u2215tok-SECRET-abc123"],
+      ["fraction slash", "https://mcp.assemblyai.com/upload\u2044tok-SECRET-abc123"],
+      ["fullwidth letters", "https://mcp.assemblyai.com/\uFF55\uFF50\uFF4C\uFF4F\uFF41\uFF44/tok-SECRET-abc123"],
+      // Normalizing creates a new escape after a decode round (PR #121 review).
+      ["fullwidth percent escape", "https://mcp.assemblyai.com/upload\uFF052Ftok-SECRET-abc123"],
+      ["fullwidth letters on an undecodable path", "https://mcp.assemblyai.com/\uFF55\uFF50\uFF4C\uFF4F\uFF41\uFF44\uFF0Ftok-SECRET-abc123%"],
+      ["deeply stacked encoding", "https://mcp.assemblyai.com/upload%2525252525252Ftok-SECRET-abc123"],
     ]) {
       resetMock([]);
       const res = await callTool(client, "submit_transcript", { audio_url: variant }, "k");
@@ -1865,6 +1877,20 @@ async function run() {
       "55. the upload link passed via file.download_url is refused",
       viaFile.isError === true && calls.length === 0 && !(viaFile.content?.[0]?.text ?? "").includes("tok-SECRET"),
       `isError=${viaFile.isError} calls=${calls.length}`
+    );
+    resetMock([]);
+    const viaFileLookalike = await callTool(
+      client,
+      "submit_transcript",
+      { file: { download_url: "https://mcp.assemblyai.com/upload\uFF0Ftok-SECRET-abc123", file_id: "x" } },
+      "k"
+    );
+    assert(
+      "55. a fullwidth-slash upload link passed via file.download_url is refused",
+      viaFileLookalike.isError === true &&
+        calls.length === 0 &&
+        !(viaFileLookalike.content?.[0]?.text ?? "").includes("tok-SECRET"),
+      `isError=${viaFileLookalike.isError} calls=${calls.length}`
     );
   });
 

@@ -11,6 +11,11 @@ interface ToolErrorContext {
   errorEvent: string;
 }
 
+/** Shown on a 401 from AssemblyAI. It covers API-key users and OAuth (Claude.ai) users, who set no Bearer token. */
+export const REJECTED_KEY_MESSAGE =
+  "AssemblyAI rejected the API key (401). " +
+  "Check the Bearer token configured in your MCP client connection (or re-authenticate if connected via Claude.ai).";
+
 export function requireApiKey(extra: { authInfo?: { token: string } }): string {
   const apiKey = extra.authInfo?.token;
   if (!apiKey) {
@@ -33,10 +38,7 @@ export function handleToolError(err: unknown, ctx: ToolErrorContext): never {
 
   if (err instanceof AssemblyAIError && err.status === 401) {
     logError({ ...payload, event: "assemblyai_rejected_key" }, err);
-    throw new Error(
-      "AssemblyAI rejected the API key (401). " +
-        "Check the Bearer token configured in your MCP client connection (or re-authenticate if connected via Claude.ai)."
-    );
+    throw new Error(REJECTED_KEY_MESSAGE);
   }
   if (err instanceof AssemblyAIError && err.status === 404 && ctx.notFoundMessage) {
     logError({ ...payload, event: ctx.errorEvent }, err);
