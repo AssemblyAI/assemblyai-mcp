@@ -1,11 +1,4 @@
-/**
- * Thin wrapper around the AssemblyAI v2 REST API.
- *
- * Auth: AssemblyAI expects the raw API key in the `Authorization` header (no
- * `Bearer ` prefix). Each function takes `apiKey` as the first argument so the
- * client is stateless and request-scoped — the key comes from `withMcpAuth`'s
- * `extra.authInfo.token` and never lives in module state.
- */
+/** AssemblyAI expects the raw API key in `Authorization`, with no `Bearer ` prefix. */
 
 import type {
   SpeechUnderstandingResponse,
@@ -14,12 +7,12 @@ import type {
   AutoHighlightsResult,
 } from "./transcript-sections";
 import { isValidTranscriptId } from "./transcript-id";
+import { remainingMs, RETURN_RESERVE_MS } from "./deadline";
 
 const DEFAULT_BASE_URL =
   process.env.ASSEMBLYAI_BASE_URL ?? "https://api.assemblyai.com";
 
-/** PII categories redacted when redact_pii is enabled but no policies are given. */
-export const DEFAULT_REDACT_PII_POLICIES = [
+const DEFAULT_REDACT_PII_POLICIES = [
   "person_name",
   "phone_number",
   "email_address",
@@ -30,11 +23,7 @@ export const DEFAULT_REDACT_PII_POLICIES = [
 export class AssemblyAIError extends Error {
   status: number;
   transcriptId: string | undefined;
-  /**
-   * The reasons from an LLM Gateway error body (metadata.errors). They can
-   * echo caller input, so they are not part of `message`, which goes to the
-   * logs. handleToolError adds them only to the error the caller gets.
-   */
+  /** LLM Gateway reasons can echo caller input, so they stay out of `message`, which is logged. */
   detail: string | undefined;
 
   constructor(message: string, status: number, transcriptId?: string, detail?: string) {
@@ -46,23 +35,18 @@ export class AssemblyAIError extends Error {
   }
 }
 
-export interface TranscriptSubmitOptions {
+interface TranscriptSubmitOptions {
   audio_url: string;
-  // Established flags (behavior unchanged — sent only when true; redact_pii
-  // applies the server's default policies/sub).
   speaker_labels?: boolean;
   sentiment_analysis?: boolean;
   entity_detection?: boolean;
   redact_pii?: boolean;
   redact_pii_policies?: string[];
   redact_pii_sub?: "entity_name" | "hash";
-  // Verbatim/formatting toggles — both default true server-side.
   punctuate?: boolean;
   format_text?: boolean;
-  // Prompting (AssemblyAI-STT-3.7)
   prompt?: string;
   keyterms_prompt?: string[];
-  // Language
   language_code?: string;
   language_codes?: string[];
   language_detection?: boolean;
@@ -74,13 +58,10 @@ export interface TranscriptSubmitOptions {
     localization?: string[];
   };
   language_confidence_threshold?: number;
-  // Models
   // universal-3-5-pro is deprecated but still accepted.
   speech_models?: Array<"assemblyai-stt-3-7" | "universal-2" | "universal-3-5-pro">;
   temperature?: number;
-  // Diarization
   speaker_options?: { min_speakers_expected?: number; max_speakers_expected?: number };
-  // Guardrails
   filter_profanity?: boolean;
   speech_threshold?: number;
   content_safety?: boolean;
@@ -93,9 +74,7 @@ export interface TranscriptSubmitOptions {
   };
   redact_pii_return_unredacted?: boolean;
   redact_static_entities?: Record<string, string[]>;
-  // Speech Understanding (inline)
   speech_understanding?: { request: Record<string, unknown> };
-  // Other STT
   multichannel?: boolean;
   disfluencies?: boolean;
   custom_spelling?: Array<{ from: string[]; to: string }>;
@@ -105,7 +84,6 @@ export interface TranscriptSubmitOptions {
   remove_audio_tags?: "all" | "speaker";
   iab_categories?: boolean;
   auto_highlights?: boolean;
-  // Webhooks (pass-through parity; agent flows should poll instead)
   webhook_url?: string;
   webhook_auth_header_name?: string;
   webhook_auth_header_value?: string;
@@ -118,19 +96,15 @@ export interface TranscriptRecord {
   language_code?: string | null;
   language_confidence?: number | null;
   language_detection?: boolean | null;
-  /** Which model actually transcribed the audio (e.g. universal-2 after a language fallback). */
   speech_model_used?: string;
   audio_duration?: number;
-  /** Per-word timestamps for the whole transcript; the only word timings when speaker_labels is off. */
   words?: Array<{ text: string; start: number; end: number; confidence: number; speaker: string | null }>;
   utterances?: Array<{
     speaker: string;
     text: string;
     start: number;
     end: number;
-    /** Present when translation.match_original_utterance was requested. */
     translated_texts?: Record<string, string>;
-    /** Per-word timestamps. About 85% of a transcript's size, so get_transcript drops them unless asked. */
     words?: Array<{ text: string; start: number; end: number; confidence: number; speaker: string | null }>;
   }>;
   summary?: string;
@@ -150,20 +124,10 @@ export interface TranscriptRecord {
   iab_categories_result?: IabCategoriesResult;
   auto_highlights_result?: AutoHighlightsResult;
   unredacted_text?: string;
-  /** Echo of the request param — signals a redacted audio file exists. */
   redact_pii_audio?: boolean;
-  // Not yet observed in a live response — verify via test:live before relying on it (see PR #1 review).
   metadata?: { domain_used?: string | null; warnings?: Array<{ message: string }> };
 }
 
-/**
- * Options with special-cased handling above the generic copy loop in
- * submitTranscript (defaults, combined flags, truthy-only sends). Every
- * other TranscriptSubmitOptions key is copied verbatim into the request body
- * whenever it's defined — so a new pass-through API param needs only a zod
- * schema entry + an interface field here, never a third place to register
- * it (that third list — PASSTHROUGH_KEYS — used to drift from the other two).
- */
 const HANDLED_KEYS = new Set<keyof TranscriptSubmitOptions>([
   "audio_url",
   "speech_models",
@@ -181,9 +145,7 @@ export async function submitTranscript(
 ): Promise<TranscriptRecord> {
   const payload: Record<string, unknown> = {
     audio_url: options.audio_url,
-    // AssemblyAI-STT-3.7 for every language it supports, Universal-2 for the
-    // rest. Pin the priority list unless the caller overrides, so model
-    // selection doesn't drift with API-side defaults.
+    // Pin the model list so selection doesn't drift with API-side defaults.
     speech_models: options.speech_models ?? ["assemblyai-stt-3-7", "universal-2"],
   };
   if (options.speaker_labels) payload.speaker_labels = true;
@@ -198,17 +160,10 @@ export async function submitTranscript(
     if (HANDLED_KEYS.has(key as keyof TranscriptSubmitOptions)) continue;
     if (value !== undefined) payload[key] = value;
   }
-  // retries=1: POST /v2/transcript is a billable, non-idempotent create —
-  // retrying it on a transient 5xx would queue a second transcription and
-  // double-charge, unlike the read-only GETs.
+  // retries=1: POST /v2/transcript is billable and non-idempotent; a retry on 5xx could double-charge.
   return requestWithRetry<TranscriptRecord>(apiKey, "POST", "/v2/transcript", payload, 1);
 }
 
-/**
- * `/v2/transcript/<id>`, refusing an id that could leave that path ("..",
- * "/", "%2e" and the like; issue #73). The tool schemas already check the id;
- * this guards every other caller.
- */
 function transcriptPath(transcriptId: string): string {
   if (!isValidTranscriptId(transcriptId)) {
     throw new AssemblyAIError("Invalid transcript_id: use the id returned by submit_transcript.", 400);
@@ -227,7 +182,7 @@ export async function getTranscript(
   );
 }
 
-export interface RedactedAudioResponse {
+interface RedactedAudioResponse {
   status: string;
   redacted_audio_url?: string;
 }
@@ -236,10 +191,6 @@ export async function getRedactedAudio(
   apiKey: string,
   transcriptId: string
 ): Promise<RedactedAudioResponse> {
-  // retries=1: this is polled repeatedly from get_transcript's hot path
-  // (every ~3s until the redacted audio is ready); retrying each poll would
-  // multiply request volume and latency for a call that's cheap to just
-  // re-issue on the caller's next poll anyway.
   return requestWithRetry<RedactedAudioResponse>(
     apiKey,
     "GET",
@@ -253,10 +204,7 @@ export async function deleteTranscript(
   apiKey: string,
   transcriptId: string
 ): Promise<TranscriptRecord> {
-  // retries=1: DELETE is not idempotent from the caller's point of view — a
-  // retry after a successful-but-slow-to-respond delete would 404 on the
-  // already-deleted transcript and mislabel a successful deletion as a
-  // failure.
+  // retries=1: a retried DELETE after a slow success 404s and reports a successful deletion as a failure.
   return requestWithRetry<TranscriptRecord>(
     apiKey,
     "DELETE",
@@ -266,25 +214,17 @@ export async function deleteTranscript(
   );
 }
 
-// Below the upload route's 60 s maxDuration.
-export const UPLOAD_TIMEOUT_MS = 50_000;
+const UPLOAD_TIMEOUT_MS = 50_000;
 
-/**
- * Upload raw file bytes to AssemblyAI's private storage. The returned
- * upload_url only works with the same account's key, as an audio_url.
- * Not retried: the body is a one-shot upload, and a retry after a slow
- * success would just store the file twice.
- */
+/** Not retried: the body is a one-shot upload, and a retry after a slow success stores the file twice. */
 export async function uploadFile(
   apiKey: string,
-  data: ArrayBuffer,
-  baseUrl: string = DEFAULT_BASE_URL
+  data: ArrayBuffer
 ): Promise<{ upload_url: string }> {
-  const response = await fetch(`${baseUrl}/v2/upload`, {
+  const response = await fetch(`${DEFAULT_BASE_URL}/v2/upload`, {
     method: "POST",
     headers: { Authorization: apiKey, "Content-Type": "application/octet-stream" },
     body: data,
-    // A hung upstream becomes the route's own logged 502, not a platform 504.
     signal: AbortSignal.timeout(UPLOAD_TIMEOUT_MS),
   });
   if (!response.ok) {
@@ -293,62 +233,87 @@ export async function uploadFile(
   return (await response.json()) as { upload_url: string };
 }
 
+/** Below this much time left, do not start an attempt or retry: it could not finish. */
+const MIN_ATTEMPT_MS = 1_000;
+
+function timeoutError(method: "GET" | "POST" | "DELETE", timeoutMs: number): AssemblyAIError {
+  return new AssemblyAIError(
+    `AssemblyAI did not answer within ${Math.round(timeoutMs / 1000)} s. ` +
+      (method === "GET"
+        ? "This is usually temporary; try again."
+        : "The request may still have gone through, so repeating it could run it twice."),
+    504
+  );
+}
+
+/**
+ * One deadline covers all attempts, backoffs and body reads. By default it is
+ * what remains of the 60 s request budget (deadline.ts), minus the return
+ * reserve, so sign-in time counts. A timeout ends the call with a 504 and
+ * no retry: the deadline is spent. There is no backoff after the last attempt
+ * or when it would leave less than MIN_ATTEMPT_MS for the next attempt.
+ */
 export async function requestWithRetry<T>(
   apiKey: string,
   method: "GET" | "POST" | "DELETE",
   path: string,
   body?: unknown,
   retries = 3,
-  baseUrl: string = DEFAULT_BASE_URL
+  baseUrl: string = DEFAULT_BASE_URL,
+  timeoutMs: number = remainingMs() - RETURN_RESERVE_MS
 ): Promise<T> {
+  if (!(timeoutMs >= MIN_ATTEMPT_MS)) {
+    throw new AssemblyAIError(
+      "Not enough time left in this request to call AssemblyAI, so nothing was sent. Call the tool again.",
+      504
+    );
+  }
+  const deadline = Date.now() + timeoutMs;
+  const signal = AbortSignal.timeout(timeoutMs);
   let lastError: unknown;
+  let attempts = 0;
   for (let attempt = 0; attempt < retries; attempt++) {
+    if (attempt > 0) {
+      // Back off only between attempts, and only if the next one still fits.
+      const delayMs = 2 ** (attempt - 1) * 1000;
+      if (deadline - Date.now() < delayMs + MIN_ATTEMPT_MS) break;
+      await sleep(delayMs);
+    }
+    attempts++;
     let response: Response | undefined;
     let text: string;
     try {
       response = await fetch(`${baseUrl}${path}`, {
         method,
         headers: {
-          // No `Bearer ` prefix — AssemblyAI expects the raw key.
           Authorization: apiKey,
           ...(body ? { "Content-Type": "application/json" } : {}),
         },
         body: body ? JSON.stringify(body) : undefined,
+        signal,
       });
-      // fetch resolves at the headers: a dropped connection can still fail
-      // while reading either a successful body or an HTTP error body.
+      // fetch resolves at the headers, so a dropped connection can still fail while the body is read.
       text = await response.text();
     } catch (err) {
-      // A known 4xx remains non-retryable, even if its body was interrupted.
+      if (signal.aborted) throw timeoutError(method, timeoutMs);
       if (response && response.status >= 400 && response.status < 500) {
-        throw new AssemblyAIError(
-          `HTTP ${response.status}: failed to read AssemblyAI error response: ${String(err)}`,
-          502
-        );
+        throw new AssemblyAIError(`HTTP ${response.status}: failed to read AssemblyAI error response: ${String(err)}`, 502);
       }
       lastError = err;
-      await sleep(2 ** attempt * 1000);
       continue;
     }
 
     if (response.status >= 500) {
       lastError = errorFromText(response.status, text);
-      await sleep(2 ** attempt * 1000);
       continue;
     }
-
-    if (response.status >= 400) {
-      throw errorFromText(response.status, text);
-    }
-
-    // Parsing happens after the transport catch: complete but malformed JSON
-    // is not a transient body-stream failure and must not replay the request.
+    if (response.status >= 400) throw errorFromText(response.status, text);
     return JSON.parse(text) as T;
   }
 
   if (lastError instanceof AssemblyAIError) throw lastError;
   throw new AssemblyAIError(
-    `AssemblyAI request failed after ${retries} retries: ${String(lastError)}`,
+    `AssemblyAI request failed after ${attempts} attempt${attempts === 1 ? "" : "s"}: ${String(lastError)}`,
     502
   );
 }
@@ -363,9 +328,7 @@ function errorFromText(status: number, text: string): AssemblyAIError {
     const body = JSON.parse(text);
     for (const key of ["error", "message", "detail"] as const) {
       if (body && typeof body === "object" && body[key]) {
-        // The LLM Gateway puts the real reason in metadata.errors and only a
-        // generic "invalid request body" in message. Keep the reason, apart
-        // from the message (see AssemblyAIError.detail).
+        // The LLM Gateway puts the real reason in metadata.errors; message is only "invalid request body".
         const reasons = gatewayErrorReasons(body);
         return new AssemblyAIError(
           `HTTP ${status}: ${body[key]}`,
@@ -376,7 +339,6 @@ function errorFromText(status: number, text: string): AssemblyAIError {
       }
     }
   } catch {
-    // not JSON
   }
   return new AssemblyAIError(`HTTP ${status}: ${text.slice(0, 500)}`, status);
 }
@@ -385,7 +347,6 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-/** String reasons from an LLM Gateway error body's metadata.errors, capped. */
 function gatewayErrorReasons(body: unknown): string[] {
   const errors = (body as { metadata?: { errors?: unknown } })?.metadata?.errors;
   if (!Array.isArray(errors)) return [];

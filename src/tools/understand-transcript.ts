@@ -5,7 +5,7 @@ import { understandTranscript } from "../llm-gateway";
 import { speechUnderstandingSchema } from "../speech-understanding-schema";
 import { renderTranslations, renderTranslatedUtterances, renderSpeechUnderstanding } from "../transcript-sections";
 import { log, keyHash } from "../log";
-import { handleToolError } from "../tool-errors";
+import { handleToolError, requireApiKey } from "../tool-errors";
 import { transcriptIdSchema } from "../transcript-id";
 
 export function registerUnderstandTranscript(server: McpServer): void {
@@ -21,9 +21,10 @@ export function registerUnderstandTranscript(server: McpServer): void {
         "known before transcription, prefer passing speech_understanding to submit_transcript instead. " +
         "speaker_identification (and translation's match_original_utterance) only work if the " +
         "transcript was created with speaker_labels=true.",
-      // Runs Speech Understanding over a completed transcript; changes nothing.
       annotations: {
-        readOnlyHint: true,
+        // Not read-only: every call is a billable LLM Gateway run, so clients should ask first (issue #100).
+        readOnlyHint: false,
+        destructiveHint: false,
         openWorldHint: false,
       },
       inputSchema: {
@@ -36,13 +37,7 @@ export function registerUnderstandTranscript(server: McpServer): void {
     },
     async (args, extra) => {
       const start = Date.now();
-      const apiKey = extra.authInfo?.token;
-      if (!apiKey) {
-        throw new Error(
-          "No AssemblyAI API key in request context. Configure your AssemblyAI API key " +
-            "as the Bearer token in your MCP client connection (or re-authenticate if using Claude.ai)."
-        );
-      }
+      const apiKey = requireApiKey(extra);
 
       try {
         const response = await understandTranscript(apiKey, {
