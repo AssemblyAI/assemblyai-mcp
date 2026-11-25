@@ -1,12 +1,11 @@
 import { createMcpHandler, withMcpAuth } from "mcp-handler";
 
+import { withRequestClock } from "../../../src/deadline";
 import { withJsonBodyCheck } from "../../../src/json-body";
 import { RESOURCE_METADATA_PATH, withOAuthExchange } from "../../../src/oauth";
 import { registerTools } from "../../../src/server";
 
-// Explicit endpoint paths so clients connect at /mcp directly.
-// mcp-handler matches req.url pathname exactly — see the docs MCP's
-// /docs route for the same pattern.
+// mcp-handler matches the req.url pathname exactly.
 const handler = createMcpHandler(
   (server) => {
     registerTools(server);
@@ -16,18 +15,13 @@ const handler = createMcpHandler(
     streamableHttpEndpoint: "/mcp",
     sseEndpoint: "/mcp/sse",
     sseMessageEndpoint: "/mcp/message",
+    // Bounds mcp-handler's SSE wait only; Vercel's limit is the project default.
     maxDuration: 60,
   }
 );
 
 async function verifyToken(_req: Request, bearer?: string) {
   if (!bearer || bearer.trim().length === 0) return undefined;
-  // By here the Bearer is an API key: either the client pasted one, or the
-  // client sent an OAuth access token and `withOAuthExchange` got back an API
-  // key for it and put that in the Bearer instead. We do NOT validate the key
-  // ourselves — AssemblyAI's 401 surfaces a bad key directly to the agent.
-  // Returning an AuthInfo object means "Bearer is present, let the tool call
-  // the upstream API and let AssemblyAI decide."
   return {
     token: bearer.trim(),
     scopes: [],
@@ -35,11 +29,13 @@ async function verifyToken(_req: Request, bearer?: string) {
   };
 }
 
-const authed = withOAuthExchange(
-  withMcpAuth(withJsonBodyCheck(handler), verifyToken, {
-    required: true,
-    resourceMetadataPath: RESOURCE_METADATA_PATH,
-  })
+const authed = withRequestClock(
+  withOAuthExchange(
+    withMcpAuth(withJsonBodyCheck(handler), verifyToken, {
+      required: true,
+      resourceMetadataPath: RESOURCE_METADATA_PATH,
+    })
+  )
 );
 
 export { authed as GET, authed as POST, authed as DELETE };
