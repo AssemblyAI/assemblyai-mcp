@@ -10,6 +10,8 @@ import {
   renderTranslatedUtterances,
   renderSpeechUnderstanding,
   renderContentSafety,
+  renderContentSafetyEvidence,
+  renderEntityEvidence,
   renderTopics,
   renderHighlights,
   renderUnredactedText,
@@ -113,6 +115,8 @@ export function registerGetTranscript(server: McpServer): void {
           apiKey,
           start,
           transcriptId: args.transcript_id,
+          rateLimitMessage:
+            "Rate limited by AssemblyAI. Wait ~60 seconds before calling get_transcript again — much longer than the usual ~3 seconds.",
           errorEvent: "tool_error",
         });
       }
@@ -148,7 +152,7 @@ interface ShapedTranscript {
   redacted_audio_error?: string;
   /** Claude Code shows the model only structuredContent. */
   next_step?: string;
-  metadata?: { domain_used?: string | null; warnings?: Array<{ message: string }> };
+  metadata?: { domain_used?: string | null; warnings?: Array<string | { message: string }> };
 }
 
 function shape(record: TranscriptRecord, redactedAudioUrl?: string, includeWords = false): ShapedTranscript {
@@ -175,7 +179,24 @@ function shape(record: TranscriptRecord, redactedAudioUrl?: string, includeWords
     out.sentiment = record.sentiment_analysis_results;
   if (record.entities && record.entities.length > 0) out.entities = record.entities;
   if (record.translated_texts != null) out.translated_texts = record.translated_texts;
-  if (record.speech_understanding != null) out.speech_understanding = record.speech_understanding;
+  if (record.speech_understanding != null) {
+    const su = record.speech_understanding;
+    const formatting = su.response?.custom_formatting;
+    // Clone only the affected path: preserve every other SU field and never
+    // mutate the API response when applying the per-word opt-in.
+    out.speech_understanding = !includeWords && formatting?.formatted_utterances
+      ? {
+          ...su,
+          response: {
+            ...su.response,
+            custom_formatting: {
+              ...formatting,
+              formatted_utterances: formatting.formatted_utterances.map(({ words: _words, ...u }) => u),
+            },
+          },
+        }
+      : su;
+  }
   if (record.content_safety_labels != null) out.content_safety_labels = record.content_safety_labels;
   if (record.iab_categories_result != null) out.iab_categories_result = record.iab_categories_result;
   if (record.auto_highlights_result != null) out.auto_highlights_result = record.auto_highlights_result;
@@ -242,6 +263,7 @@ function formatTranscript(s: ShapedTranscript): string {
     for (const e of s.entities) {
       lines.push(`${e.entity_type}: ${e.text}`);
     }
+    lines.push(...renderEntityEvidence(s.entities));
   }
 
   if (s.summary) {
@@ -259,13 +281,25 @@ function formatTranscript(s: ShapedTranscript): string {
   if (s.speech_understanding?.response) {
     lines.push(...renderSpeechUnderstanding(s.speech_understanding.response));
   }
-  if (s.content_safety_labels?.summary && Object.keys(s.content_safety_labels.summary).length > 0) {
+  if (s.content_safety_labels && (
+    (s.content_safety_labels.status !== undefined && s.content_safety_labels.status !== "success") ||
+    (s.content_safety_labels.summary && Object.keys(s.content_safety_labels.summary).length > 0)
+  )) {
     lines.push(...renderContentSafety(s.content_safety_labels));
   }
-  if (s.iab_categories_result?.summary && Object.keys(s.iab_categories_result.summary).length > 0) {
+  if (s.content_safety_labels) {
+    lines.push(...renderContentSafetyEvidence(s.content_safety_labels));
+  }
+  if (s.iab_categories_result && (
+    (s.iab_categories_result.status !== undefined && s.iab_categories_result.status !== "success") ||
+    (s.iab_categories_result.summary && Object.keys(s.iab_categories_result.summary).length > 0)
+  )) {
     lines.push(...renderTopics(s.iab_categories_result));
   }
-  if (s.auto_highlights_result?.results && s.auto_highlights_result.results.length > 0) {
+  if (s.auto_highlights_result && (
+    (s.auto_highlights_result.status !== undefined && s.auto_highlights_result.status !== "success") ||
+    (s.auto_highlights_result.results && s.auto_highlights_result.results.length > 0)
+  )) {
     lines.push(...renderHighlights(s.auto_highlights_result));
   }
   if (s.unredacted_text) {
