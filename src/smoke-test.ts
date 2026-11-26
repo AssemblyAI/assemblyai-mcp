@@ -1,3 +1,4 @@
+
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -1016,6 +1017,54 @@ async function run() {
     assert(
       "31c. empty action_items.items renders header + (none found)",
       text.includes("--- action_items ---") && text.includes("(none found)"),
+      text
+    );
+  });
+
+  await withClientServer(async (client) => {
+    resetMock([
+      jsonResponse(200, {
+        id: "txn-su-ai",
+        status: "completed",
+        text: "meeting transcript",
+        audio_duration: 60,
+        speech_understanding: {
+          response: {
+            action_items: {
+              status: "success",
+              items: [
+                {
+                  action_item: "Full item",
+                  quote: "We need this done",
+                  timestamp: 12000,
+                },
+                {
+                  action_item: "Quote only",
+                  quote: "Just do it",
+                },
+                {
+                  action_item: "Timestamp only",
+                  timestamp: 30000,
+                },
+                {
+                  action_item: "Bare item",
+                },
+              ],
+            },
+          },
+        },
+      }),
+    ]);
+    const result = await callTool(client, "get_transcript", { transcript_id: "txn-su-ai" }, "k");
+    const text = result.content?.[0]?.text ?? "";
+    assert(
+      "31d. action items render quote and timestamp safely without undefined or NaN",
+      text.includes("- Full item (quote: \"We need this done\" @ 0:12)") &&
+        text.includes("- Quote only (quote: \"Just do it\")") &&
+        text.includes("- Timestamp only (@ 0:30)") &&
+        text.includes("- Bare item") &&
+        !text.includes("undefined") &&
+        !text.includes("NaN"),
       text
     );
   });
