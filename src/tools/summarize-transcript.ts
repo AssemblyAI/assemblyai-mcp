@@ -51,13 +51,17 @@ export function registerSummarizeTranscript(server: McpServer): void {
       const start = Date.now();
       const apiKey = requireApiKey(extra);
 
-      if (args.style === "custom" && !args.custom_prompt) {
+      // ||-style check: models often fill an unused optional param with "", and a
+      // blank custom_prompt would reach the gateway as a prompt with no instruction.
+      const customPrompt = args.custom_prompt?.trim() ? args.custom_prompt : undefined;
+
+      if (args.style === "custom" && !customPrompt) {
         throw new Error(
           "style='custom' requires a custom_prompt. Either provide custom_prompt or choose a built-in style (bullets, paragraph, headline, action_items)."
         );
       }
 
-      const prompt = args.custom_prompt ?? STYLE_PROMPTS[args.style === "custom" ? "bullets" : args.style];
+      const prompt = customPrompt ?? STYLE_PROMPTS[args.style === "custom" ? "bullets" : args.style];
 
       try {
         const summary = await summarizeViaLlmGateway(apiKey, {

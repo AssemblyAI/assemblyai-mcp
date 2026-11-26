@@ -10,8 +10,8 @@ interface SuChapter {
 
 interface SuActionItem {
   action_item: string;
-  quote: string;
-  timestamp: number;
+  quote?: string | null;
+  timestamp?: number | null;
 }
 
 export interface TranslatedUtterance {
@@ -45,23 +45,61 @@ export interface SpeechUnderstandingResponse {
 }
 
 export interface ContentSafetyLabels {
+  status?: string;
   summary?: Record<string, number>;
   severity_score_summary?: Record<string, { low?: number; medium?: number; high?: number }>;
+  results?: Array<{
+    text?: string;
+    timestamp?: { start?: number; end?: number };
+    labels?: Array<{ label: string; confidence: number }>;
+  }>;
 }
 
 export interface IabCategoriesResult {
+  status?: string;
   summary?: Record<string, number>;
 }
 
 export interface AutoHighlightsResult {
-  results?: Array<{ count: number; rank: number; text: string }>;
+  status?: string;
+  results?: Array<{ count: number; rank: number; text: string; timestamps?: Array<{ start?: number; end?: number }> }>;
 }
 
-export function formatMs(ms: number): string {
+export function formatMs(ms: number | null | undefined): string {
+  if (typeof ms !== "number" || !Number.isFinite(ms) || ms < 0) return "0:00";
   const totalSec = Math.floor(ms / 1000);
   const m = Math.floor(totalSec / 60);
   const s = totalSec % 60;
   return `${m}:${s.toString().padStart(2, "0")}`;
+}
+
+/** Add precise evidence without changing the legacy m:ss rendering. API
+ * payloads are not runtime-validated, so never fabricate a malformed range. */
+export function formatTimestampRange(start: unknown, end: unknown): string | undefined {
+  if (typeof start !== "number" || typeof end !== "number" ||
+      !Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end < start) return undefined;
+  return `${formatMs(start)}–${formatMs(end)} (start=${start}ms end=${end}ms from audio start)`;
+}
+
+export function renderEntityEvidence(entities: Array<{ text: string; entity_type: string; start: number; end: number }>): string[] {
+  const evidence: string[] = [];
+  for (const e of entities) {
+    const range = formatTimestampRange(e.start, e.end);
+    if (range) evidence.push(`${e.entity_type}: ${e.text} @ ${range}`);
+  }
+  return evidence.length ? ["", "--- entity_evidence ---", ...evidence] : [];
+}
+
+export function renderContentSafetyEvidence(labels: ContentSafetyLabels): string[] {
+  const evidence: string[] = [];
+  for (const r of Array.isArray(labels.results) ? labels.results : []) {
+    const range = formatTimestampRange(r?.timestamp?.start, r?.timestamp?.end);
+    if (!range) continue;
+    const categories = (Array.isArray(r.labels) ? r.labels : [])
+      .map((label) => `${label.label}: ${formatScore(label.confidence)}`).join(", ");
+    evidence.push(`${range}${categories ? ` [${categories}]` : ""}${r.text ? `: ${r.text}` : ""}`);
+  }
+  return evidence.length ? ["", "--- content_safety_evidence ---", ...evidence] : [];
 }
 
 export function renderTranslations(translatedTexts: Record<string, string>): string[] {
@@ -120,7 +158,19 @@ export function renderSuSummary(chapters: SuChapter[]): string[] {
 
 function renderActionItems(items: SuActionItem[]): string[] {
   const lines = ["", "--- action_items ---"];
-  for (const i of items) lines.push(`- ${i.action_item} (quote: "${i.quote}" @ ${formatMs(i.timestamp)})`);
+  for (const i of items) {
+    const hasQuote = typeof i.quote === "string" && i.quote.length > 0;
+    const hasTimestamp = typeof i.timestamp === "number" && Number.isFinite(i.timestamp);
+    let details = "";
+    if (hasQuote && hasTimestamp) {
+      details = ` (quote: "${i.quote}" @ ${formatMs(i.timestamp)})`;
+    } else if (hasQuote) {
+      details = ` (quote: "${i.quote}")`;
+    } else if (hasTimestamp) {
+      details = ` (@ ${formatMs(i.timestamp)})`;
+    }
+    lines.push(`- ${i.action_item}${details}`);
+  }
   return lines;
 }
 
@@ -203,6 +253,9 @@ function formatScore(value: unknown): string {
 }
 
 export function renderContentSafety(labels: ContentSafetyLabels): string[] {
+  if (labels.status !== undefined && labels.status !== "success") {
+    return ["", `(content_safety: ${labels.status})`];
+  }
   const lines = ["", "--- content_safety (label: confidence 0–1) ---"];
   for (const [label, confidence] of Object.entries(labels.summary ?? {})) {
     const sev = labels.severity_score_summary?.[label];
@@ -215,6 +268,9 @@ export function renderContentSafety(labels: ContentSafetyLabels): string[] {
 }
 
 export function renderTopics(result: IabCategoriesResult): string[] {
+  if (result.status !== undefined && result.status !== "success") {
+    return ["", `(topics: ${result.status})`];
+  }
   const lines = ["", "--- topics (IAB categories; relevance 0–1; top 10) ---"];
   const entries = Object.entries(result.summary ?? {})
     .sort((a, b) => b[1] - a[1])
@@ -224,9 +280,20 @@ export function renderTopics(result: IabCategoriesResult): string[] {
 }
 
 export function renderHighlights(result: AutoHighlightsResult): string[] {
+  if (result.status !== undefined && result.status !== "success") {
+    return ["", `(highlights: ${result.status})`];
+  }
   const lines = ["", "--- highlights (key phrases; count = occurrences) ---"];
   const results = [...(result.results ?? [])].sort((a, b) => b.rank - a.rank);
   for (const r of results) lines.push(`${r.count}× "${r.text}"`);
+  const evidence: string[] = [];
+  for (const r of results) {
+    for (const timestamp of Array.isArray(r.timestamps) ? r.timestamps : []) {
+      const range = formatTimestampRange(timestamp?.start, timestamp?.end);
+      if (range) evidence.push(`"${r.text}" @ ${range}`);
+    }
+  }
+  if (evidence.length) lines.push("", "--- highlight_evidence ---", ...evidence);
   return lines;
 }
 
@@ -238,8 +305,11 @@ export function renderRedactedAudio(url: string): string[] {
   return ["", "--- redacted_audio ---", url, "(link expires ~24 hours after transcription)"];
 }
 
-export function renderWarnings(warnings: Array<{ message: string }>): string[] {
+export function renderWarnings(warnings: Array<string | { message?: string }>): string[] {
   const lines = ["", "--- warnings (processing notes from AssemblyAI) ---"];
-  for (const w of warnings) lines.push(`- ${w.message}`);
+  for (const w of warnings) {
+    const text = typeof w === "string" ? w : (w?.message ?? String(w));
+    if (text) lines.push(`- ${text}`);
+  }
   return lines;
 }

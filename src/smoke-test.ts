@@ -1,3 +1,4 @@
+
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -300,6 +301,17 @@ async function run() {
   });
 
   await withClientServer(async (client) => {
+    resetMock([jsonResponse(429, { error: "rate limit exceeded" })]);
+    const result = await callTool(client, "get_transcript", { transcript_id: "txn-rl" }, "k");
+    const text = (result.content?.[0]?.text ?? "").toLowerCase();
+    assert(
+      "8b. 429 → rate limit message with a longer backoff than the ~3s poll",
+      result.isError === true && text.includes("rate limit") && text.includes("60"),
+      `isError=${result.isError} text=${text}`
+    );
+  });
+
+  await withClientServer(async (client) => {
     resetMock([jsonResponse(200, { id: "txn-s", status: "queued" })]);
     await callTool(
       client,
@@ -394,6 +406,24 @@ async function run() {
     );
     const text = result.content?.[0]?.text ?? "";
     assert("14. returns summary content", text.includes("point one"), text);
+  });
+
+  await withClientServer(async (client) => {
+    resetMock([jsonResponse(200, { choices: [{ message: { content: "custom summary" } }] })]);
+    await callTool(
+      client,
+      "summarize_transcript",
+      { transcript_id: "txn-ai", style: "custom", custom_prompt: "Summarize: {{ transcript }}" },
+      "k"
+    );
+    const body = JSON.parse(calls[0]?.body ?? "{}");
+    const content = body.messages?.[0]?.content ?? "";
+    const occurrences = (content.match(/\{\{ transcript \}\}/g) ?? []).length;
+    assert(
+      "14b. prompt does not duplicate {{ transcript }} tag when already present",
+      occurrences === 1 && content === "Summarize: {{ transcript }}",
+      content
+    );
   });
 
   await withClientServer(async (client) => {
@@ -768,6 +798,25 @@ async function run() {
 
   await withClientServer(async (client) => {
     resetMock([
+      jsonResponse(200, {
+        id: "txn-g2",
+        status: "completed",
+        text: "hi",
+        audio_duration: 3,
+        metadata: { domain_used: null, warnings: ["Universal-3 Pro fallback"] },
+      }),
+    ]);
+    const result = await callTool(client, "get_transcript", { transcript_id: "txn-g2" }, "k");
+    const text = result.content?.[0]?.text ?? "";
+    assert(
+      "24b. warnings section renders string array without undefined",
+      text.includes("--- warnings") && text.includes("- Universal-3 Pro fallback") && !text.includes("undefined"),
+      text
+    );
+  });
+
+  await withClientServer(async (client) => {
+    resetMock([
       jsonResponse(200, { id: "txn-ra", status: "completed", text: "hi", audio_duration: 3, redact_pii_audio: true }),
       jsonResponse(200, { status: "redacted_audio_ready", redacted_audio_url: "https://cdn.example/redacted.mp3" }),
     ]);
@@ -1016,6 +1065,54 @@ async function run() {
     assert(
       "31c. empty action_items.items renders header + (none found)",
       text.includes("--- action_items ---") && text.includes("(none found)"),
+      text
+    );
+  });
+
+  await withClientServer(async (client) => {
+    resetMock([
+      jsonResponse(200, {
+        id: "txn-su-ai",
+        status: "completed",
+        text: "meeting transcript",
+        audio_duration: 60,
+        speech_understanding: {
+          response: {
+            action_items: {
+              status: "success",
+              items: [
+                {
+                  action_item: "Full item",
+                  quote: "We need this done",
+                  timestamp: 12000,
+                },
+                {
+                  action_item: "Quote only",
+                  quote: "Just do it",
+                },
+                {
+                  action_item: "Timestamp only",
+                  timestamp: 30000,
+                },
+                {
+                  action_item: "Bare item",
+                },
+              ],
+            },
+          },
+        },
+      }),
+    ]);
+    const result = await callTool(client, "get_transcript", { transcript_id: "txn-su-ai" }, "k");
+    const text = result.content?.[0]?.text ?? "";
+    assert(
+      "31d. action items render quote and timestamp safely without undefined or NaN",
+      text.includes("- Full item (quote: \"We need this done\" @ 0:12)") &&
+        text.includes("- Quote only (quote: \"Just do it\")") &&
+        text.includes("- Timestamp only (@ 0:30)") &&
+        text.includes("- Bare item") &&
+        !text.includes("undefined") &&
+        !text.includes("NaN"),
       text
     );
   });
@@ -2254,6 +2351,128 @@ async function run() {
       assert(`64. ${name}("..") throws with no fetch`, threw && calls.length === 0);
     }
   }
+  // #84. Precise timestamp evidence is additive to the existing summaries.
+  await withClientServer(async (client) => {
+    const id = "55517222-f677-48a6-9287-39c0aafd9ac1";
+    const record = {
+      id, status: "completed",
+      entities: [
+        { entity_type: "person_name", text: "Ada", start: 0, end: 250 },
+        { entity_type: "location", text: "London", start: 61234, end: 62999 },
+      ],
+      auto_highlights_result: { results: [
+        { text: "second", count: 1, rank: 1, timestamps: [{ start: 90000, end: 90500 }] },
+        { text: "key phrase", count: 2, rank: 2, timestamps: [{ start: 0, end: 250 }, { start: 61234, end: 62999 }] },
+      ] },
+      content_safety_labels: {
+        summary: { violence: 0.9 },
+        results: [
+          { text: "first segment", labels: [{ label: "violence", confidence: 0.9 }], timestamp: { start: 0, end: 250 } },
+          { text: "second segment", labels: [{ label: "violence", confidence: 0.8 }], timestamp: { start: 61234, end: 62999 } },
+        ],
+      },
+    };
+    resetMock([jsonResponse(200, record)]);
+    const result = await callTool(client, "get_transcript", { transcript_id: id }, "k");
+    const text = result.content?.[0]?.text ?? "";
+    assert("#84 legacy entities are unchanged", text.includes("--- entities ---\nperson_name: Ada\nlocation: London"));
+    assert("#84 legacy highlights retain rank order and counts",
+      text.includes('--- highlights (key phrases; count = occurrences) ---\n2× "key phrase"\n1× "second"'));
+    assert("#84 legacy safety summary is unchanged",
+      text.includes("--- content_safety (label: confidence 0–1) ---\nviolence: 0.90"));
+    for (const [header, evidence] of [
+      ["entity_evidence", [
+        "person_name: Ada @ 0:00–0:00 (start=0ms end=250ms from audio start)",
+        "location: London @ 1:01–1:02 (start=61234ms end=62999ms from audio start)",
+      ]],
+      ["highlight_evidence", [
+        '"key phrase" @ 0:00–0:00 (start=0ms end=250ms from audio start)',
+        '"key phrase" @ 1:01–1:02 (start=61234ms end=62999ms from audio start)',
+        '"second" @ 1:30–1:30 (start=90000ms end=90500ms from audio start)',
+      ]],
+      ["content_safety_evidence", [
+        "0:00–0:00 (start=0ms end=250ms from audio start) [violence: 0.90]: first segment",
+        "1:01–1:02 (start=61234ms end=62999ms from audio start) [violence: 0.80]: second segment",
+      ]],
+    ] as const) {
+      assert(`#84 ${header}: all precise ranges and labels render`,
+        !result.isError && text.includes(`--- ${header} ---\n${evidence.join("\n")}`), text);
+    }
+    assert("#84 structured evidence is unchanged",
+      ["entities", "auto_highlights_result", "content_safety_labels"].every((key) =>
+        JSON.stringify(result.structuredContent?.[key]) === JSON.stringify(record[key as keyof typeof record])));
+
+    for (const range of [undefined, null, {}, { start: 0 }, { start: "0", end: 250 },
+      { start: -1, end: 250 }, { start: 250, end: 0 }, { start: null, end: 250 },
+      { start: NaN, end: Infinity }]) {
+      resetMock([jsonResponse(200, {
+        id, status: "completed",
+        entities: [{ entity_type: "person_name", text: "Ada", ...(range ?? {}) }],
+        auto_highlights_result: { results: [{ count: 1, rank: 1, text: "key phrase", timestamps: [range] }] },
+        content_safety_labels: { summary: { violence: 0.9 }, results: [{ text: "segment", timestamp: range }] },
+      })]);
+      const r = await callTool(client, "get_transcript", { transcript_id: id }, "k");
+      const output = r.content?.[0]?.text ?? "";
+      assert(`#84 malformed/absent range ${JSON.stringify(range)} is not fabricated`,
+        !r.isError && !output.includes("_evidence ---") && !output.includes("NaN") &&
+        output.includes("person_name: Ada") && output.includes('1× "key phrase"') && output.includes("violence: 0.90"));
+    }
+    for (const timestamps of [undefined, null, "invalid", [], [null, { start: 0, end: 0 }]]) {
+      resetMock([jsonResponse(200, { id, status: "completed",
+        auto_highlights_result: { results: [{ count: 1, rank: 1, text: "zero", timestamps }] },
+        content_safety_labels: { results: [{ text: "zero segment", timestamp: { start: 0, end: 0 } }] },
+      })]);
+      const r = await callTool(client, "get_transcript", { transcript_id: id }, "k");
+      const output = r.content?.[0]?.text ?? "";
+      assert(`#84 timestamp collection ${JSON.stringify(timestamps)} is safe`,
+        !r.isError && output.includes("content_safety_evidence") && !output.includes("--- content_safety (") &&
+        output.includes("start=0ms end=0ms") &&
+        output.includes("highlight_evidence") === (Array.isArray(timestamps) && timestamps.length > 0),
+        output);
+    }
+  });
+
+  // #83. Feature statuses must be visible to text-only clients.
+  await withClientServer(async (client) => {
+    const id = "55517222-f677-48a6-9287-39c0aafd9ac1";
+    for (const status of ["unavailable", "error", "success", undefined]) {
+      for (const populated of [false, true]) {
+        const features = {
+          content_safety_labels: { status, summary: populated ? { violence: 0.9 } : {} },
+          iab_categories_result: { status, summary: populated ? { Technology: 0.8 } : {} },
+          auto_highlights_result: { status, results: populated ? [{ count: 2, rank: 1, text: "key phrase" }] : [] },
+        };
+        resetMock([jsonResponse(200, { id, status: "completed", ...features })]);
+        const result = await callTool(client, "get_transcript", { transcript_id: id }, "k");
+        const text = result.content?.[0]?.text ?? "";
+        for (const [feature, header, line] of [
+          ["content_safety", "--- content_safety (label: confidence 0–1) ---", "violence: 0.90"],
+          ["topics", "--- topics (IAB categories; relevance 0–1; top 10) ---", "Technology: 0.80"],
+          ["highlights", "--- highlights (key phrases; count = occurrences) ---", '2× "key phrase"'],
+        ] as const) {
+          const unavailable = status !== undefined && status !== "success";
+          assert(`#83 ${feature} ${status} populated=${populated}: correct text`,
+            !result.isError && (unavailable ? text.includes(`(${feature}: ${status})`) && !text.includes(header)
+              : populated ? text.includes(header + "\n" + line) && !text.includes(`(${feature}:`)
+                : !text.includes(header) && !text.includes(`(${feature}:`)), text);
+        }
+        assert(`#83 ${status} populated=${populated}: structured data unchanged`,
+          Object.entries(features).every(([key, value]) =>
+            JSON.stringify(result.structuredContent?.[key]) === JSON.stringify(value)));
+      }
+    }
+    for (const value of [undefined, null]) {
+      resetMock([jsonResponse(200, { id, status: "completed", content_safety_labels: value,
+        iab_categories_result: value, auto_highlights_result: value })]);
+      const result = await callTool(client, "get_transcript", { transcript_id: id }, "k");
+      assert(`#83 ${value}: absent features remain silent`,
+        result.content?.[0]?.text === `status=completed transcript_id=${id}` &&
+        !("content_safety_labels" in (result.structuredContent ?? {})) &&
+        !("iab_categories_result" in (result.structuredContent ?? {})) &&
+        !("auto_highlights_result" in (result.structuredContent ?? {})));
+    }
+  });
+
   // #82. The formatted utterance word gate applies through the real handler,
   // and must not mutate an API record reused by another caller.
   await withClientServer(async (client) => {
@@ -2309,6 +2528,38 @@ async function run() {
     }
   });
   delete process.env.UPLOAD_TOKEN_SECRET;
+  // 65. a blank custom_prompt falls back to the style prompt instead of an empty instruction
+  for (const blank of ["", "   "]) {
+    await withClientServer(async (client) => {
+      resetMock([jsonResponse(200, { choices: [{ message: { content: "- point" } }] })]);
+      await callTool(
+        client,
+        "summarize_transcript",
+        { transcript_id: "txn-ai", style: "headline", custom_prompt: blank },
+        "k"
+      );
+      const content = JSON.parse(calls[0]?.body ?? "{}").messages?.[0]?.content ?? "";
+      assert(
+        `65. custom_prompt=${JSON.stringify(blank)} sends the headline style prompt`,
+        content.startsWith("Provide a single-sentence headline") && content.includes("{{ transcript }}"),
+        content
+      );
+    });
+    await withClientServer(async (client) => {
+      resetMock([]);
+      const result = await callTool(
+        client,
+        "summarize_transcript",
+        { transcript_id: "txn-ai", style: "custom", custom_prompt: blank },
+        "k"
+      );
+      assert(
+        `65. style=custom with custom_prompt=${JSON.stringify(blank)} errors before calling the gateway`,
+        result.isError === true && calls.length === 0,
+        `isError=${result.isError} calls=${calls.length}`
+      );
+    });
+  }
 
   globalThis.fetch = originalFetch;
 
