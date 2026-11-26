@@ -2091,6 +2091,51 @@ async function run() {
       "57. brackets inside a JSON string don't count toward nesting depth",
       bracketsInString.status === 200 && reached === 6
     );
+
+    // Issue #127: the size cap used to only apply when Content-Type said
+    // application/json, so any other declared type (or none at all) read an
+    // unbounded body into memory before anything rejected it.
+    const bigNonJson = await checked(post(big, "text/plain"));
+    assert(
+      "57. a declared-oversized body with a non-JSON Content-Type also gets 413, not passed to the handler",
+      bigNonJson.status === 413 && (await bigNonJson.json())?.error?.code === -32000 && reached === 6
+    );
+    // A string body gets Content-Type text/plain by default; bytes get none.
+    const noContentType = new Request("http://localhost/mcp", { method: "POST", body: new TextEncoder().encode(big) });
+    const headerAbsent = noContentType.headers.get("content-type") === null;
+    const bigNoContentType = await checked(noContentType);
+    assert(
+      "57. a declared-oversized body with no Content-Type header also gets 413",
+      headerAbsent && bigNoContentType.status === 413 && (await bigNoContentType.json())?.error?.code === -32000 && reached === 6,
+      `content-type absent=${headerAbsent} status=${bigNoContentType.status}`
+    );
+    let pulledNonJson = 0;
+    const chunkNonJson = new Uint8Array(1024 * 1024).fill(120);
+    const endlessNonJson = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulledNonJson++;
+        if (pulledNonJson > 50) controller.close();
+        else controller.enqueue(chunkNonJson);
+      },
+    });
+    const chunkedNonJson = await checked(
+      new Request("http://localhost/mcp", {
+        method: "POST",
+        headers: { "content-type": "text/plain" },
+        body: endlessNonJson,
+        duplex: "half",
+      } as RequestInit)
+    );
+    assert(
+      "57. a chunked non-JSON body with no Content-Length also stops being read once it passes the limit",
+      chunkedNonJson.status === 413 && pulledNonJson <= 8 && reached === 6,
+      `status=${chunkedNonJson.status} pulled=${pulledNonJson}`
+    );
+    const atLimitNonJson = await checked(post("y".repeat(MAX_BODY_BYTES - 20), "text/plain"));
+    assert(
+      "57. a non-JSON body just under the limit is still passed on, unparsed",
+      atLimitNonJson.status === 200 && reached === 7
+    );
   }
 
   {

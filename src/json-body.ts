@@ -54,10 +54,15 @@ function exceedsJsonDepth(text: string, limit: number): boolean {
   return false;
 }
 
-async function readCapped(req: Request): Promise<string | undefined> {
+/**
+ * Reads a request body, stopping as soon as it's bigger than MAX_BODY_BYTES.
+ * Returns the raw bytes: the body only needs UTF-8 decoding when it's
+ * actually going to be parsed as JSON, which the caller decides.
+ */
+async function readCappedBytes(req: Request): Promise<Buffer | undefined> {
   const declared = Number(req.headers.get("content-length"));
   if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) return undefined;
-  if (!req.body) return "";
+  if (!req.body) return Buffer.alloc(0);
   const reader = req.body.getReader();
   const chunks: Uint8Array[] = [];
   let total = 0;
@@ -72,20 +77,29 @@ async function readCapped(req: Request): Promise<string | undefined> {
     }
     chunks.push(value);
   }
-  return Buffer.concat(chunks).toString("utf8");
+  return Buffer.concat(chunks);
 }
 
-/** mcp-handler calls req.json() outside its try/catch, so invalid JSON hangs the request until the platform timeout. */
+/**
+ * mcp-handler calls req.json() outside its try/catch, so invalid JSON hangs
+ * the request until the platform timeout.
+ *
+ * The size cap below applies to every POST body, whatever Content-Type it
+ * declares. mcp-handler itself enforces no cap of its own: a body declared
+ * as, say, text/plain used to skip this check entirely and be read in full
+ * by the handler, so an unbounded POST could grow server memory with no
+ * valid credentials at all.
+ */
 export function withJsonBodyCheck(
   handler: (req: Request) => Promise<Response>,
 ): (req: Request) => Promise<Response> {
   return async (req) => {
+    if (req.method !== "POST") return handler(req);
+    const bytes = await readCappedBytes(req.clone());
+    if (bytes === undefined) return tooLarge();
     const contentType = req.headers.get("content-type") ?? "";
-    if (req.method === "POST" && contentType.includes("application/json")) {
-      const text = await readCapped(req.clone());
-      if (text === undefined) return tooLarge();
-      // Before JSON.parse (and well before mcp-handler/the SDK): see
-      // exceedsJsonDepth's own comment for why depth, not just size, matters.
+    if (contentType.includes("application/json")) {
+      const text = bytes.toString("utf8");
       if (exceedsJsonDepth(text, MAX_JSON_DEPTH)) return tooDeep();
       try {
         JSON.parse(text);
