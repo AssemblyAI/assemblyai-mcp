@@ -5,7 +5,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
 import { registerTools } from "./server";
 import { log, logError, MAX_LOG_FIELD_CHARS, MAX_LOG_STACK_CHARS } from "./log";
-import { MAX_BODY_BYTES, withJsonBodyCheck } from "./json-body";
+import { MAX_BODY_BYTES, MAX_JSON_DEPTH, withJsonBodyCheck } from "./json-body";
 import { renderSuSummary } from "./transcript-sections";
 
 interface FetchCall {
@@ -2059,13 +2059,46 @@ async function run() {
     const atLimit = await checked(post(JSON.stringify({ pad: "y".repeat(MAX_BODY_BYTES - 20) })));
     assert("57. a JSON body just under the limit is passed on", atLimit.status === 200 && reached === 4);
 
+    // A body nested ~100,000 levels deep (issue #126): JSON.parse accepts it,
+    // but the MCP SDK's own message validation throws an uncaught RangeError
+    // partway through and the request never gets a response. This must be
+    // refused here, before the handler (and the SDK) ever sees it.
+    const start = Date.now();
+    const pathological = await checked(post("[".repeat(100_000) + "]".repeat(100_000)));
+    const elapsedMs = Date.now() - start;
+    const pathologicalBody = await pathological.json();
+    assert(
+      "57. a body nested ~100,000 levels deep (#126) is refused quickly, not passed to the handler",
+      pathological.status === 400 && pathologicalBody?.error?.code === -32700 && reached === 4 && elapsedMs < 1000,
+      `status=${pathological.status} reached=${reached} elapsedMs=${elapsedMs} body=${JSON.stringify(pathologicalBody)}`
+    );
+
+    // The exact depth limit is a hard boundary, not approximate.
+    const atDepthLimit = await checked(post("[".repeat(MAX_JSON_DEPTH) + "]".repeat(MAX_JSON_DEPTH)));
+    assert("57. a body nested exactly at the depth limit is passed on", atDepthLimit.status === 200 && reached === 5);
+    const overDepthLimit = await checked(post("[".repeat(MAX_JSON_DEPTH + 1) + "]".repeat(MAX_JSON_DEPTH + 1)));
+    assert(
+      "57. a body nested one level past the limit is refused",
+      overDepthLimit.status === 400 && (await overDepthLimit.json())?.error?.code === -32700 && reached === 5
+    );
+
+    // Brackets inside a JSON string (e.g. transcript text, a custom prompt)
+    // are data, not structure, and must not count toward the depth.
+    const bracketsInString = await checked(
+      post(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ping", params: { note: "[".repeat(1000) } }))
+    );
+    assert(
+      "57. brackets inside a JSON string don't count toward nesting depth",
+      bracketsInString.status === 200 && reached === 6
+    );
+
     // Issue #127: the size cap used to only apply when Content-Type said
     // application/json, so any other declared type (or none at all) read an
     // unbounded body into memory before anything rejected it.
     const bigNonJson = await checked(post(big, "text/plain"));
     assert(
       "57. a declared-oversized body with a non-JSON Content-Type also gets 413, not passed to the handler",
-      bigNonJson.status === 413 && (await bigNonJson.json())?.error?.code === -32000 && reached === 4
+      bigNonJson.status === 413 && (await bigNonJson.json())?.error?.code === -32000 && reached === 6
     );
     // A string body gets Content-Type text/plain by default; bytes get none.
     const noContentType = new Request("http://localhost/mcp", { method: "POST", body: new TextEncoder().encode(big) });
@@ -2073,7 +2106,7 @@ async function run() {
     const bigNoContentType = await checked(noContentType);
     assert(
       "57. a declared-oversized body with no Content-Type header also gets 413",
-      headerAbsent && bigNoContentType.status === 413 && (await bigNoContentType.json())?.error?.code === -32000 && reached === 4,
+      headerAbsent && bigNoContentType.status === 413 && (await bigNoContentType.json())?.error?.code === -32000 && reached === 6,
       `content-type absent=${headerAbsent} status=${bigNoContentType.status}`
     );
     let pulledNonJson = 0;
@@ -2095,13 +2128,13 @@ async function run() {
     );
     assert(
       "57. a chunked non-JSON body with no Content-Length also stops being read once it passes the limit",
-      chunkedNonJson.status === 413 && pulledNonJson <= 8 && reached === 4,
+      chunkedNonJson.status === 413 && pulledNonJson <= 8 && reached === 6,
       `status=${chunkedNonJson.status} pulled=${pulledNonJson}`
     );
     const atLimitNonJson = await checked(post("y".repeat(MAX_BODY_BYTES - 20), "text/plain"));
     assert(
       "57. a non-JSON body just under the limit is still passed on, unparsed",
-      atLimitNonJson.status === 200 && reached === 5
+      atLimitNonJson.status === 200 && reached === 7
     );
   }
 
@@ -2318,13 +2351,25 @@ async function run() {
 
   const badIds = ["..", ".", "a/b", "%2e%2e", "", "abc?x=1", "../upload"];
   await withClientServer(async (client) => {
+    // Each tool's other arguments must be valid on their own, so a refusal
+    // can only come from the id. The control call below proves that.
+    const argsFor = (tool: string, id: string): Record<string, unknown> => {
+      const args: Record<string, unknown> = { transcript_id: id };
+      if (tool === "understand_transcript") args.speech_understanding = { request: { action_items: {} } };
+      if (tool === "summarize_transcript") args.style = "bullets";
+      return args;
+    };
     for (const tool of ["get_transcript", "delete_transcript", "understand_transcript", "summarize_transcript"]) {
+      resetMock([jsonResponse(200, { id: "x", status: "completed", text: "hi" })]);
+      const control = await callTool(client, tool, argsFor(tool, "5551722-f677-48a6-9287-39c0aafd9ac1"), "k");
+      assert(
+        `64. control: ${tool} with a valid id and the same arguments reaches AssemblyAI`,
+        calls.length > 0,
+        JSON.stringify(control.content)
+      );
       for (const id of badIds) {
         resetMock([jsonResponse(200, { id: "x", status: "completed", text: "hi" })]);
-        const args: Record<string, unknown> = { transcript_id: id };
-        if (tool === "understand_transcript") args.speech_understanding = { sentiment_analysis: true };
-        if (tool === "summarize_transcript") args.style = "bullets";
-        const r = await callTool(client, tool, args, "k");
+        const r = await callTool(client, tool, argsFor(tool, id), "k");
         assert(
           `64. ${tool} refuses transcript_id ${JSON.stringify(id)} with no fetch`,
           r.isError === true && calls.length === 0,
