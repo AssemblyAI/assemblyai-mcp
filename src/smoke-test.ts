@@ -2067,12 +2067,14 @@ async function run() {
       "57. a declared-oversized body with a non-JSON Content-Type also gets 413, not passed to the handler",
       bigNonJson.status === 413 && (await bigNonJson.json())?.error?.code === -32000 && reached === 4
     );
-    const bigNoContentType = await checked(
-      new Request("http://localhost/mcp", { method: "POST", body: big })
-    );
+    // A string body gets Content-Type text/plain by default; bytes get none.
+    const noContentType = new Request("http://localhost/mcp", { method: "POST", body: new TextEncoder().encode(big) });
+    const headerAbsent = noContentType.headers.get("content-type") === null;
+    const bigNoContentType = await checked(noContentType);
     assert(
       "57. a declared-oversized body with no Content-Type header also gets 413",
-      bigNoContentType.status === 413 && (await bigNoContentType.json())?.error?.code === -32000 && reached === 4
+      headerAbsent && bigNoContentType.status === 413 && (await bigNoContentType.json())?.error?.code === -32000 && reached === 4,
+      `content-type absent=${headerAbsent} status=${bigNoContentType.status}`
     );
     let pulledNonJson = 0;
     const chunkNonJson = new Uint8Array(1024 * 1024).fill(120);
