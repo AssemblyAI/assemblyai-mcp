@@ -2,7 +2,7 @@ import { createMcpHandler, withMcpAuth } from "mcp-handler";
 
 import { withRequestClock } from "../../../src/deadline";
 import { withJsonBodyCheck } from "../../../src/json-body";
-import { RESOURCE_METADATA_PATH, withOAuthExchange } from "../../../src/oauth";
+import { RESOURCE_METADATA_PATH, withMissingCredentialsChallenge, withOAuthExchange } from "../../../src/oauth";
 import { registerTools } from "../../../src/server";
 
 // mcp-handler matches the req.url pathname exactly.
@@ -33,10 +33,12 @@ async function verifyToken(_req: Request, bearer?: string) {
 
 const authed = withRequestClock(
   withOAuthExchange(
-    withMcpAuth(withJsonBodyCheck(handler), verifyToken, {
-      required: true,
-      resourceMetadataPath: RESOURCE_METADATA_PATH,
-    })
+    withMissingCredentialsChallenge(
+      withMcpAuth(withJsonBodyCheck(handler), verifyToken, {
+        required: true,
+        resourceMetadataPath: RESOURCE_METADATA_PATH,
+      })
+    )
   )
 );
 
