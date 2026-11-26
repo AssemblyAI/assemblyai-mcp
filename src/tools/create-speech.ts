@@ -301,6 +301,19 @@ export function registerCreateSpeech(server: McpServer): void {
           `-H ${powershellQuote(`Authorization: ${token}`)} -H 'Content-Type: application/json' ` +
           `--data-binary ${powershellQuote(`@${bodyFile}`)} ${powershellQuote(`${ttsBaseUrl()}/v1/speech`)}; ` +
           `Remove-Item ${powershellQuote(bodyFile)}`;
+        // The text result is shown to users, so it carries only a redacted placeholder.
+        const displayCommand =
+          `export TTS_TOKEN='<redacted>'; ` +
+          `curl -sS -o ${shellQuote(outputFile)} -w '%{http_code}\\n' ` +
+          `-H "Authorization: $TTS_TOKEN" -H 'Content-Type: application/json' ` +
+          `-d ${shellQuote(body)} ${shellQuote(`${ttsBaseUrl()}/v1/speech`)}`;
+        const displayCommandPowershell =
+          `$env:TTS_TOKEN='<redacted>'; ` +
+          `[IO.File]::WriteAllText((Join-Path $PWD ${powershellQuote(bodyFile)}), ${powershellQuote(body)}); ` +
+          `curl.exe -sS -o ${powershellQuote(outputFile)} -w '%{http_code}\\n' ` +
+          `-H "Authorization: $env:TTS_TOKEN" -H 'Content-Type: application/json' ` +
+          `--data-binary ${powershellQuote(`@${bodyFile}`)} ${powershellQuote(`${ttsBaseUrl()}/v1/speech`)}; ` +
+          `Remove-Item ${powershellQuote(bodyFile)}`;
         const unknownVoice = args.voice_id !== undefined && voiceLanguage === undefined;
         const voiceWarning = unknownVoice
           ? `voice_id "${args.voice_id}" is not one of the voices this tool knows. Use it only if the user gave it to you; ` +
@@ -316,7 +329,8 @@ export function registerCreateSpeech(server: McpServer): void {
           "401 means the command expired: call create_speech again. " +
           `If curl cannot connect (e.g. "Could not resolve host"), your environment blocks ${new URL(ttsBaseUrl()).host}: ` +
           'tell the user to allow that host, or use delivery "inline". ' +
-          "Do not show the command to the user or anyone else: it can create speech on the user's account until it expires.";
+          "Do not show the command or the token to the user or anyone else: it can create speech on the user's account until it expires. " +
+          "The text result shows the same command with the token redacted as $TTS_TOKEN; the working command and `authorization_token` live only in the structured result.";
         const expiresAt = new Date(Date.now() + SPEECH_TOKEN_TTL_SECONDS * 1000).toISOString();
         log({ ...base, event: "tool_call", status: "success", latencyMs: Date.now() - start });
         return {
@@ -324,7 +338,8 @@ export function registerCreateSpeech(server: McpServer): void {
             {
               type: "text" as const,
               text:
-                `Speech command created (valid for ${SPEECH_TOKEN_TTL_SECONDS / 60} minutes). Run it once, as it is. Each run bills again:\n\n${command}\n\n` +
+                `Speech command created (valid for ${SPEECH_TOKEN_TTL_SECONDS / 60} minutes). Set TTS_TOKEN from the structured result's ` +
+                `\`authorization_token\`. Run it once, as it is. Each run bills again:\n\n${displayCommand}\n\n` +
                 voiceWarning +
                 `It saves the audio as ${outputFile} in the current directory (change the -o path if the user wants another place) ` +
                 `and prints the HTTP status. 200: ${outputFile} is the audio, and ${chars} characters are billed to the user's ` +
@@ -332,17 +347,19 @@ export function registerCreateSpeech(server: McpServer): void {
                 "holds a JSON error instead of audio; read its `message`, delete the file, and follow the message. " +
                 "Do not run it again to retry or to check: it keeps working until it expires, and each run bills again. " +
                 "401 means the command expired: call create_speech again. " +
-                "In Windows PowerShell, run `command_powershell` from the structured result instead. " +
+                "In Windows PowerShell, set $env:TTS_TOKEN the same way and run this instead:\n\n" +
+                  `${displayCommandPowershell}\n\n` +
                 `If curl cannot connect at all (e.g. "Could not resolve host"), your environment blocks ` +
                 `${new URL(ttsBaseUrl()).host}: do not retry or work around it; tell the user to allow that host, ` +
                 'or use delivery "inline". ' +
-                "Do not show this command to anyone else: it can create speech on the user's account until it expires.",
+                "The token here is redacted; do not show the token or the working command to anyone else: it can create speech on the user's account until it expires.",
             },
           ],
           structuredContent: {
             delivery: "file",
             command,
             command_powershell: commandPowershell,
+            authorization_token: token,
             output_file: outputFile,
             expires_at: expiresAt,
             characters: chars,
