@@ -1,4 +1,4 @@
-import { AssemblyAIError } from "./assemblyai";
+import { AssemblyAIError, readErrorText } from "./assemblyai";
 
 export function ttsEnabled(): boolean {
   return process.env.TTS_ENABLED === "1";
@@ -96,7 +96,7 @@ function numberHeader(response: Response, name: string): number | undefined {
 }
 
 async function ttsError(response: Response): Promise<TtsError> {
-  const text = await response.text();
+  const text = await readErrorText(response);
   let code: string | undefined;
   let message = text.slice(0, 500);
   let retryAfter = numberHeader(response, "retry-after");
@@ -232,7 +232,7 @@ export async function createTtsToken(
 }
 
 async function errorMessage(response: Response): Promise<string> {
-  const text = await response.text();
+  const text = await readErrorText(response);
   try {
     const body = JSON.parse(text);
     for (const key of ["error", "message", "detail"] as const) {
