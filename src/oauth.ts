@@ -68,6 +68,7 @@ const cache = new Map<string, CachedKey>();
 type Refusal = Extract<ExchangeOutcome, { kind: "rejected" | "insufficient_scope" }>;
 const refused = new Map<string, { outcome: Refusal; until: number }>();
 const exchangesByIp = new Map<string, { windowStart: number; count: number }>();
+const inProgress = new Map<string, Promise<ExchangeOutcome>>();
 let inFlight = 0;
 
 function cacheKey(accessToken: string): string {
@@ -78,6 +79,7 @@ export function clearExchangeCache(): void {
   cache.clear();
   refused.clear();
   exchangesByIp.clear();
+  inProgress.clear();
   inFlight = 0;
 }
 
@@ -158,6 +160,9 @@ async function exchangeAccessToken(
     return { kind: "rejected", detail: local };
   }
 
+  const shared = inProgress.get(entry);
+  if (shared) return shared;
+
   const window = exchangesByIp.get(clientIp);
   const count = window && now - window.windowStart < RATE_WINDOW_MS ? window.count : 0;
   if (count >= MAX_EXCHANGES_PER_IP_PER_MINUTE) {
@@ -173,19 +178,24 @@ async function exchangeAccessToken(
   setBounded(exchangesByIp, clientIp, { windowStart, count: count + 1 }, MAX_TRACKED_IPS);
 
   inFlight++;
-  try {
-    const outcome = await exchangeUpstream(accessToken, entry, now, deps);
-    if (outcome.kind === "rejected" || outcome.kind === "insufficient_scope") {
-      setBounded(refused, entry, { outcome, until: now + REFUSED_CACHE_MS }, MAX_CACHE_ENTRIES);
+  const exchange = (async () => {
+    try {
+      const outcome = await exchangeUpstream(accessToken, entry, now, deps);
+      if (outcome.kind === "rejected" || outcome.kind === "insufficient_scope") {
+        setBounded(refused, entry, { outcome, until: now + REFUSED_CACHE_MS }, MAX_CACHE_ENTRIES);
+      }
+      if (outcome.kind === "key") {
+        const current = exchangesByIp.get(clientIp);
+        if (current && current.windowStart === windowStart && current.count > 0) current.count--;
+      }
+      return outcome;
+    } finally {
+      inFlight--;
+      inProgress.delete(entry);
     }
-    if (outcome.kind === "key") {
-      const current = exchangesByIp.get(clientIp);
-      if (current && current.windowStart === windowStart && current.count > 0) current.count--;
-    }
-    return outcome;
-  } finally {
-    inFlight--;
-  }
+  })();
+  inProgress.set(entry, exchange);
+  return exchange;
 }
 
 function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {

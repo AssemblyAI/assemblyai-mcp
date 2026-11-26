@@ -625,6 +625,75 @@ async function run() {
     );
   }
 
+
+  // #133. Concurrent requests with the same access token share one exchange.
+  {
+    clearExchangeCache();
+    const { deps, exchanges } = stub([keyResponse("shared-key")]);
+    const { handler, seen } = recorder();
+    const wrapped = withOAuthExchange(handler, deps);
+    const token = accessToken(undefined, "parallel");
+    const results = await Promise.all(Array.from({ length: 5 }, () => wrapped(fromIp(token, "203.0.113.1"))));
+    assert(
+      "#133 5 parallel requests with one token make one exchange, and all get the key",
+      exchanges.length === 1 && results.every((r) => r.status === 200) && seen.length === 5 && seen.every((s) => s === "Bearer shared-key"),
+      `exchanges=${exchanges.length} statuses=${results.map((r) => r.status).join(",")}`
+    );
+  }
+
+  {
+    clearExchangeCache();
+    const burst = MAX_CONCURRENT_EXCHANGES + 5;
+    const { deps, exchanges } = stub([keyResponse("burst-key")]);
+    const { handler } = recorder();
+    const wrapped = withOAuthExchange(handler, deps);
+    const token = accessToken(undefined, "burst");
+    const results = await Promise.all(Array.from({ length: burst }, () => wrapped(fromIp(token, "203.0.113.2"))));
+    assert(
+      `#133 ${burst} parallel requests with one token take no concurrency slots: one exchange, no 429`,
+      exchanges.length === 1 && results.every((r) => r.status === 200),
+      `exchanges=${exchanges.length} statuses=${results.map((r) => r.status).join(",")}`
+    );
+  }
+
+  {
+    clearExchangeCache();
+    const n = MAX_EXCHANGES_PER_IP_PER_MINUTE;
+    const refusal = () => Response.json({ detail: "Invalid access token" }, { status: 401 });
+    const { deps, exchanges } = stub(Array.from({ length: n + 1 }, refusal));
+    const { handler, seen } = recorder();
+    const wrapped = withOAuthExchange(handler, deps);
+    const ip = "203.0.113.3";
+    const refused = await Promise.all(Array.from({ length: 5 }, () => wrapped(fromIp(accessToken(undefined, "refused"), ip))));
+    assert(
+      "#133 a shared refusal answers every waiting request with 401 and reaches no handler",
+      exchanges.length === 1 && refused.every((r) => r.status === 401) && seen.length === 0,
+      `exchanges=${exchanges.length} statuses=${refused.map((r) => r.status).join(",")}`
+    );
+    const rest: number[] = [];
+    for (let i = 0; i < n; i++) rest.push((await wrapped(fromIp(accessToken(undefined, `rest${i}`), ip))).status);
+    assert(
+      `#133 requests that waited on a shared exchange don't count against the per-IP limit`,
+      rest.slice(0, n - 1).every((s) => s === 401) && rest[n - 1] === 429 && exchanges.length === n,
+      `exchanges=${exchanges.length} statuses=${rest.join(",")}`
+    );
+  }
+
+  {
+    clearExchangeCache();
+    const { deps, exchanges } = stub([Response.json({}, { status: 500 }), keyResponse("key-after-outage")]);
+    const { handler } = recorder();
+    const wrapped = withOAuthExchange(handler, deps);
+    const token = accessToken(undefined, "outage");
+    const during = await Promise.all(Array.from({ length: 3 }, () => wrapped(fromIp(token, "203.0.113.4"))));
+    const after = await wrapped(fromIp(token, "203.0.113.4"));
+    assert(
+      "#133 a shared outage answers every waiting request with 503, and the next request exchanges again",
+      during.every((r) => r.status === 503) && after.status === 200 && exchanges.length === 2,
+      `exchanges=${exchanges.length} during=${during.map((r) => r.status).join(",")} after=${after.status}`
+    );
+  }
+
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed === 0 ? 0 : 1);
 }
