@@ -324,7 +324,9 @@ High-signal events worth alerting on: `bad_audio_url`,
 
 Deploys to Vercel (`vercel deploy` once the project is linked). Vercel
 Firewall provides rate limiting and DDoS protection. The MCP endpoint lives
-at `https://<host>/mcp` with `maxDuration: 60` per the handler config.
+at `https://<host>/mcp` and uses streamable HTTP only. The legacy HTTP+SSE
+transport (`/mcp/sse`, `/mcp/message`) is turned off, so the server needs no
+Redis.
 
 ## Reference: prior Python implementation
 
