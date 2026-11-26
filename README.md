@@ -295,13 +295,17 @@ One row per feature. A PR names the rows it changes (see `.github/pull_request_t
 | Local file upload | `create_upload_url`, `POST /upload/<token>` | `src/tools/create-upload-url.ts`, `src/upload-token.ts`, `app/upload/[token]/route.ts` | `smoke-test.ts` | `UPLOAD_TOKEN_SECRET` |
 | Text to speech | `create_speech` | `src/tools/create-speech.ts`, `src/tts.ts` | `tts-test.ts` | `TTS_ENABLED=1` |
 | MCP endpoint | `/mcp` | `app/mcp/[[...path]]/route.ts`, `src/server.ts`, `src/json-body.ts`, `src/deadline.ts` | `smoke-test.ts` | |
+| Claude plugin bundle | `plugins/assemblyai/` | `.claude-plugin/plugin.json`, `.mcp.json`, `skills/assemblyai-workflows/SKILL.md` within the plugin folder | `claude plugin validate --strict --profile directory plugins/assemblyai` | |
 | OpenAI domain verification | `GET /.well-known/openai-apps-challenge` | `public/.well-known/openai-apps-challenge` | Unauthenticated HTTP check: 200 and exact portal token | |
-| Auth: API key and OAuth sign-in | `Authorization` header | `src/oauth.ts`, `src/tool-errors.ts` | `oauth-test.ts`, `npm run test:oauth` | |
+| Square submission logo | `GET /assemblyai-logo-square.png` | `public/assemblyai-logo-square.png` | Unauthenticated HTTP check: 200, PNG, 2048 × 2048, exact source bytes | |
+| Auth: API key and OAuth sign-in | `Authorization` header, `/.well-known/oauth-protected-resource` and `/.well-known/oauth-protected-resource/mcp` | `src/oauth.ts`, `src/tool-errors.ts`, `app/.well-known/oauth-protected-resource/route.ts`, `app/.well-known/oauth-protected-resource/mcp/route.ts` | `oauth-test.ts`, `npm run test:oauth` | |
 | Input safety | all transcript tools | `src/transcript-id.ts`, `src/origin.ts` | `smoke-test.ts` | `PUBLIC_HOSTS` |
 | Logging | all tools | `src/log.ts` | `smoke-test.ts` | |
 | Tool behavior annotations | `tools/list` | `src/tools/*.ts` | `smoke-test.ts` (explicit boolean hints and deletion classification) | |
-| API request deadline and retry | every AssemblyAI and LLM Gateway call | `src/assemblyai.ts`, `src/deadline.ts` | `request-timeout-test.ts` | |
+| API request deadline and retry | every AssemblyAI and LLM Gateway call | `src/assemblyai.ts`, `src/deadline.ts` | `request-timeout-test.ts`, `retry-test.ts` | |
 | End-to-end | real API | | `npm run test:live` | `ASSEMBLYAI_API_KEY` |
+
+Use `https://mcp.assemblyai.com/assemblyai-logo-square.png` for directory submission icon fields. This is the approved 2048 × 2048 square PNG, served without authentication.
 
 ## Logging
 

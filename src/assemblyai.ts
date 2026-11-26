@@ -141,7 +141,7 @@ export interface TranscriptRecord {
   auto_highlights_result?: AutoHighlightsResult;
   unredacted_text?: string;
   redact_pii_audio?: boolean;
-  metadata?: { domain_used?: string | null; warnings?: Array<{ message: string }> };
+  metadata?: { domain_used?: string | null; warnings?: Array<string | { message: string }> };
 }
 
 const HANDLED_KEYS = new Set<keyof TranscriptSubmitOptions>([
@@ -296,7 +296,8 @@ export async function requestWithRetry<T>(
       await sleep(delayMs);
     }
     attempts++;
-    let response: Response;
+    let response: Response | undefined;
+    let text: string;
     try {
       response = await fetch(`${baseUrl}${path}`, {
         method,
@@ -307,24 +308,24 @@ export async function requestWithRetry<T>(
         body: body ? JSON.stringify(body) : undefined,
         signal,
       });
+      // fetch resolves at the headers, so a dropped connection can still fail while the body is read.
+      text = await response.text();
     } catch (err) {
       if (signal.aborted) throw timeoutError(method, timeoutMs);
+      if (response && response.status >= 400 && response.status < 500) {
+        throw new AssemblyAIError(`HTTP ${response.status}: failed to read AssemblyAI error response: ${String(err)}`, 502);
+      }
       lastError = err;
       continue;
     }
 
-    try {
-      if (response.status >= 500) {
-        lastError = await errorFromResponse(response);
-        continue;
-      }
-      if (response.status >= 400) throw await errorFromResponse(response);
-      return (await response.json()) as T;
-    } catch (err) {
-      // The deadline covers the body too: a body that stalls mid-read is a timeout.
-      if (signal.aborted && !(err instanceof AssemblyAIError)) throw timeoutError(method, timeoutMs);
-      throw err;
+    const retryAfterSeconds = parseRetryAfter(response.headers.get("retry-after"));
+    if (response.status >= 500) {
+      lastError = errorFromText(response.status, text, retryAfterSeconds);
+      continue;
     }
+    if (response.status >= 400) throw errorFromText(response.status, text, retryAfterSeconds);
+    return JSON.parse(text) as T;
   }
 
   if (lastError instanceof AssemblyAIError) throw lastError;
@@ -335,8 +336,11 @@ export async function requestWithRetry<T>(
 }
 
 async function errorFromResponse(response: Response): Promise<AssemblyAIError> {
-  const retryAfterSeconds = parseRetryAfter(response.headers.get("retry-after"));
   const text = await response.text();
+  return errorFromText(response.status, text, parseRetryAfter(response.headers.get("retry-after")));
+}
+
+function errorFromText(status: number, text: string, retryAfterSeconds?: number): AssemblyAIError {
   try {
     const body = JSON.parse(text);
     for (const key of ["error", "message", "detail"] as const) {
@@ -344,8 +348,8 @@ async function errorFromResponse(response: Response): Promise<AssemblyAIError> {
         // The LLM Gateway puts the real reason in metadata.errors; message is only "invalid request body".
         const reasons = gatewayErrorReasons(body);
         return new AssemblyAIError(
-          `HTTP ${response.status}: ${body[key]}`,
-          response.status,
+          `HTTP ${status}: ${body[key]}`,
+          status,
           undefined,
           reasons.length > 0 ? reasons.join("; ") : undefined,
           retryAfterSeconds
@@ -354,13 +358,7 @@ async function errorFromResponse(response: Response): Promise<AssemblyAIError> {
     }
   } catch {
   }
-  return new AssemblyAIError(
-    `HTTP ${response.status}: ${text.slice(0, 500)}`,
-    response.status,
-    undefined,
-    undefined,
-    retryAfterSeconds
-  );
+  return new AssemblyAIError(`HTTP ${status}: ${text.slice(0, 500)}`, status, undefined, undefined, retryAfterSeconds);
 }
 
 function sleep(ms: number): Promise<void> {
