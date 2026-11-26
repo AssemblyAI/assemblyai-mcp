@@ -1,6 +1,6 @@
 import { withMcpAuth } from "mcp-handler";
 
-import { GET as pathAwareResourceMetadata } from "../app/.well-known/oauth-protected-resource/mcp/route";
+import * as pathAwareResourceRoute from "../app/.well-known/oauth-protected-resource/mcp/route";
 import { GET as resourceMetadata, OPTIONS as resourceOptions } from "../app/.well-known/oauth-protected-resource/route";
 import { OPTIONS as mcpOptions, POST as mcpPost } from "../app/mcp/[[...path]]/route";
 import {
@@ -13,6 +13,8 @@ import {
   withMissingCredentialsChallenge,
   withOAuthExchange,
 } from "./oauth";
+
+const { GET: pathAwareResourceMetadata } = pathAwareResourceRoute;
 
 let passed = 0;
 let failed = 0;
@@ -390,6 +392,17 @@ async function run() {
       optRes.status === 204 && optRes.headers.get("access-control-allow-origin") === "*",
       String(optRes.status)
     );
+    const pathAwareOptions = pathAwareResourceRoute.OPTIONS;
+    const pathAwarePreflight = typeof pathAwareOptions === "function" ? pathAwareOptions() : undefined;
+    assert(
+      "10. path-aware metadata OPTIONS answers 204 with CORS headers",
+      pathAwarePreflight?.status === 204 &&
+        pathAwarePreflight.headers.get("access-control-allow-origin") === "*" &&
+        pathAwarePreflight.headers.get("access-control-allow-methods") === "GET, OPTIONS" &&
+        pathAwarePreflight.headers.get("access-control-allow-headers") === "Authorization, Content-Type" &&
+        (await pathAwarePreflight.text()) === "",
+      pathAwarePreflight ? String(pathAwarePreflight.status) : "OPTIONS export missing"
+    );
     const mcpOpt = mcpOptions();
     const allowHeaders = mcpOpt.headers.get("access-control-allow-headers") ?? "";
     assert(
@@ -422,6 +435,54 @@ async function run() {
         Boolean(mcpUnauthed.headers.get("www-authenticate")),
       `${mcpUnauthed.status} ${JSON.stringify(Object.fromEntries(mcpUnauthed.headers))}`
     );
+  }
+
+
+  {
+    const originalFetch = globalThis.fetch;
+    const originalOidcToken = process.env.VERCEL_OIDC_TOKEN;
+    process.env.VERCEL_OIDC_TOKEN = "test-oidc-token";
+    globalThis.fetch = async () => Response.json({ detail: "unavailable" }, { status: 503 });
+    try {
+      for (const status of [429, 503]) {
+        clearExchangeCache();
+        const now = Date.now();
+        const ip = "203.0.113.61";
+        if (status === 429) {
+          const deps: ExchangeDeps = {
+            fetch: async () => Response.json({ detail: "invalid token" }, { status: 401 }),
+            serviceToken: async () => "test-oidc-token",
+            now: () => now,
+            timeoutMs: 1000,
+          };
+          const primeRateLimit = withOAuthExchange(async () => new Response("unexpected"), deps);
+          for (let i = 0; i < MAX_EXCHANGES_PER_IP_PER_MINUTE; i++) {
+            const req = mcpRequest(accessToken(now + 3600_000, `cors-prime-${i}`));
+            req.headers.set("x-forwarded-for", ip);
+            await primeRateLimit(req);
+          }
+        }
+        const req = mcpRequest(accessToken(now + 3600_000, `cors-${status}`));
+        req.headers.set("Origin", "https://browser-client.example");
+        req.headers.set("x-forwarded-for", ip);
+        const res = await mcpPost(req);
+        const exposed = (res.headers.get("access-control-expose-headers") ?? "")
+          .toLowerCase().split(",").map((header) => header.trim());
+        assert(
+          `10. /mcp ${status} exposes its Retry-After to browser clients`,
+          res.status === status &&
+            res.headers.get("access-control-allow-origin") === "*" &&
+            exposed.includes("retry-after") &&
+            Number(res.headers.get("retry-after")) > 0,
+          `${res.status} exposed=${exposed.join(",")} retry-after=${res.headers.get("retry-after")}`
+        );
+      }
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (originalOidcToken === undefined) delete process.env.VERCEL_OIDC_TOKEN;
+      else process.env.VERCEL_OIDC_TOKEN = originalOidcToken;
+      clearExchangeCache();
+    }
   }
 
 
