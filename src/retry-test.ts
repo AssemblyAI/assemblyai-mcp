@@ -132,6 +132,32 @@ try {
     }
   }
 
+  const mayHaveGoneThrough = (err: unknown) =>
+    isTransportError(err) && /may still have gone through/.test((err as Error).message) &&
+    /could run it twice/.test((err as Error).message);
+  const claimsNothing = (err: unknown) =>
+    isTransportError(err) && !/gone through/.test((err as Error).message);
+  for (const [name, call] of singleAttemptCalls) {
+    if (name === "redacted audio") continue;
+    await test(`#149 body-stream 200: ${name} says the accepted request may have gone through`, async () => {
+      const count = mock([() => failedBody(200)]);
+      await assert.rejects(call, mayHaveGoneThrough);
+      assert.equal(count(), 1);
+    });
+    await test(`#149 body-stream 503: ${name} does not claim the request went through`, async () => {
+      mock([() => failedBody(503)]);
+      await assert.rejects(call, claimsNothing);
+    });
+  }
+  await test("#149 body-stream 200: a GET that exhausts its attempts does not claim anything went through", async () => {
+    mock(Array.from({ length: 3 }, () => () => failedBody(200)));
+    await assert.rejects(get, claimsNothing);
+  });
+  await test("#149 body-stream 200: single-attempt redacted-audio GET does not claim anything went through", async () => {
+    mock([() => failedBody(200)]);
+    await assert.rejects(() => getRedactedAudio("test-key", "txn-retry"), claimsNothing);
+  });
+
   await test("complete malformed success JSON is not retried", async () => {
     const count = mock([() => new Response('{"incomplete":')]);
     await assert.rejects(get, SyntaxError);
@@ -190,7 +216,7 @@ try {
     realHttp([{ status: 200, body: '{"id":', drop: true }]);
     await assert.rejects(
       () => submitTranscript("test-key", { audio_url: "https://example.com/a.mp3" }),
-      isTransportError,
+      mayHaveGoneThrough,
     );
     assert.deepEqual(requests, [{ method: "POST", url: "/v2/transcript" }]);
   });
