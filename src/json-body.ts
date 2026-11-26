@@ -26,9 +26,10 @@ const tooDeep = () =>
  * validation is: a small, well-formed body nested ~100,000 levels deep makes
  * it throw an uncaught RangeError (stack overflow) partway through, and the
  * request never gets a response. A linear scan can't itself recurse or
- * overflow, and it returns as soon as `limit` is passed, so a pathological
- * body costs at most `limit + 1` characters of work. Characters inside a
- * JSON string don't count, so ordinary text containing "[[[" isn't affected.
+ * overflow. It stops at the first bracket past `limit`, but text before that
+ * bracket is still read, so the worst case is one pass over the whole body,
+ * which the 4 MB body cap bounds. Characters inside a JSON string don't
+ * count, so ordinary text containing "[[[" isn't affected.
  */
 function exceedsJsonDepth(text: string, limit: number): boolean {
   let depth = 0;
