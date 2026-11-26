@@ -293,7 +293,7 @@ One row per feature. A PR names the rows it changes (see `.github/pull_request_t
 | Speech Understanding | `understand_transcript` | `src/tools/understand-transcript.ts`, `src/llm-gateway.ts`, `src/speech-understanding-schema.ts` | `smoke-test.ts` | |
 | Delete a transcript | `delete_transcript` | `src/tools/delete-transcript.ts` | `smoke-test.ts` | |
 | Local file upload | `create_upload_url`, `POST /upload/<token>` | `src/tools/create-upload-url.ts`, `src/upload-token.ts`, `app/upload/[token]/route.ts` | `smoke-test.ts` | `UPLOAD_TOKEN_SECRET` |
-| Text to speech | `create_speech` | `src/tools/create-speech.ts`, `src/tts.ts` | `tts-test.ts` | `TTS_ENABLED=1` |
+| Text to speech | `create_speech` | `src/tools/create-speech.ts`, `src/tts.ts` | `tts-test.ts`, `create-speech-leak-test.ts` | `TTS_ENABLED=1` |
 | MCP endpoint | `/mcp` | `app/mcp/[[...path]]/route.ts`, `src/server.ts`, `src/json-body.ts`, `src/deadline.ts` | `smoke-test.ts` | |
 | Claude plugin bundle | `plugins/assemblyai/` | `.claude-plugin/plugin.json`, `.mcp.json`, `skills/assemblyai-workflows/SKILL.md` within the plugin folder | `claude plugin validate --strict --profile directory plugins/assemblyai` | |
 | OpenAI domain verification | `GET /.well-known/openai-apps-challenge` | `public/.well-known/openai-apps-challenge` | Unauthenticated HTTP check: 200 and exact portal token | |
@@ -306,6 +306,8 @@ One row per feature. A PR names the rows it changes (see `.github/pull_request_t
 | End-to-end | real API | | `npm run test:live` | `ASSEMBLYAI_API_KEY` |
 
 Use `https://mcp.assemblyai.com/assemblyai-logo-square.png` for directory submission icon fields. This is the approved 2048 × 2048 square PNG, served without authentication.
+
+TTS file delivery omits the bearer token from human-readable command text. The structured result still contains the bearer and working commands, so clients must treat that result as sensitive. Text redaction does not remove credentials from stored structured tool results.
 
 ## Logging
 
