@@ -1,10 +1,11 @@
+
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
 import { registerTools } from "./server";
 import { log, logError, MAX_LOG_FIELD_CHARS, MAX_LOG_STACK_CHARS } from "./log";
-import { MAX_BODY_BYTES, withJsonBodyCheck } from "./json-body";
+import { MAX_BODY_BYTES, MAX_JSON_DEPTH, withJsonBodyCheck } from "./json-body";
 import { renderSuSummary } from "./transcript-sections";
 
 interface FetchCall {
@@ -300,6 +301,17 @@ async function run() {
   });
 
   await withClientServer(async (client) => {
+    resetMock([jsonResponse(429, { error: "rate limit exceeded" })]);
+    const result = await callTool(client, "get_transcript", { transcript_id: "txn-rl" }, "k");
+    const text = (result.content?.[0]?.text ?? "").toLowerCase();
+    assert(
+      "8b. 429 → rate limit message with a longer backoff than the ~3s poll",
+      result.isError === true && text.includes("rate limit") && text.includes("60"),
+      `isError=${result.isError} text=${text}`
+    );
+  });
+
+  await withClientServer(async (client) => {
     resetMock([jsonResponse(200, { id: "txn-s", status: "queued" })]);
     await callTool(
       client,
@@ -394,6 +406,24 @@ async function run() {
     );
     const text = result.content?.[0]?.text ?? "";
     assert("14. returns summary content", text.includes("point one"), text);
+  });
+
+  await withClientServer(async (client) => {
+    resetMock([jsonResponse(200, { choices: [{ message: { content: "custom summary" } }] })]);
+    await callTool(
+      client,
+      "summarize_transcript",
+      { transcript_id: "txn-ai", style: "custom", custom_prompt: "Summarize: {{ transcript }}" },
+      "k"
+    );
+    const body = JSON.parse(calls[0]?.body ?? "{}");
+    const content = body.messages?.[0]?.content ?? "";
+    const occurrences = (content.match(/\{\{ transcript \}\}/g) ?? []).length;
+    assert(
+      "14b. prompt does not duplicate {{ transcript }} tag when already present",
+      occurrences === 1 && content === "Summarize: {{ transcript }}",
+      content
+    );
   });
 
   await withClientServer(async (client) => {
@@ -768,6 +798,25 @@ async function run() {
 
   await withClientServer(async (client) => {
     resetMock([
+      jsonResponse(200, {
+        id: "txn-g2",
+        status: "completed",
+        text: "hi",
+        audio_duration: 3,
+        metadata: { domain_used: null, warnings: ["Universal-3 Pro fallback"] },
+      }),
+    ]);
+    const result = await callTool(client, "get_transcript", { transcript_id: "txn-g2" }, "k");
+    const text = result.content?.[0]?.text ?? "";
+    assert(
+      "24b. warnings section renders string array without undefined",
+      text.includes("--- warnings") && text.includes("- Universal-3 Pro fallback") && !text.includes("undefined"),
+      text
+    );
+  });
+
+  await withClientServer(async (client) => {
+    resetMock([
       jsonResponse(200, { id: "txn-ra", status: "completed", text: "hi", audio_duration: 3, redact_pii_audio: true }),
       jsonResponse(200, { status: "redacted_audio_ready", redacted_audio_url: "https://cdn.example/redacted.mp3" }),
     ]);
@@ -1016,6 +1065,54 @@ async function run() {
     assert(
       "31c. empty action_items.items renders header + (none found)",
       text.includes("--- action_items ---") && text.includes("(none found)"),
+      text
+    );
+  });
+
+  await withClientServer(async (client) => {
+    resetMock([
+      jsonResponse(200, {
+        id: "txn-su-ai",
+        status: "completed",
+        text: "meeting transcript",
+        audio_duration: 60,
+        speech_understanding: {
+          response: {
+            action_items: {
+              status: "success",
+              items: [
+                {
+                  action_item: "Full item",
+                  quote: "We need this done",
+                  timestamp: 12000,
+                },
+                {
+                  action_item: "Quote only",
+                  quote: "Just do it",
+                },
+                {
+                  action_item: "Timestamp only",
+                  timestamp: 30000,
+                },
+                {
+                  action_item: "Bare item",
+                },
+              ],
+            },
+          },
+        },
+      }),
+    ]);
+    const result = await callTool(client, "get_transcript", { transcript_id: "txn-su-ai" }, "k");
+    const text = result.content?.[0]?.text ?? "";
+    assert(
+      "31d. action items render quote and timestamp safely without undefined or NaN",
+      text.includes("- Full item (quote: \"We need this done\" @ 0:12)") &&
+        text.includes("- Quote only (quote: \"Just do it\")") &&
+        text.includes("- Timestamp only (@ 0:30)") &&
+        text.includes("- Bare item") &&
+        !text.includes("undefined") &&
+        !text.includes("NaN"),
       text
     );
   });
@@ -1968,6 +2065,84 @@ async function run() {
     );
     const atLimit = await checked(post(JSON.stringify({ pad: "y".repeat(MAX_BODY_BYTES - 20) })));
     assert("57. a JSON body just under the limit is passed on", atLimit.status === 200 && reached === 4);
+
+    // A body nested ~100,000 levels deep (issue #126): JSON.parse accepts it,
+    // but the MCP SDK's own message validation throws an uncaught RangeError
+    // partway through and the request never gets a response. This must be
+    // refused here, before the handler (and the SDK) ever sees it.
+    const start = Date.now();
+    const pathological = await checked(post("[".repeat(100_000) + "]".repeat(100_000)));
+    const elapsedMs = Date.now() - start;
+    const pathologicalBody = await pathological.json();
+    assert(
+      "57. a body nested ~100,000 levels deep (#126) is refused quickly, not passed to the handler",
+      pathological.status === 400 && pathologicalBody?.error?.code === -32700 && reached === 4 && elapsedMs < 1000,
+      `status=${pathological.status} reached=${reached} elapsedMs=${elapsedMs} body=${JSON.stringify(pathologicalBody)}`
+    );
+
+    // The exact depth limit is a hard boundary, not approximate.
+    const atDepthLimit = await checked(post("[".repeat(MAX_JSON_DEPTH) + "]".repeat(MAX_JSON_DEPTH)));
+    assert("57. a body nested exactly at the depth limit is passed on", atDepthLimit.status === 200 && reached === 5);
+    const overDepthLimit = await checked(post("[".repeat(MAX_JSON_DEPTH + 1) + "]".repeat(MAX_JSON_DEPTH + 1)));
+    assert(
+      "57. a body nested one level past the limit is refused",
+      overDepthLimit.status === 400 && (await overDepthLimit.json())?.error?.code === -32700 && reached === 5
+    );
+
+    // Brackets inside a JSON string (e.g. transcript text, a custom prompt)
+    // are data, not structure, and must not count toward the depth.
+    const bracketsInString = await checked(
+      post(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ping", params: { note: "[".repeat(1000) } }))
+    );
+    assert(
+      "57. brackets inside a JSON string don't count toward nesting depth",
+      bracketsInString.status === 200 && reached === 6
+    );
+
+    // Issue #127: the size cap used to only apply when Content-Type said
+    // application/json, so any other declared type (or none at all) read an
+    // unbounded body into memory before anything rejected it.
+    const bigNonJson = await checked(post(big, "text/plain"));
+    assert(
+      "57. a declared-oversized body with a non-JSON Content-Type also gets 413, not passed to the handler",
+      bigNonJson.status === 413 && (await bigNonJson.json())?.error?.code === -32000 && reached === 6
+    );
+    // A string body gets Content-Type text/plain by default; bytes get none.
+    const noContentType = new Request("http://localhost/mcp", { method: "POST", body: new TextEncoder().encode(big) });
+    const headerAbsent = noContentType.headers.get("content-type") === null;
+    const bigNoContentType = await checked(noContentType);
+    assert(
+      "57. a declared-oversized body with no Content-Type header also gets 413",
+      headerAbsent && bigNoContentType.status === 413 && (await bigNoContentType.json())?.error?.code === -32000 && reached === 6,
+      `content-type absent=${headerAbsent} status=${bigNoContentType.status}`
+    );
+    let pulledNonJson = 0;
+    const chunkNonJson = new Uint8Array(1024 * 1024).fill(120);
+    const endlessNonJson = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulledNonJson++;
+        if (pulledNonJson > 50) controller.close();
+        else controller.enqueue(chunkNonJson);
+      },
+    });
+    const chunkedNonJson = await checked(
+      new Request("http://localhost/mcp", {
+        method: "POST",
+        headers: { "content-type": "text/plain" },
+        body: endlessNonJson,
+        duplex: "half",
+      } as RequestInit)
+    );
+    assert(
+      "57. a chunked non-JSON body with no Content-Length also stops being read once it passes the limit",
+      chunkedNonJson.status === 413 && pulledNonJson <= 8 && reached === 6,
+      `status=${chunkedNonJson.status} pulled=${pulledNonJson}`
+    );
+    const atLimitNonJson = await checked(post("y".repeat(MAX_BODY_BYTES - 20), "text/plain"));
+    assert(
+      "57. a non-JSON body just under the limit is still passed on, unparsed",
+      atLimitNonJson.status === 200 && reached === 7
+    );
   }
 
   {
@@ -2183,13 +2358,25 @@ async function run() {
 
   const badIds = ["..", ".", "a/b", "%2e%2e", "", "abc?x=1", "../upload"];
   await withClientServer(async (client) => {
+    // Each tool's other arguments must be valid on their own, so a refusal
+    // can only come from the id. The control call below proves that.
+    const argsFor = (tool: string, id: string): Record<string, unknown> => {
+      const args: Record<string, unknown> = { transcript_id: id };
+      if (tool === "understand_transcript") args.speech_understanding = { request: { action_items: {} } };
+      if (tool === "summarize_transcript") args.style = "bullets";
+      return args;
+    };
     for (const tool of ["get_transcript", "delete_transcript", "understand_transcript", "summarize_transcript"]) {
+      resetMock([jsonResponse(200, { id: "x", status: "completed", text: "hi" })]);
+      const control = await callTool(client, tool, argsFor(tool, "5551722-f677-48a6-9287-39c0aafd9ac1"), "k");
+      assert(
+        `64. control: ${tool} with a valid id and the same arguments reaches AssemblyAI`,
+        calls.length > 0,
+        JSON.stringify(control.content)
+      );
       for (const id of badIds) {
         resetMock([jsonResponse(200, { id: "x", status: "completed", text: "hi" })]);
-        const args: Record<string, unknown> = { transcript_id: id };
-        if (tool === "understand_transcript") args.speech_understanding = { sentiment_analysis: true };
-        if (tool === "summarize_transcript") args.style = "bullets";
-        const r = await callTool(client, tool, args, "k");
+        const r = await callTool(client, tool, argsFor(tool, id), "k");
         assert(
           `64. ${tool} refuses transcript_id ${JSON.stringify(id)} with no fetch`,
           r.isError === true && calls.length === 0,
@@ -2395,6 +2582,38 @@ async function run() {
     }
   });
   delete process.env.UPLOAD_TOKEN_SECRET;
+  // 65. a blank custom_prompt falls back to the style prompt instead of an empty instruction
+  for (const blank of ["", "   "]) {
+    await withClientServer(async (client) => {
+      resetMock([jsonResponse(200, { choices: [{ message: { content: "- point" } }] })]);
+      await callTool(
+        client,
+        "summarize_transcript",
+        { transcript_id: "txn-ai", style: "headline", custom_prompt: blank },
+        "k"
+      );
+      const content = JSON.parse(calls[0]?.body ?? "{}").messages?.[0]?.content ?? "";
+      assert(
+        `65. custom_prompt=${JSON.stringify(blank)} sends the headline style prompt`,
+        content.startsWith("Provide a single-sentence headline") && content.includes("{{ transcript }}"),
+        content
+      );
+    });
+    await withClientServer(async (client) => {
+      resetMock([]);
+      const result = await callTool(
+        client,
+        "summarize_transcript",
+        { transcript_id: "txn-ai", style: "custom", custom_prompt: blank },
+        "k"
+      );
+      assert(
+        `65. style=custom with custom_prompt=${JSON.stringify(blank)} errors before calling the gateway`,
+        result.isError === true && calls.length === 0,
+        `isError=${result.isError} calls=${calls.length}`
+      );
+    });
+  }
 
   globalThis.fetch = originalFetch;
 

@@ -10,8 +10,8 @@ interface SuChapter {
 
 interface SuActionItem {
   action_item: string;
-  quote: string;
-  timestamp: number;
+  quote?: string | null;
+  timestamp?: number | null;
 }
 
 export interface TranslatedUtterance {
@@ -65,7 +65,8 @@ export interface AutoHighlightsResult {
   results?: Array<{ count: number; rank: number; text: string; timestamps?: Array<{ start?: number; end?: number }> }>;
 }
 
-export function formatMs(ms: number): string {
+export function formatMs(ms: number | null | undefined): string {
+  if (typeof ms !== "number" || !Number.isFinite(ms) || ms < 0) return "0:00";
   const totalSec = Math.floor(ms / 1000);
   const m = Math.floor(totalSec / 60);
   const s = totalSec % 60;
@@ -157,7 +158,19 @@ export function renderSuSummary(chapters: SuChapter[]): string[] {
 
 function renderActionItems(items: SuActionItem[]): string[] {
   const lines = ["", "--- action_items ---"];
-  for (const i of items) lines.push(`- ${i.action_item} (quote: "${i.quote}" @ ${formatMs(i.timestamp)})`);
+  for (const i of items) {
+    const hasQuote = typeof i.quote === "string" && i.quote.length > 0;
+    const hasTimestamp = typeof i.timestamp === "number" && Number.isFinite(i.timestamp);
+    let details = "";
+    if (hasQuote && hasTimestamp) {
+      details = ` (quote: "${i.quote}" @ ${formatMs(i.timestamp)})`;
+    } else if (hasQuote) {
+      details = ` (quote: "${i.quote}")`;
+    } else if (hasTimestamp) {
+      details = ` (@ ${formatMs(i.timestamp)})`;
+    }
+    lines.push(`- ${i.action_item}${details}`);
+  }
   return lines;
 }
 
@@ -292,8 +305,11 @@ export function renderRedactedAudio(url: string): string[] {
   return ["", "--- redacted_audio ---", url, "(link expires ~24 hours after transcription)"];
 }
 
-export function renderWarnings(warnings: Array<{ message: string }>): string[] {
+export function renderWarnings(warnings: Array<string | { message?: string }>): string[] {
   const lines = ["", "--- warnings (processing notes from AssemblyAI) ---"];
-  for (const w of warnings) lines.push(`- ${w.message}`);
+  for (const w of warnings) {
+    const text = typeof w === "string" ? w : (w?.message ?? String(w));
+    if (text) lines.push(`- ${text}`);
+  }
   return lines;
 }

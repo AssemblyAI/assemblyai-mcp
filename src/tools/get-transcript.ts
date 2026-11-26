@@ -115,6 +115,8 @@ export function registerGetTranscript(server: McpServer): void {
           apiKey,
           start,
           transcriptId: args.transcript_id,
+          rateLimitMessage:
+            "Rate limited by AssemblyAI. Wait ~60 seconds before calling get_transcript again — much longer than the usual ~3 seconds.",
           errorEvent: "tool_error",
         });
       }
@@ -150,7 +152,7 @@ interface ShapedTranscript {
   redacted_audio_error?: string;
   /** Claude Code shows the model only structuredContent. */
   next_step?: string;
-  metadata?: { domain_used?: string | null; warnings?: Array<{ message: string }> };
+  metadata?: { domain_used?: string | null; warnings?: Array<string | { message: string }> };
 }
 
 function shape(record: TranscriptRecord, redactedAudioUrl?: string, includeWords = false): ShapedTranscript {
