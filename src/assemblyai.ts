@@ -1,5 +1,7 @@
 /** AssemblyAI expects the raw API key in `Authorization`, with no `Bearer ` prefix. */
 
+import { AsyncLocalStorage } from "node:async_hooks";
+
 import type {
   SpeechUnderstandingResponse,
   ContentSafetyLabels,
@@ -253,14 +255,15 @@ function timeoutError(method: "GET" | "POST" | "DELETE", timeoutMs: number): Ass
  * no retry: the deadline is spent. There is no backoff after the last attempt
  * or when it would leave less than MIN_ATTEMPT_MS for the next attempt.
  */
-export async function requestWithRetry<T>(
+async function attemptRequest<T>(
   apiKey: string,
   method: "GET" | "POST" | "DELETE",
   path: string,
   body?: unknown,
   retries = 3,
   baseUrl: string = DEFAULT_BASE_URL,
-  timeoutMs: number = remainingMs() - RETURN_RESERVE_MS
+  timeoutMs: number = remainingMs() - RETURN_RESERVE_MS,
+  onStatus?: (status: number) => void
 ): Promise<T> {
   if (!(timeoutMs >= MIN_ATTEMPT_MS)) {
     throw new AssemblyAIError(
@@ -292,6 +295,7 @@ export async function requestWithRetry<T>(
         body: body ? JSON.stringify(body) : undefined,
         signal,
       });
+      onStatus?.(response.status);
       // fetch resolves at the headers, so a dropped connection can still fail while the body is read.
       text = await response.text();
     } catch (err) {
@@ -316,6 +320,74 @@ export async function requestWithRetry<T>(
     `AssemblyAI request failed after ${attempts} attempt${attempts === 1 ? "" : "s"}: ${String(lastError)}`,
     502
   );
+}
+
+interface KeyProbe {
+  result: Promise<boolean>;
+  rejected?: boolean;
+}
+
+const requestKeyProbes = new AsyncLocalStorage<Map<string, KeyProbe>>();
+const MAX_KEY_PROBE_WAIT_MS = 250;
+
+export function withRequestKeyProbes<Req, Res>(
+  handler: (req: Req) => Promise<Res>
+): (req: Req) => Promise<Res> {
+  return (req) => requestKeyProbes.run(new Map(), () => handler(req));
+}
+
+async function probeRejected(probe: KeyProbe, timeoutMs: number): Promise<boolean> {
+  if (probe.rejected !== undefined) return probe.rejected;
+  if (timeoutMs <= 0) return false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      probe.result,
+      new Promise<boolean>(resolve => { timer = setTimeout(() => resolve(false), timeoutMs); }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+export async function requestWithRetry<T>(
+  apiKey: string,
+  method: "GET" | "POST" | "DELETE",
+  path: string,
+  body?: unknown,
+  retries = 3,
+  baseUrl: string = DEFAULT_BASE_URL,
+  timeoutMs?: number
+): Promise<T> {
+  const probes = requestKeyProbes.getStore();
+  if (!probes) return attemptRequest<T>(apiKey, method, path, body, retries, baseUrl, timeoutMs);
+
+  const existing = probes.get(apiKey);
+  if (existing) {
+    const spareMs = (timeoutMs ?? remainingMs() - RETURN_RESERVE_MS) - MIN_ATTEMPT_MS;
+    if (await probeRejected(existing, Math.min(MAX_KEY_PROBE_WAIT_MS, spareMs))) {
+      throw new AssemblyAIError("AssemblyAI rejected the API key (401).", 401);
+    }
+    return attemptRequest<T>(apiKey, method, path, body, retries, baseUrl, timeoutMs);
+  }
+
+  let resolve!: (rejected: boolean) => void;
+  const probe: KeyProbe = { result: new Promise<boolean>(r => { resolve = r; }) };
+  probes.set(apiKey, probe);
+  const settle = (rejected: boolean) => {
+    if (probe.rejected !== undefined) return;
+    probe.rejected = rejected;
+    resolve(rejected);
+  };
+  try {
+    const result = await attemptRequest<T>(apiKey, method, path, body, retries, baseUrl, timeoutMs,
+      status => settle(status === 401));
+    settle(false);
+    return result;
+  } catch (error) {
+    settle(error instanceof AssemblyAIError && error.status === 401);
+    throw error;
+  }
 }
 
 async function errorFromResponse(response: Response): Promise<AssemblyAIError> {
