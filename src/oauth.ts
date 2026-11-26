@@ -6,6 +6,7 @@ import { getVercelOidcToken } from "@vercel/oidc";
 import { getPublicOrigin } from "mcp-handler";
 
 import { keyHash, log, scrubForLog } from "./log";
+import { readErrorText } from "./assemblyai";
 
 export const OAUTH_ISSUER = (
   process.env.ASSEMBLYAI_OAUTH_ISSUER ?? "https://auth.assemblyai.com"
@@ -123,7 +124,7 @@ function tokenExpiry(accessToken: string): number | undefined {
 }
 
 async function jsonBody(response: Response): Promise<unknown> {
-  const text = await response.text();
+  const text = await readErrorText(response);
   try {
     return JSON.parse(text);
   } catch {
