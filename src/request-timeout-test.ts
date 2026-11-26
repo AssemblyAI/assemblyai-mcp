@@ -231,8 +231,8 @@ async function run() {
       detail(result.error, result.ms, invalid));
     const broken = "/v2/transcript/broken-body";
     result = await timedError(() => requestWithRetry(KEY, "GET", broken));
-    assert("10. a non-timeout body error propagates without retry",
-      result.error instanceof TypeError && !(result.error instanceof AssemblyAIError) && count(broken) === 1,
+    assert("10. an interrupted GET body is retried, then fails as a 502 (#80)",
+      isError(result.error, 502, "failed after 3 attempts") && count(broken) === 3,
       detail(result.error, result.ms, broken));
     const closed = createServer();
     await new Promise<void>((resolve, reject) => {
