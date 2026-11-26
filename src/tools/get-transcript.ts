@@ -115,6 +115,8 @@ export function registerGetTranscript(server: McpServer): void {
           apiKey,
           start,
           transcriptId: args.transcript_id,
+          rateLimitMessage:
+            "Rate limited by AssemblyAI. Wait ~60 seconds before calling get_transcript again — much longer than the usual ~3 seconds.",
           errorEvent: "tool_error",
         });
       }
