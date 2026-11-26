@@ -2,7 +2,7 @@ import { withMcpAuth } from "mcp-handler";
 
 import { GET as pathAwareResourceMetadata } from "../app/.well-known/oauth-protected-resource/mcp/route";
 import { GET as resourceMetadata, OPTIONS as resourceOptions } from "../app/.well-known/oauth-protected-resource/route";
-import { OPTIONS as mcpOptions } from "../app/mcp/[[...path]]/route";
+import { OPTIONS as mcpOptions, POST as mcpPost } from "../app/mcp/[[...path]]/route";
 import {
   clearExchangeCache,
   type ExchangeDeps,
@@ -399,6 +399,28 @@ async function run() {
         allowHeaders.includes("mcp-protocol-version") &&
         allowHeaders.includes("last-event-id"),
       allowHeaders
+    );
+    // A real /mcp response, not only the preflight, must carry CORS headers, or a
+    // browser client can't read the 401 and its WWW-Authenticate to start OAuth.
+    const mcpUnauthed = await mcpPost(
+      new Request("https://mcp.example.com/mcp", {
+        method: "POST",
+        headers: {
+          Origin: "https://browser-client.example",
+          "Content-Type": "application/json",
+          Accept: "application/json, text/event-stream",
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+      })
+    );
+    const exposed = mcpUnauthed.headers.get("access-control-expose-headers") ?? "";
+    assert(
+      "10. /mcp 401 carries CORS headers and exposes WWW-Authenticate",
+      mcpUnauthed.status === 401 &&
+        mcpUnauthed.headers.get("access-control-allow-origin") === "*" &&
+        exposed.toLowerCase().includes("www-authenticate") &&
+        Boolean(mcpUnauthed.headers.get("www-authenticate")),
+      `${mcpUnauthed.status} ${JSON.stringify(Object.fromEntries(mcpUnauthed.headers))}`
     );
   }
 
