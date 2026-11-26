@@ -298,7 +298,7 @@ One row per feature. A PR names the rows it changes (see `.github/pull_request_t
 | Claude plugin bundle | `plugins/assemblyai/` | `.claude-plugin/plugin.json`, `.mcp.json`, `skills/assemblyai-workflows/SKILL.md` within the plugin folder | `claude plugin validate --strict --profile directory plugins/assemblyai` | |
 | OpenAI domain verification | `GET /.well-known/openai-apps-challenge` | `public/.well-known/openai-apps-challenge` | Unauthenticated HTTP check: 200 and exact portal token | |
 | Square submission logo | `GET /assemblyai-logo-square.png` | `public/assemblyai-logo-square.png` | Unauthenticated HTTP check: 200, PNG, 2048 × 2048, exact source bytes | |
-| Auth: API key and OAuth sign-in | `Authorization` header | `src/oauth.ts`, `src/tool-errors.ts` | `oauth-test.ts`, `npm run test:oauth` | |
+| Auth: API key and OAuth sign-in | `Authorization` header, `/.well-known/oauth-protected-resource` and `/.well-known/oauth-protected-resource/mcp` | `src/oauth.ts`, `src/tool-errors.ts`, `app/.well-known/oauth-protected-resource/route.ts`, `app/.well-known/oauth-protected-resource/mcp/route.ts` | `oauth-test.ts`, `npm run test:oauth` | |
 | Input safety | all transcript tools | `src/transcript-id.ts`, `src/origin.ts` | `smoke-test.ts` | `PUBLIC_HOSTS` |
 | Logging | all tools | `src/log.ts` | `smoke-test.ts` | |
 | Tool behavior annotations | `tools/list` | `src/tools/*.ts` | `smoke-test.ts` (explicit boolean hints and deletion classification) | |
