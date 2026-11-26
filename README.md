@@ -301,6 +301,7 @@ One row per feature. A PR names the rows it changes (see `.github/pull_request_t
 | Logging | all tools | `src/log.ts` | `smoke-test.ts` | |
 | Tool behavior annotations | `tools/list` | `src/tools/*.ts` | `smoke-test.ts` (explicit boolean hints and deletion classification) | |
 | API request deadline and retry | every AssemblyAI and LLM Gateway call | `src/assemblyai.ts`, `src/deadline.ts` | `request-timeout-test.ts` | |
+| Service base URLs | `ASSEMBLYAI_BASE_URL` and friends | `src/config.ts`, `src/assemblyai.ts`, `src/llm-gateway.ts`, `src/tts.ts`, `src/oauth.ts` | `config-test.ts` | |
 | End-to-end | real API | | `npm run test:live` | `ASSEMBLYAI_API_KEY` |
 
 ## Logging

@@ -1,9 +1,13 @@
 /** The Gateway substitutes the `{{ transcript }}` tag with transcript_id's text server-side. */
 import { requestWithRetry } from "./assemblyai";
 import type { SpeechUnderstandingResponse } from "./transcript-sections";
+import { resolveHttpsUrl } from "./config";
 
-const DEFAULT_LLM_GATEWAY_BASE_URL =
-  process.env.ASSEMBLYAI_LLM_GATEWAY_BASE_URL ?? "https://llm-gateway.assemblyai.com";
+function llmGatewayBaseUrl(): string {
+  return resolveHttpsUrl("ASSEMBLYAI_LLM_GATEWAY_BASE_URL", "https://llm-gateway.assemblyai.com", {
+    allowHttpLocalhost: true,
+  });
+}
 
 export const LLM_GATEWAY_MODEL = "claude-sonnet-4-6";
 
@@ -40,7 +44,7 @@ export async function summarizeViaLlmGateway(
     "/v1/chat/completions",
     body,
     1,
-    DEFAULT_LLM_GATEWAY_BASE_URL,
+    llmGatewayBaseUrl(),
     LLM_GATEWAY_TIMEOUT_MS
   );
   const content = data.choices?.[0]?.message?.content;
@@ -79,7 +83,7 @@ export async function understandTranscript(
     "/v1/understanding",
     { transcript_id: options.transcript_id, speech_understanding: options.speech_understanding },
     1,
-    DEFAULT_LLM_GATEWAY_BASE_URL,
+    llmGatewayBaseUrl(),
     LLM_GATEWAY_TIMEOUT_MS
   );
 }

@@ -5,7 +5,7 @@ import {
   looksLikeAccessToken,
   MAX_CONCURRENT_EXCHANGES,
   MAX_EXCHANGES_PER_IP_PER_MINUTE,
-  OAUTH_ISSUER,
+  oauthIssuer,
   withOAuthExchange,
 } from "./oauth";
 
@@ -369,7 +369,7 @@ async function run() {
     const body = (await res.json()) as Record<string, unknown>;
     assert(
       "10. the metadata names the authorization server and scopes",
-      JSON.stringify(body.authorization_servers) === JSON.stringify([OAUTH_ISSUER]) &&
+      JSON.stringify(body.authorization_servers) === JSON.stringify([oauthIssuer()]) &&
         JSON.stringify(body.scopes_supported) === JSON.stringify(["aai:api", "offline_access"]) &&
         body.resource === "https://mcp.example.com/mcp",
       JSON.stringify(body)

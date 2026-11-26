@@ -6,14 +6,17 @@ import { getVercelOidcToken } from "@vercel/oidc";
 import { getPublicOrigin } from "mcp-handler";
 
 import { keyHash, log, scrubForLog } from "./log";
+import { resolveHttpsUrl } from "./config";
 
-export const OAUTH_ISSUER = (
-  process.env.ASSEMBLYAI_OAUTH_ISSUER ?? "https://auth.assemblyai.com"
-).replace(/\/+$/, "");
+export function oauthIssuer(): string {
+  return resolveHttpsUrl("ASSEMBLYAI_OAUTH_ISSUER", "https://auth.assemblyai.com", { allowHttpLocalhost: true });
+}
 
-const EXCHANGE_ORIGIN = (
-  process.env.ASSEMBLYAI_OAUTH_EXCHANGE_ORIGIN ?? "https://www.assemblyai.com"
-).replace(/\/+$/, "");
+function exchangeOrigin(): string {
+  return resolveHttpsUrl("ASSEMBLYAI_OAUTH_EXCHANGE_ORIGIN", "https://www.assemblyai.com", {
+    allowHttpLocalhost: true,
+  });
+}
 
 export const OAUTH_SCOPES = ["aai:api", "offline_access"];
 
@@ -229,7 +232,7 @@ async function exchangeUpstream(
 
   let response: Response;
   try {
-    response = await deps.fetch(`${EXCHANGE_ORIGIN}/api/v2/oauth/api-key`, {
+    response = await deps.fetch(`${exchangeOrigin()}/api/v2/oauth/api-key`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${accessToken}`,
