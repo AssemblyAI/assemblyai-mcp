@@ -817,7 +817,7 @@ async function run() {
     assert(
       "19. the literals are: body file, JSON body (exact text), out file, -w, token header, content type, @body file, URL, body file",
       words.length === 9 && words[0] === bodyFile && body.text === hostile && words[2] === outputFile &&
-        words[3] === "%{http_code}\\n" && words[4] === "Authorization: tok'en" &&
+        words[3] === "%{http_code} %{size_download}\\n" && words[4] === "Authorization: tok'en" &&
         words[5] === "Content-Type: application/json" && words[6] === `@${bodyFile}` &&
         words[7] === "https://tts.us.assemblyai.com/v1/speech" && words[8] === bodyFile,
       JSON.stringify(words)
@@ -869,6 +869,35 @@ async function run() {
         res.isError !== true && next.startsWith(`voice_id "${voice_id}" is not one of the voices`),
         `${textOf(res)} | ${next.slice(0, 120)}`
       );
+    }
+  });
+
+  // #155. File delivery prints the bytes saved and says a 200 with no audio means nothing to speak, nothing billed.
+  await withClient(async (client) => {
+    for (const format of ["mp3", "wav"] as const) {
+      resetMock([tokenOk()]);
+      const res = await speak(client, { text: "😀😀😀", format });
+      const command = String(res.structuredContent?.command ?? "");
+      const commandPowershell = String(res.structuredContent?.command_powershell ?? "");
+      assert(
+        `#155 ${format}: both commands print the HTTP status and the bytes saved`,
+        command.includes("-w '%{http_code} %{size_download}\\n'") &&
+          commandPowershell.includes("-w '%{http_code} %{size_download}\\n'"),
+        `${command} | ${commandPowershell}`
+      );
+      const outputFile = String(res.structuredContent?.output_file ?? "");
+      for (const [where, guidance] of [
+        ["reply", textOf(res)],
+        ["next_step", String(res.structuredContent?.next_step ?? "")],
+      ] as const) {
+        assert(
+          `#155 ${format}: the ${where} says a 200 with 100 bytes or fewer has no audio and was not billed`,
+          guidance.includes("200 with 100 bytes or fewer") && guidance.includes("nothing to speak") &&
+            guidance.includes("nothing was billed") && guidance.includes(`delete ${outputFile}`) &&
+            guidance.includes("200 with more than 100 bytes"),
+          guidance
+        );
+      }
     }
   });
 

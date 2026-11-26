@@ -290,14 +290,14 @@ export function registerCreateSpeech(server: McpServer): void {
         );
         // No --fail-with-body: it needs curl 7.76+.
         const command =
-          `curl -sS -o ${shellQuote(outputFile)} -w '%{http_code}\\n' ` +
+          `curl -sS -o ${shellQuote(outputFile)} -w '%{http_code} %{size_download}\\n' ` +
           `-H ${shellQuote(`Authorization: ${token}`)} -H 'Content-Type: application/json' ` +
           `-d ${shellQuote(body)} ${shellQuote(`${ttsBaseUrl()}/v1/speech`)}`;
         // PowerShell: curl aliases Invoke-WebRequest, and 5.1 strips double quotes from native-program args, so use curl.exe and a JSON file.
         const bodyFile = outputFile.replace(/\.\w+$/, ".json");
         const commandPowershell =
           `[IO.File]::WriteAllText((Join-Path $PWD ${powershellQuote(bodyFile)}), ${powershellQuote(body)}); ` +
-          `curl.exe -sS -o ${powershellQuote(outputFile)} -w '%{http_code}\\n' ` +
+          `curl.exe -sS -o ${powershellQuote(outputFile)} -w '%{http_code} %{size_download}\\n' ` +
           `-H ${powershellQuote(`Authorization: ${token}`)} -H 'Content-Type: application/json' ` +
           `--data-binary ${powershellQuote(`@${bodyFile}`)} ${powershellQuote(`${ttsBaseUrl()}/v1/speech`)}; ` +
           `Remove-Item ${powershellQuote(bodyFile)}`;
@@ -306,12 +306,17 @@ export function registerCreateSpeech(server: McpServer): void {
           ? `voice_id "${args.voice_id}" is not one of the voices this tool knows. Use it only if the user gave it to you; ` +
             "if not, call again without voice_id instead of running the command. "
           : "";
+        // The API answers 200 with no audio (an empty MP3, or a WAV header alone) when the text has nothing to speak.
+        const noAudio =
+          `200 with 100 bytes or fewer: the text had nothing to speak (for example only emoji), so there is no audio ` +
+          `and nothing was billed; delete ${outputFile} and tell the user.`;
         // Claude Code shows the model only structuredContent, so the rules go here too.
         const nextStep =
           voiceWarning +
           "Each run bills again. Run it once: run `command` as it is (in Windows PowerShell, run `command_powershell` instead), " +
           "and do not run it again to retry or to check; it keeps working until it expires. " +
-          `It prints the HTTP status. 200: ${outputFile} is the audio; tell the user where it is. ` +
+          `It prints the HTTP status and the bytes saved. 200 with more than 100 bytes: ${outputFile} is the audio; tell the user where it is. ` +
+          `${noAudio} ` +
           `Any other status: nothing is billed, and ${outputFile} holds a JSON error; read its \`message\`, delete the file, and follow the message. ` +
           "401 means the command expired: call create_speech again. " +
           `If curl cannot connect (e.g. "Could not resolve host"), your environment blocks ${new URL(ttsBaseUrl()).host}: ` +
@@ -327,8 +332,9 @@ export function registerCreateSpeech(server: McpServer): void {
                 `Speech command created (valid for ${SPEECH_TOKEN_TTL_SECONDS / 60} minutes). Run it once, as it is. Each run bills again:\n\n${command}\n\n` +
                 voiceWarning +
                 `It saves the audio as ${outputFile} in the current directory (change the -o path if the user wants another place) ` +
-                `and prints the HTTP status. 200: ${outputFile} is the audio, and ${chars} characters are billed to the user's ` +
-                `AssemblyAI account; tell the user where the file is. Any other status: nothing is billed, and ${outputFile} ` +
+                `and prints the HTTP status and the bytes saved. 200 with more than 100 bytes: ${outputFile} is the audio, and ` +
+                `${chars} characters are billed to the user's AssemblyAI account; tell the user where the file is. ` +
+                `${noAudio} Any other status: nothing is billed, and ${outputFile} ` +
                 "holds a JSON error instead of audio; read its `message`, delete the file, and follow the message. " +
                 "Do not run it again to retry or to check: it keeps working until it expires, and each run bills again. " +
                 "401 means the command expired: call create_speech again. " +
