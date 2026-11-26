@@ -16,6 +16,7 @@ import {
   renderHighlights,
   renderUnredactedText,
   renderRedactedAudio,
+  renderRedaction,
   renderWarnings,
   type SpeechUnderstandingResponse,
   type ContentSafetyLabels,
@@ -147,6 +148,8 @@ interface ShapedTranscript {
   iab_categories_result?: IabCategoriesResult;
   auto_highlights_result?: AutoHighlightsResult;
   unredacted_text?: string;
+  /** PII categories that were redacted (only when redact_pii was on). */
+  redact_pii_policies?: string[];
   redacted_audio_url?: string;
   redacted_audio_pending?: boolean;
   redacted_audio_error?: string;
@@ -201,6 +204,9 @@ function shape(record: TranscriptRecord, redactedAudioUrl?: string, includeWords
   if (record.iab_categories_result != null) out.iab_categories_result = record.iab_categories_result;
   if (record.auto_highlights_result != null) out.auto_highlights_result = record.auto_highlights_result;
   if (record.unredacted_text != null) out.unredacted_text = record.unredacted_text;
+  if (record.redact_pii === true && Array.isArray(record.redact_pii_policies)) {
+    out.redact_pii_policies = record.redact_pii_policies;
+  }
   if (redactedAudioUrl !== undefined) out.redacted_audio_url = redactedAudioUrl;
   if (record.metadata != null) out.metadata = record.metadata;
   return out;
@@ -304,6 +310,9 @@ function formatTranscript(s: ShapedTranscript): string {
   }
   if (s.unredacted_text) {
     lines.push(...renderUnredactedText(s.unredacted_text));
+  }
+  if (s.redact_pii_policies && s.redact_pii_policies.length > 0) {
+    lines.push(...renderRedaction(s.redact_pii_policies, Boolean(s.entities && s.entities.length > 0)));
   }
   if (s.metadata?.warnings && s.metadata.warnings.length > 0) {
     lines.push(...renderWarnings(s.metadata.warnings));

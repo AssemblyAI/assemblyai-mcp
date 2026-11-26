@@ -358,6 +358,100 @@ async function run() {
     assert("11. default redact_pii_sub = entity_name", body.redact_pii_sub === "entity_name", JSON.stringify(body));
   });
 
+  // #116. The caller is told which PII categories submit_transcript redacts.
+  await withClientServer(async (client) => {
+    const { tools } = await client.listTools();
+    const submit = tools.find((t) => t.name === "submit_transcript");
+    const props = (submit?.inputSchema.properties ?? {}) as Record<string, { description?: string }>;
+    assert(
+      "11b. redact_pii descriptions list the default policies and what stays in clear text",
+      Boolean(
+        props.redact_pii?.description?.includes("us_social_security_number") &&
+          props.redact_pii?.description?.includes("clear text") &&
+          props.redact_pii_policies?.description?.includes("person_name")
+      ),
+      JSON.stringify([props.redact_pii?.description, props.redact_pii_policies?.description])
+    );
+
+    resetMock([jsonResponse(200, { id: "txn-rp", status: "queued" })]);
+    const defaults = await callTool(
+      client,
+      "submit_transcript",
+      { audio_url: "https://example.com/x.mp3", redact_pii: true, entity_detection: true },
+      "k"
+    );
+    const defaultText = defaults.content?.[0]?.text ?? "";
+    const sentPolicies = JSON.parse(calls[0]?.body ?? "{}").redact_pii_policies;
+    assert(
+      "11b. submit result echoes the default policies that were sent",
+      JSON.stringify(defaults.structuredContent?.redact_pii_policies) === JSON.stringify(sentPolicies) &&
+        defaultText.includes("PII redaction applies only to: person_name") &&
+        defaultText.includes("Other categories are not redacted"),
+      defaultText
+    );
+    assert("11b. entity_detection adds the entities warning", defaultText.includes("Entities are not redacted"), defaultText);
+
+    resetMock([jsonResponse(200, { id: "txn-rp2", status: "queued" })]);
+    const custom = await callTool(
+      client,
+      "submit_transcript",
+      { audio_url: "https://example.com/x.mp3", redact_pii: true, redact_pii_policies: ["location", "date_of_birth"] },
+      "k"
+    );
+    const customText = custom.content?.[0]?.text ?? "";
+    assert(
+      "11b. custom policies are echoed, with no entities warning",
+      JSON.stringify(custom.structuredContent?.redact_pii_policies) === JSON.stringify(["location", "date_of_birth"]) &&
+        customText.includes("applies only to: location, date_of_birth") &&
+        !customText.includes("Entities"),
+      customText
+    );
+
+    resetMock([jsonResponse(200, { id: "txn-rp3", status: "queued" })]);
+    const plain = await callTool(client, "submit_transcript", { audio_url: "https://example.com/x.mp3" }, "k");
+    assert(
+      "11b. without redact_pii nothing about redaction is added",
+      plain.structuredContent?.redact_pii_policies === undefined && !(plain.content?.[0]?.text ?? "").includes("redaction"),
+      JSON.stringify(plain)
+    );
+  });
+
+  // #116. get_transcript reports the policies a redacted transcript used.
+  await withClientServer(async (client) => {
+    resetMock([
+      jsonResponse(200, {
+        id: "txn-rd",
+        status: "completed",
+        text: "[PERSON_NAME] lives at 12 Elm St.",
+        audio_duration: 5,
+        redact_pii: true,
+        redact_pii_policies: ["person_name", "phone_number"],
+        entities: [{ text: "Jane Doe", entity_type: "person_name", start: 0, end: 500 }],
+      }),
+    ]);
+    const redacted = await callTool(client, "get_transcript", { transcript_id: "txn-rd" }, "k");
+    const text = redacted.content?.[0]?.text ?? "";
+    assert(
+      "11c. redaction section lists the policies and the entities caveat",
+      text.includes("--- redaction") && text.includes("person_name, phone_number") && text.includes("entities are not redacted"),
+      text
+    );
+    assert(
+      "11c. structuredContent carries redact_pii_policies",
+      JSON.stringify(redacted.structuredContent?.redact_pii_policies) === JSON.stringify(["person_name", "phone_number"]),
+      JSON.stringify(redacted.structuredContent)
+    );
+
+    resetMock([jsonResponse(200, { id: "txn-nr", status: "completed", text: "hello", audio_duration: 1, redact_pii: false })]);
+    const notRedacted = await callTool(client, "get_transcript", { transcript_id: "txn-nr" }, "k");
+    assert(
+      "11c. no redaction section when redact_pii was off",
+      !(notRedacted.content?.[0]?.text ?? "").includes("--- redaction") &&
+        notRedacted.structuredContent?.redact_pii_policies === undefined,
+      JSON.stringify(notRedacted)
+    );
+  });
+
   await withClientServer(async (client) => {
     resetMock([jsonResponse(200, { id: "txn-sum", status: "queued" })]);
     await callTool(

@@ -12,7 +12,7 @@ import { remainingMs, RETURN_RESERVE_MS } from "./deadline";
 const DEFAULT_BASE_URL =
   process.env.ASSEMBLYAI_BASE_URL ?? "https://api.assemblyai.com";
 
-const DEFAULT_REDACT_PII_POLICIES = [
+export const DEFAULT_REDACT_PII_POLICIES = [
   "person_name",
   "phone_number",
   "email_address",
@@ -124,6 +124,8 @@ export interface TranscriptRecord {
   iab_categories_result?: IabCategoriesResult;
   auto_highlights_result?: AutoHighlightsResult;
   unredacted_text?: string;
+  redact_pii?: boolean;
+  redact_pii_policies?: string[];
   redact_pii_audio?: boolean;
   metadata?: { domain_used?: string | null; warnings?: Array<string | { message: string }> };
 }
