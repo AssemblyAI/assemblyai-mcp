@@ -13,6 +13,7 @@ const cases = [
   { name: "REDIS_URL", redis: "redis://127.0.0.1:6379/1", kv: undefined },
   { name: "KV_URL fallback", redis: undefined, kv: "redis://127.0.0.1:6379/2" },
   { name: "REDIS_URL precedence", redis: "redis://127.0.0.1:6379/3", kv: "redis://127.0.0.1:6379/4" },
+  { name: "empty REDIS_URL falls back to KV_URL", redis: "", kv: "redis://127.0.0.1:6379/5" },
   { name: "no Redis (streamable HTTP)", redis: undefined, kv: undefined },
 ];
 
@@ -66,7 +67,7 @@ async function runCase() {
   assert.ok(initialized.result.capabilities.tools);
   assert.equal(urls.length, 0, "streamable HTTP does not require Redis");
 
-  const expectedUrl = process.env.REDIS_URL ?? process.env.KV_URL;
+  const expectedUrl = process.env.REDIS_URL || process.env.KV_URL;
   if (expectedUrl !== undefined) {
     const abort = new AbortController();
     let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
@@ -112,5 +113,5 @@ if (process.argv.includes("--case")) {
     assert.equal(child.status, 0, `${scenario.name}: ${child.error ?? ""}\n${child.stdout}\n${child.stderr}`);
     console.log(`  ✓ ${scenario.name}: real route auth, streamable HTTP${scenario.redis || scenario.kv ? ", and SSE" : ""}`);
   }
-  console.log("\n4 route environment cases passed");
+  console.log(`\n${cases.length} route environment cases passed`);
 }

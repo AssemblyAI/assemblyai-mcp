@@ -13,7 +13,7 @@ const handler = createMcpHandler(
   {},
   {
     // mcp-handler's env defaults only apply when the entire config is omitted.
-    redisUrl: process.env.REDIS_URL ?? process.env.KV_URL,
+    redisUrl: process.env.REDIS_URL || process.env.KV_URL,
     streamableHttpEndpoint: "/mcp",
     sseEndpoint: "/mcp/sse",
     sseMessageEndpoint: "/mcp/message",

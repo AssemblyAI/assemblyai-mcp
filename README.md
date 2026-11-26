@@ -294,7 +294,7 @@ One row per feature. A PR names the rows it changes (see `.github/pull_request_t
 | Delete a transcript | `delete_transcript` | `src/tools/delete-transcript.ts` | `smoke-test.ts` | |
 | Local file upload | `create_upload_url`, `POST /upload/<token>` | `src/tools/create-upload-url.ts`, `src/upload-token.ts`, `app/upload/[token]/route.ts` | `smoke-test.ts` | `UPLOAD_TOKEN_SECRET` |
 | Text to speech | `create_speech` | `src/tools/create-speech.ts`, `src/tts.ts` | `tts-test.ts` | `TTS_ENABLED=1` |
-| MCP endpoint | `/mcp` | `app/mcp/[[...path]]/route.ts`, `src/server.ts`, `src/json-body.ts`, `src/deadline.ts` | `smoke-test.ts` | |
+| MCP endpoint | `/mcp`, `/mcp/sse`, `/mcp/message` | `app/mcp/[[...path]]/route.ts`, `src/server.ts`, `src/json-body.ts`, `src/deadline.ts` | `smoke-test.ts`, `mcp-route-test.ts` | `REDIS_URL` or `KV_URL` (SSE only) |
 | Claude plugin bundle | `plugins/assemblyai/` | `.claude-plugin/plugin.json`, `.mcp.json`, `skills/assemblyai-workflows/SKILL.md` within the plugin folder | `claude plugin validate --strict --profile directory plugins/assemblyai` | |
 | OpenAI domain verification | `GET /.well-known/openai-apps-challenge` | `public/.well-known/openai-apps-challenge` | Unauthenticated HTTP check: 200 and exact portal token | |
 | Square submission logo | `GET /assemblyai-logo-square.png` | `public/assemblyai-logo-square.png` | Unauthenticated HTTP check: 200, PNG, 2048 × 2048, exact source bytes | |
