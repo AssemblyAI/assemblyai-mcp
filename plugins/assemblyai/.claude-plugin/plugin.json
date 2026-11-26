@@ -1,10 +1,10 @@
 {
   "name": "assemblyai",
   "displayName": "AssemblyAI",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Transcribe audio and video, identify speakers, summarize and translate transcripts, and redact sensitive information with AssemblyAI.",
   "author": {
-    "name": "AssemblyAI, Inc.",
+    "name": "AssemblyAI",
     "url": "https://www.assemblyai.com"
   },
   "homepage": "https://www.assemblyai.com/docs/mcp-server",

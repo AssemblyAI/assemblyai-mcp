@@ -34,6 +34,10 @@ The plugin files are instructions and connector configuration; they do not run a
 - [Terms of service](https://www.assemblyai.com/legal/terms-of-service)
 - [Security](https://www.assemblyai.com/security)
 
+## Version 1.0.1
+
+Normalize the publisher name to AssemblyAI for directory resubmission. The plugin name remains `assemblyai` and the display name remains `AssemblyAI`. This metadata update does not change the connector or its tools.
+
 ## Version 1.0.0
 
 Initial Claude plugin bundle: the existing hosted MCP connector, a transcription and transcript-understanding workflow skill, and the approved square AssemblyAI logo.
