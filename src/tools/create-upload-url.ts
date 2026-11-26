@@ -56,7 +56,8 @@ export function registerCreateUploadUrl(server: McpServer): void {
       const guidance =
         `It prints {"upload_url": "..."}. Pass that printed upload_url (not this link) as audio_url to submit_transcript. ` +
         `If it prints {"error": ...} instead, follow the message. If it prints "Bad request", ` +
-        `make sure the command still has -H 'Content-Type: application/octet-stream' and run it again. ` +
+        `make sure the command still has its Content-Type: application/octet-stream header ` +
+        `(single quotes in command, double quotes in windows_command) and run it again. ` +
         `If it prints "Request Entity Too Large" ` +
         `or the error says the file is too large, the file is over 4.5 MB: compress it ` +
         `(e.g. ffmpeg -i in -ac 1 -b:a 32k out.mp3) or ask the user for a public URL. ` +

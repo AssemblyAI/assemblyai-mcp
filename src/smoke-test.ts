@@ -1523,7 +1523,9 @@ async function run() {
 
     resetMock([]);
     const empty = await POST(new Request("https://mcp.assemblyai.com/upload/x", { method: "POST" }), ctx(uploadToken));
+    const emptyError = ((await empty.clone().json().catch(() => ({}))) as { error?: string }).error ?? "";
     assert("48. an empty body answers 400 without calling AssemblyAI", empty.status === 400 && calls.length === 0, String(empty.status));
+    assert("48. the empty-body error gives the Windows command too", emptyError.includes('curl.exe --data-binary "@C:\\path\\to\\file"'), emptyError);
 
     resetMock([jsonResponse(401, { error: "Invalid API key" })]);
     const rejected = await POST(new Request("https://mcp.assemblyai.com/upload/x", { method: "POST", body }), ctx(uploadToken));
@@ -2209,7 +2211,7 @@ async function run() {
     );
     assert(
       "60. the guidance says what to do on \"Bad request\"",
-      text.includes('"Bad request"') && text.includes("Content-Type"),
+      text.includes('"Bad request"') && text.includes("Content-Type") && text.includes("double quotes in windows_command"),
       text
     );
   });
