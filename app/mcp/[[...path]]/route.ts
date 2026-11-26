@@ -13,6 +13,8 @@ const handler = createMcpHandler(
   },
   {},
   {
+    // mcp-handler's env defaults only apply when the entire config is omitted.
+    redisUrl: process.env.REDIS_URL || process.env.KV_URL,
     streamableHttpEndpoint: "/mcp",
     sseEndpoint: "/mcp/sse",
     sseMessageEndpoint: "/mcp/message",
@@ -43,4 +45,26 @@ const authed = withRequestClock(
   )
 );
 
-export { authed as GET, authed as POST, authed as DELETE };
+const CORS_HEADERS: Record<string, string> = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
+  "Access-Control-Allow-Headers": "Authorization, Content-Type, mcp-session-id, mcp-protocol-version, last-event-id",
+  "Access-Control-Expose-Headers": "mcp-session-id, WWW-Authenticate, Retry-After",
+};
+
+export function OPTIONS() {
+  return new Response(null, {
+    status: 204,
+    headers: CORS_HEADERS,
+  });
+}
+
+async function wrapped(req: Request) {
+  const res = await authed(req);
+  for (const [key, value] of Object.entries(CORS_HEADERS)) {
+    res.headers.set(key, value);
+  }
+  return res;
+}
+
+export { wrapped as GET, wrapped as POST, wrapped as DELETE };

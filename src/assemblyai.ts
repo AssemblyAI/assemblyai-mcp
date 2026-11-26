@@ -297,7 +297,7 @@ async function attemptRequest<T>(
       });
       onStatus?.(response.status);
       // fetch resolves at the headers, so a dropped connection can still fail while the body is read.
-      text = await response.text();
+      text = response.status >= 400 ? await readErrorText(response) : await response.text();
     } catch (err) {
       if (signal.aborted) throw timeoutError(method, timeoutMs);
       if (response && response.status >= 400 && response.status < 500) {
@@ -320,6 +320,30 @@ async function attemptRequest<T>(
     `AssemblyAI request failed after ${attempts} attempt${attempts === 1 ? "" : "s"}: ${String(lastError)}`,
     502
   );
+}
+
+export const MAX_ERROR_BODY_BYTES = 16384;
+
+export async function readErrorText(response: Response, maxBytes = MAX_ERROR_BODY_BYTES): Promise<string> {
+  if (!response.body) return "";
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      const keep = Math.max(0, maxBytes - (total - value.byteLength));
+      if (keep > 0) chunks.push(value.slice(0, keep));
+      // Cancelling one tee branch can wait for its unread sibling indefinitely.
+      void reader.cancel().catch(() => {});
+      total = maxBytes;
+      break;
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks, total).toString("utf8");
 }
 
 interface KeyProbe {
@@ -391,7 +415,7 @@ export async function requestWithRetry<T>(
 }
 
 async function errorFromResponse(response: Response): Promise<AssemblyAIError> {
-  const text = await response.text();
+  const text = await readErrorText(response);
   return errorFromText(response.status, text);
 }
 
