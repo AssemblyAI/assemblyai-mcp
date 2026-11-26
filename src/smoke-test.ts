@@ -769,6 +769,25 @@ async function run() {
 
   await withClientServer(async (client) => {
     resetMock([
+      jsonResponse(200, {
+        id: "txn-g2",
+        status: "completed",
+        text: "hi",
+        audio_duration: 3,
+        metadata: { domain_used: null, warnings: ["Universal-3 Pro fallback"] },
+      }),
+    ]);
+    const result = await callTool(client, "get_transcript", { transcript_id: "txn-g2" }, "k");
+    const text = result.content?.[0]?.text ?? "";
+    assert(
+      "24b. warnings section renders string array without undefined",
+      text.includes("--- warnings") && text.includes("- Universal-3 Pro fallback") && !text.includes("undefined"),
+      text
+    );
+  });
+
+  await withClientServer(async (client) => {
+    resetMock([
       jsonResponse(200, { id: "txn-ra", status: "completed", text: "hi", audio_duration: 3, redact_pii_audio: true }),
       jsonResponse(200, { status: "redacted_audio_ready", redacted_audio_url: "https://cdn.example/redacted.mp3" }),
     ]);

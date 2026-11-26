@@ -150,7 +150,7 @@ interface ShapedTranscript {
   redacted_audio_error?: string;
   /** Claude Code shows the model only structuredContent. */
   next_step?: string;
-  metadata?: { domain_used?: string | null; warnings?: Array<{ message: string }> };
+  metadata?: { domain_used?: string | null; warnings?: Array<string | { message: string }> };
 }
 
 function shape(record: TranscriptRecord, redactedAudioUrl?: string, includeWords = false): ShapedTranscript {
