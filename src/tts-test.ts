@@ -11,6 +11,7 @@ import { registerTools } from "./server";
 import { AssemblyAIError } from "./assemblyai";
 import { withRequestClock } from "./deadline";
 import {
+  createSpeech,
   createTtsToken,
   INLINE_BIT_RATE,
   MAX_INLINE_AUDIO_BYTES,
@@ -871,6 +872,72 @@ async function run() {
       );
     }
   });
+
+  // #150. Inline audio cut off after a 200 says the speech may have been billed, not just "terminated".
+  {
+    const cutOff = (headers: Record<string, string> = {}) =>
+      audioOk(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new Uint8Array(1000));
+            controller.error(new TypeError("terminated"));
+          },
+        }) as unknown as Uint8Array,
+        headers
+      );
+
+    await withClient(async (client) => {
+      resetMock([cutOff({ "X-TTS-Billed-Characters": "11" })]);
+      let res = await speak(client, { text: "hello world", delivery: "inline" });
+      assert(
+        "#150 inline audio cut off after a 200 says how many characters were billed and not to retry",
+        res.isError === true && calls.length === 1 && textOf(res).includes("11 characters were billed") &&
+          textOf(res).includes("Do not retry the same text") && textOf(res).includes('delivery "file"') &&
+          textOf(res) !== "terminated",
+        `${calls.length} calls | ${textOf(res)}`
+      );
+
+      const billedHeaderMissing = cutOff();
+      billedHeaderMissing.headers.delete("X-TTS-Billed-Characters");
+      resetMock([billedHeaderMissing]);
+      res = await speak(client, { text: "hello world", delivery: "inline" });
+      assert(
+        "#150 without a billed-characters header it says the speech may have been billed",
+        res.isError === true && textOf(res).includes("may have been billed") &&
+          textOf(res).includes("Do not retry the same text") && !textOf(res).includes("characters were billed"),
+        textOf(res)
+      );
+    });
+
+    const realFetch = globalThis.fetch;
+    const keepAlive = setInterval(() => {}, 1_000);
+    try {
+      globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+        const signal = init?.signal;
+        const body = new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new Uint8Array(1000));
+            signal?.addEventListener("abort", () => controller.error(signal.reason), { once: true });
+          },
+        });
+        return new Response(body, { status: 200, headers: { "Content-Type": "audio/mpeg" } });
+      }) as typeof fetch;
+      let err: unknown;
+      try {
+        await createSpeech(KEY, { text: "Hello.", format: "mp3" }, { timeoutMs: 300, maxBytes: MAX_INLINE_AUDIO_BYTES });
+      } catch (e) {
+        err = e;
+      }
+      assert(
+        "#150 an audio body that stalls until the deadline is still a timeout, not a cut-off",
+        err instanceof Error && err.name === "TimeoutError",
+        String(err)
+      );
+    } finally {
+      globalThis.fetch = realFetch;
+      clearInterval(keepAlive);
+    }
+  }
 
   console.log(`\n${passed} passed, ${failed} failed`);
   finished = true;

@@ -123,6 +123,17 @@ export class AudioTooLargeError extends Error {
   }
 }
 
+/** The API answered 200, so the speech was synthesized and may have been billed. */
+export class AudioCutOffError extends Error {
+  constructor(
+    readonly billedCharacters: number | undefined,
+    cause: unknown
+  ) {
+    super(`The audio was cut off before it arrived: ${String(cause)}`);
+    this.name = "AudioCutOffError";
+  }
+}
+
 async function readCapped(response: Response, maxBytes: number): Promise<Buffer> {
   const declared = numberHeader(response, "content-length");
   if (declared !== undefined && declared > maxBytes) {
@@ -157,18 +168,26 @@ export async function createSpeech(
   options: SpeechOptions,
   limits: SpeechLimits = {}
 ): Promise<SpeechResult> {
+  const signal = AbortSignal.timeout(limits.timeoutMs ?? SPEECH_TIMEOUT_MS);
   const response = await fetch(`${ttsBaseUrl()}/v1/speech`, {
     method: "POST",
     headers: { Authorization: apiKey, "Content-Type": "application/json" },
     body: JSON.stringify(speechRequestBody(options)),
-    signal: AbortSignal.timeout(limits.timeoutMs ?? SPEECH_TIMEOUT_MS),
+    signal,
   });
   if (!response.ok) throw await ttsError(response);
-  return {
-    audio:
+  let audio: Buffer;
+  try {
+    audio =
       limits.maxBytes === undefined
         ? Buffer.from(await response.arrayBuffer())
-        : await readCapped(response, limits.maxBytes),
+        : await readCapped(response, limits.maxBytes);
+  } catch (err) {
+    if (err instanceof AudioTooLargeError || signal.aborted) throw err;
+    throw new AudioCutOffError(numberHeader(response, "x-tts-billed-characters"), err);
+  }
+  return {
+    audio,
     mimeType: ((response.headers.get("content-type") ?? "audio/mpeg").split(";")[0] ?? "audio/mpeg").trim(),
     voiceId: response.headers.get("x-tts-voice-id") ?? undefined,
     language: response.headers.get("x-tts-language") ?? undefined,
