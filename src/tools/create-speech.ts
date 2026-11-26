@@ -8,6 +8,7 @@ import { AssemblyAIError } from "../assemblyai";
 import { remainingMs, RETURN_RESERVE_MS } from "../deadline";
 import { log, logError, keyHash } from "../log";
 import {
+  AudioCutOffError,
   AudioTooLargeError,
   createSpeech,
   createTtsToken,
@@ -238,6 +239,15 @@ export function registerCreateSpeech(server: McpServer): void {
                 "speech_timeout",
                 `The speech service did not finish within ${Math.round(timeoutMs / 1000)} seconds. ` +
                   "It may have been billed. Do not retry the same text; use shorter parts, or delivery \"file\"."
+              );
+            }
+            if (err instanceof AudioCutOffError) {
+              refuse(
+                "audio_cut_off",
+                (err.billedCharacters !== undefined
+                  ? `The speech was created and ${err.billedCharacters} characters were billed, but the audio was cut off before it arrived. `
+                  : "The speech service answered, but the audio was cut off before it arrived. It may have been billed. ") +
+                  "Do not retry the same text; use shorter parts, or delivery \"file\"."
               );
             }
             throw err;
