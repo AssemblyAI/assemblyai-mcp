@@ -398,6 +398,24 @@ async function run() {
   });
 
   await withClientServer(async (client) => {
+    resetMock([jsonResponse(200, { choices: [{ message: { content: "custom summary" } }] })]);
+    await callTool(
+      client,
+      "summarize_transcript",
+      { transcript_id: "txn-ai", style: "custom", custom_prompt: "Summarize: {{ transcript }}" },
+      "k"
+    );
+    const body = JSON.parse(calls[0]?.body ?? "{}");
+    const content = body.messages?.[0]?.content ?? "";
+    const occurrences = (content.match(/\{\{ transcript \}\}/g) ?? []).length;
+    assert(
+      "14b. prompt does not duplicate {{ transcript }} tag when already present",
+      occurrences === 1 && content === "Summarize: {{ transcript }}",
+      content
+    );
+  });
+
+  await withClientServer(async (client) => {
     resetMock([]);
     const result = await callTool(
       client,
