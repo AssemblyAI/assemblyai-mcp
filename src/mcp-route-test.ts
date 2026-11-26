@@ -1,7 +1,9 @@
 /**
  * Offline route regression tests: keep the real mcp-handler and auth wrappers,
- * replacing only Redis's network client. Each environment gets a fresh process
- * because the route captures env at import and mcp-handler caches Redis clients.
+ * replacing only Redis's network client so any connection attempt is recorded.
+ * The route serves streamable HTTP only; legacy SSE is off and must never reach
+ * Redis, even when a Redis URL is present. Each environment gets a fresh process
+ * because the route captures env at import.
  */
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -10,24 +12,20 @@ import { fileURLToPath } from "node:url";
 import { mock } from "node:test";
 
 const cases = [
-  { name: "REDIS_URL", redis: "redis://127.0.0.1:6379/1", kv: undefined },
-  { name: "KV_URL fallback", redis: undefined, kv: "redis://127.0.0.1:6379/2" },
-  { name: "REDIS_URL precedence", redis: "redis://127.0.0.1:6379/3", kv: "redis://127.0.0.1:6379/4" },
-  { name: "empty REDIS_URL falls back to KV_URL", redis: "", kv: "redis://127.0.0.1:6379/5" },
-  { name: "no Redis (streamable HTTP)", redis: undefined, kv: undefined },
+  { name: "no Redis", redis: undefined, kv: undefined },
+  { name: "REDIS_URL set", redis: "redis://127.0.0.1:6379/1", kv: undefined },
+  { name: "KV_URL set", redis: undefined, kv: "redis://127.0.0.1:6379/2" },
 ];
 
 async function runCase() {
   const urls: string[] = [];
-  const subscriptions: string[] = [];
-  // No socket is opened. The real handler must select the URL, connect its two
-  // clients, subscribe to its session channel, and emit the real SSE endpoint.
   const createClient = ({ url }: { url: string }) => {
     urls.push(url);
     return Object.assign(new EventEmitter(), {
       connect: async () => {},
-      subscribe: async (channel: string) => { subscriptions.push(channel); },
+      subscribe: async () => {},
       unsubscribe: async () => {},
+      publish: async () => 0,
     });
   };
   const redisMock = mock.module("redis", {
@@ -40,11 +38,10 @@ async function runCase() {
   assert.equal(GET, POST);
   assert.equal(GET, DELETE);
 
-  const headers = { authorization: "Bearer route-test-api-key", accept: "text/event-stream" };
+  const headers = { authorization: "Bearer route-test-api-key" };
   const unauthorized = await GET(new Request("http://localhost/mcp/sse"));
-  assert.equal(unauthorized.status, 401);
+  assert.equal(unauthorized.status, 401, "auth still runs before routing");
   assert.match(unauthorized.headers.get("www-authenticate") ?? "", /oauth-protected-resource/);
-  assert.equal(urls.length, 0, "auth rejects requests before Redis initialization");
 
   // Exercise the actual streamable HTTP POST endpoint, not a mocked handler.
   const response = await POST(new Request("http://localhost/mcp", {
@@ -65,40 +62,26 @@ async function runCase() {
   assert.equal(initialized.id, 1);
   assert.equal(initialized.result.protocolVersion, "2025-03-26");
   assert.ok(initialized.result.capabilities.tools);
-  assert.equal(urls.length, 0, "streamable HTTP does not require Redis");
 
-  const expectedUrl = process.env.REDIS_URL || process.env.KV_URL;
-  if (expectedUrl !== undefined) {
-    const abort = new AbortController();
-    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
-    try {
-      const sse = await GET(new Request("http://localhost/mcp/sse", { headers, signal: abort.signal }));
-      assert.equal(sse.status, 200);
-      assert.match(sse.headers.get("content-type") ?? "", /text\/event-stream/);
-      reader = sse.body!.getReader();
-      const first = await reader.read();
-      const event = new TextDecoder().decode(first.value);
-      assert.match(event, /event: endpoint/);
-      assert.match(event, /data: \/mcp\/message\?sessionId=/);
-      assert.deepEqual(urls, [expectedUrl, expectedUrl]);
-      assert.equal(subscriptions.length, 1);
-      assert.match(subscriptions[0]!, /^requests:/);
-    } finally {
-      abort.abort();
-      // Abort ends the dependency's SSE wait and cleans its timers/session.
-      if (reader) {
-        while (!(await reader.read()).done) { /* drain until cleanup closes */ }
-        reader.releaseLock();
-      }
-    }
-  }
+  // Legacy SSE endpoints are gone: a clean 404, not a stream or a Redis error.
+  const sse = await GET(new Request("http://localhost/mcp/sse", {
+    headers: { ...headers, accept: "text/event-stream" },
+  }));
+  assert.equal(sse.status, 404, "GET /mcp/sse is not served");
+  const message = await POST(new Request("http://localhost/mcp/message?sessionId=legacy", {
+    method: "POST",
+    headers: { ...headers, "content-type": "application/json" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" }),
+  }));
+  assert.equal(message.status, 404, "POST /mcp/message is not served");
+
+  assert.deepEqual(urls, [], "no request path connects to Redis");
   redisMock.restore();
 }
 
 if (process.argv.includes("--case")) {
   await runCase();
   // mcp-handler 1.1.0 keeps a global cleanup interval with no disposal API.
-  // Exit only after every assertion and the SSE session cleanup has completed.
   process.exit(0);
 } else {
   for (const scenario of cases) {
@@ -111,7 +94,7 @@ if (process.argv.includes("--case")) {
       "--import", "tsx", "--experimental-test-module-mocks", fileURLToPath(import.meta.url), "--case",
     ], { env, encoding: "utf8", timeout: 10_000 });
     assert.equal(child.status, 0, `${scenario.name}: ${child.error ?? ""}\n${child.stdout}\n${child.stderr}`);
-    console.log(`  ✓ ${scenario.name}: real route auth, streamable HTTP${scenario.redis || scenario.kv ? ", and SSE" : ""}`);
+    console.log(`  ✓ ${scenario.name}: real route auth, streamable HTTP, SSE 404, no Redis`);
   }
   console.log(`\n${cases.length} route environment cases passed`);
 }

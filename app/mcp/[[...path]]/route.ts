@@ -13,13 +13,10 @@ const handler = createMcpHandler(
   },
   {},
   {
-    // mcp-handler's env defaults only apply when the entire config is omitted.
-    redisUrl: process.env.REDIS_URL || process.env.KV_URL,
     streamableHttpEndpoint: "/mcp",
-    sseEndpoint: "/mcp/sse",
-    sseMessageEndpoint: "/mcp/message",
-    // Bounds mcp-handler's SSE wait only; Vercel's limit is the project default.
-    maxDuration: 60,
+    // The spec replaced HTTP+SSE with streamable HTTP in 2025-03-26. SSE needs
+    // Redis to join /sse and /message across Vercel instances; we run neither.
+    disableSse: true,
   }
 );
 
