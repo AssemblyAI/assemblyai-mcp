@@ -43,6 +43,8 @@ export function registerCreateUploadUrl(server: McpServer): void {
       // No --fail-with-body: it needs curl 7.76+.
       // Without Content-Type curl sends form-urlencoded, and Vercel rejects most binary bodies of that type over ~270 KB.
       const command = `curl -sS -X POST -H 'Content-Type: application/octet-stream' --data-binary @"/path/to/file" '${uploadLink.replaceAll("'", "'\\''")}'`;
+      // PowerShell aliases curl to Invoke-WebRequest and reads @" as a here-string; cmd.exe keeps single quotes literally.
+      const windowsCommand = `curl.exe -sS -X POST -H "Content-Type: application/octet-stream" --data-binary "@C:\\path\\to\\file" "${uploadLink.replaceAll('"', '\\"')}"`;
       log({
         event: "tool_call",
         tool: "create_upload_url",
@@ -54,7 +56,8 @@ export function registerCreateUploadUrl(server: McpServer): void {
       const guidance =
         `It prints {"upload_url": "..."}. Pass that printed upload_url (not this link) as audio_url to submit_transcript. ` +
         `If it prints {"error": ...} instead, follow the message. If it prints "Bad request", ` +
-        `make sure the command still has -H 'Content-Type: application/octet-stream' and run it again. ` +
+        `make sure the command still has its Content-Type: application/octet-stream header ` +
+        `(single quotes in command, double quotes in windows_command) and run it again. ` +
         `If it prints "Request Entity Too Large" ` +
         `or the error says the file is too large, the file is over 4.5 MB: compress it ` +
         `(e.g. ffmpeg -i in -ac 1 -b:a 32k out.mp3) or ask the user for a public URL. ` +
@@ -69,8 +72,9 @@ export function registerCreateUploadUrl(server: McpServer): void {
           {
             type: "text" as const,
             text:
-              `Upload link created (expires in ${UPLOAD_TTL_MS / 60000} minutes, files up to 4.5 MB). ` +
-              `Replace /path/to/file and run:\n\n${command}\n\n` +
+              `Upload link created (expires in ${UPLOAD_TTL_MS / 60000} minutes, files up to 4.5 MB).\n\n` +
+              `On macOS/Linux, replace /path/to/file and run:\n${command}\n\n` +
+              `On Windows (PowerShell or Command Prompt), replace C:\\path\\to\\file and run:\n${windowsCommand}\n\n` +
               guidance,
           },
         ],
@@ -80,7 +84,8 @@ export function registerCreateUploadUrl(server: McpServer): void {
           expires_at: new Date(expiresAt).toISOString(),
           max_bytes: MAX_UPLOAD_BYTES,
           command,
-          next_step: `Replace /path/to/file in command with the file path and run it. ${guidance}`,
+          windows_command: windowsCommand,
+          next_step: `Replace /path/to/file in command (or C:\\path\\to\\file in windows_command on Windows) with the file path and run it. ${guidance}`,
         },
       };
     }
