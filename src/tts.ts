@@ -165,10 +165,7 @@ export async function createSpeech(
   });
   if (!response.ok) throw await ttsError(response);
   return {
-    audio:
-      limits.maxBytes === undefined
-        ? Buffer.from(await response.arrayBuffer())
-        : await readCapped(response, limits.maxBytes),
+    audio: await readCapped(response, limits.maxBytes ?? MAX_INLINE_AUDIO_BYTES),
     mimeType: ((response.headers.get("content-type") ?? "audio/mpeg").split(";")[0] ?? "audio/mpeg").trim(),
     voiceId: response.headers.get("x-tts-voice-id") ?? undefined,
     language: response.headers.get("x-tts-language") ?? undefined,
