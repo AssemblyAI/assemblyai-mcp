@@ -299,6 +299,13 @@ export async function requestWithRetry<T>(
       if (response && response.status >= 400 && response.status < 500) {
         throw new AssemblyAIError(`HTTP ${response.status}: failed to read AssemblyAI error response: ${String(err)}`, 502);
       }
+      if (response?.ok && method !== "GET") {
+        throw new AssemblyAIError(
+          `AssemblyAI accepted the request (HTTP ${response.status}), but the response was cut off: ${String(err)}. ` +
+            "The request may still have gone through, so repeating it could run it twice.",
+          502
+        );
+      }
       lastError = err;
       continue;
     }
