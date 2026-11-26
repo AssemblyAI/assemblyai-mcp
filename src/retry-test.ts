@@ -40,7 +40,7 @@ const previousBaseUrl = process.env.ASSEMBLYAI_BASE_URL;
 process.env.ASSEMBLYAI_BASE_URL = baseUrl;
 const {
   AssemblyAIError, getTranscript, getRedactedAudio, deleteTranscript,
-  submitTranscript,
+  submitTranscript, requestWithRetry, withRequestKeyProbes,
 } = await import("./assemblyai");
 if (previousBaseUrl === undefined) delete process.env.ASSEMBLYAI_BASE_URL;
 else process.env.ASSEMBLYAI_BASE_URL = previousBaseUrl;
@@ -114,6 +114,54 @@ try {
       assert.equal(count(), 1);
     });
   }
+
+  // #157. A write that fails before any response may still have gone through.
+  const connectionReset = () => {
+    throw Object.assign(new TypeError("fetch failed"), {
+      cause: Object.assign(new Error("other side closed"), { code: "UND_ERR_SOCKET" }),
+    });
+  };
+  const warnsNoResponse = (err: unknown) =>
+    isTransportError(err) && /No response arrived/.test((err as Error).message) &&
+    /may still have gone through/.test((err as Error).message) && /could run it twice/.test((err as Error).message);
+  const warnsNothing = (err: unknown) =>
+    err instanceof AssemblyAIError && !/gone through/.test(err.message);
+  const writesBeforeResponse = [
+    ["submit", () => submitTranscript("test-key", { audio_url: "https://example.com/a.mp3" })],
+    ["summary", () => summarizeViaLlmGateway("test-key", { transcript_id: "txn-retry", prompt: "Summarize" })],
+    ["understanding", () => understandTranscript("test-key", { transcript_id: "txn-retry", speech_understanding: { request: {} } })],
+    ["delete", () => deleteTranscript("test-key", "txn-retry")],
+  ] as const;
+  for (const [name, call] of writesBeforeResponse) {
+    await test(`#157 connection fails before any response: ${name} says it may have gone through`, async () => {
+      const count = mock([connectionReset]);
+      await assert.rejects(call, warnsNoResponse);
+      assert.equal(count(), 1);
+    });
+    await test(`#157 same, inside a request's key probes (the /mcp route): ${name}`, async () => {
+      const count = mock([connectionReset]);
+      await assert.rejects(withRequestKeyProbes(async (_: void) => call())(undefined), warnsNoResponse);
+      assert.equal(count(), 1);
+    });
+  }
+  await test("#157 a GET that fails before any response retries and claims nothing", async () => {
+    const count = mock([connectionReset, connectionReset, connectionReset]);
+    await assert.rejects(get, (err: unknown) => isTransportError(err) && warnsNothing(err));
+    assert.equal(count(), 3);
+  });
+  await test("#157 a write refused for lack of time sent nothing, and says so", async () => {
+    const count = mock([]);
+    await assert.rejects(
+      () => requestWithRetry("test-key", "POST", "/v2/transcript", { audio_url: "x" }, 1, undefined, 500),
+      (err: unknown) => err instanceof AssemblyAIError && err.status === 504 && /nothing was sent/.test(err.message) && warnsNothing(err),
+    );
+    assert.equal(count(), 0);
+  });
+  await test("#157 a write that got a 5xx before its body dropped claims nothing", async () => {
+    mock([() => failedBody(503)]);
+    await assert.rejects(() => submitTranscript("test-key", { audio_url: "https://example.com/a.mp3" }),
+      (err: unknown) => isTransportError(err) && warnsNothing(err));
+  });
 
   const singleAttemptCalls = [
     ["submit", () => submitTranscript("test-key", { audio_url: "https://example.com/a.mp3" })],
