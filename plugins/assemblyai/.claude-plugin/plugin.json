@@ -1,0 +1,19 @@
+{
+  "name": "assemblyai",
+  "displayName": "AssemblyAI",
+  "version": "1.0.0",
+  "description": "Transcribe audio and video, identify speakers, summarize and translate transcripts, and redact sensitive information with AssemblyAI.",
+  "author": {
+    "name": "AssemblyAI, Inc.",
+    "url": "https://www.assemblyai.com"
+  },
+  "homepage": "https://www.assemblyai.com/docs/mcp-server",
+  "repository": "https://github.com/AssemblyAI/assemblyai-mcp",
+  "license": "MIT",
+  "keywords": ["audio", "transcription", "speakers", "summaries", "translation", "redaction"],
+  "icon": "./assets/logo.png",
+  "documentationUrl": "https://www.assemblyai.com/docs/mcp-server",
+  "supportUrl": "https://support.assemblyai.com",
+  "privacyPolicyUrl": "https://www.assemblyai.com/legal/privacy-policy",
+  "termsOfServiceUrl": "https://www.assemblyai.com/legal/terms-of-service"
+}
