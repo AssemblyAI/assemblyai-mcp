@@ -1,15 +1,16 @@
 import { AssemblyAIError } from "./assemblyai";
+import { resolveHttpsUrl } from "./config";
 
 export function ttsEnabled(): boolean {
   return process.env.TTS_ENABLED === "1";
 }
 
 export function ttsBaseUrl(): string {
-  return process.env.ASSEMBLYAI_TTS_BASE_URL ?? "https://tts.us.assemblyai.com";
+  return resolveHttpsUrl("ASSEMBLYAI_TTS_BASE_URL", "https://tts.us.assemblyai.com", { allowHttpLocalhost: true });
 }
 
 function tokenBaseUrl(): string {
-  return process.env.ASSEMBLYAI_TOKEN_BASE_URL ?? "https://token.us.assemblyai.com";
+  return resolveHttpsUrl("ASSEMBLYAI_TOKEN_BASE_URL", "https://token.us.assemblyai.com", { allowHttpLocalhost: true });
 }
 
 /** The API's own limit: 1 to 5,000 Unicode code points per request. */

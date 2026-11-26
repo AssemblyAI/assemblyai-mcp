@@ -8,9 +8,11 @@ import type {
 } from "./transcript-sections";
 import { isValidTranscriptId } from "./transcript-id";
 import { remainingMs, RETURN_RESERVE_MS } from "./deadline";
+import { resolveHttpsUrl } from "./config";
 
-const DEFAULT_BASE_URL =
-  process.env.ASSEMBLYAI_BASE_URL ?? "https://api.assemblyai.com";
+function defaultBaseUrl(): string {
+  return resolveHttpsUrl("ASSEMBLYAI_BASE_URL", "https://api.assemblyai.com", { allowHttpLocalhost: true });
+}
 
 const DEFAULT_REDACT_PII_POLICIES = [
   "person_name",
@@ -221,7 +223,7 @@ export async function uploadFile(
   apiKey: string,
   data: ArrayBuffer
 ): Promise<{ upload_url: string }> {
-  const response = await fetch(`${DEFAULT_BASE_URL}/v2/upload`, {
+  const response = await fetch(`${defaultBaseUrl()}/v2/upload`, {
     method: "POST",
     headers: { Authorization: apiKey, "Content-Type": "application/octet-stream" },
     body: data,
@@ -259,7 +261,7 @@ export async function requestWithRetry<T>(
   path: string,
   body?: unknown,
   retries = 3,
-  baseUrl: string = DEFAULT_BASE_URL,
+  baseUrl: string = defaultBaseUrl(),
   timeoutMs: number = remainingMs() - RETURN_RESERVE_MS
 ): Promise<T> {
   if (!(timeoutMs >= MIN_ATTEMPT_MS)) {
