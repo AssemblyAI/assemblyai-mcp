@@ -125,7 +125,7 @@ export interface TranscriptRecord {
   auto_highlights_result?: AutoHighlightsResult;
   unredacted_text?: string;
   redact_pii_audio?: boolean;
-  metadata?: { domain_used?: string | null; warnings?: Array<{ message: string }> };
+  metadata?: { domain_used?: string | null; warnings?: Array<string | { message: string }> };
 }
 
 const HANDLED_KEYS = new Set<keyof TranscriptSubmitOptions>([
