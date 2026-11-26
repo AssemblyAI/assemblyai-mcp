@@ -5,7 +5,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
 import { registerTools } from "./server";
 import { log, logError, MAX_LOG_FIELD_CHARS, MAX_LOG_STACK_CHARS } from "./log";
-import { MAX_BODY_BYTES, withJsonBodyCheck } from "./json-body";
+import { MAX_BODY_BYTES, MAX_JSON_DEPTH, withJsonBodyCheck } from "./json-body";
 import { renderSuSummary } from "./transcript-sections";
 
 interface FetchCall {
@@ -2058,6 +2058,39 @@ async function run() {
     );
     const atLimit = await checked(post(JSON.stringify({ pad: "y".repeat(MAX_BODY_BYTES - 20) })));
     assert("57. a JSON body just under the limit is passed on", atLimit.status === 200 && reached === 4);
+
+    // A body nested ~100,000 levels deep (issue #126): JSON.parse accepts it,
+    // but the MCP SDK's own message validation throws an uncaught RangeError
+    // partway through and the request never gets a response. This must be
+    // refused here, before the handler (and the SDK) ever sees it.
+    const start = Date.now();
+    const pathological = await checked(post("[".repeat(100_000) + "]".repeat(100_000)));
+    const elapsedMs = Date.now() - start;
+    const pathologicalBody = await pathological.json();
+    assert(
+      "57. a body nested ~100,000 levels deep (#126) is refused quickly, not passed to the handler",
+      pathological.status === 400 && pathologicalBody?.error?.code === -32700 && reached === 4 && elapsedMs < 1000,
+      `status=${pathological.status} reached=${reached} elapsedMs=${elapsedMs} body=${JSON.stringify(pathologicalBody)}`
+    );
+
+    // The exact depth limit is a hard boundary, not approximate.
+    const atDepthLimit = await checked(post("[".repeat(MAX_JSON_DEPTH) + "]".repeat(MAX_JSON_DEPTH)));
+    assert("57. a body nested exactly at the depth limit is passed on", atDepthLimit.status === 200 && reached === 5);
+    const overDepthLimit = await checked(post("[".repeat(MAX_JSON_DEPTH + 1) + "]".repeat(MAX_JSON_DEPTH + 1)));
+    assert(
+      "57. a body nested one level past the limit is refused",
+      overDepthLimit.status === 400 && (await overDepthLimit.json())?.error?.code === -32700 && reached === 5
+    );
+
+    // Brackets inside a JSON string (e.g. transcript text, a custom prompt)
+    // are data, not structure, and must not count toward the depth.
+    const bracketsInString = await checked(
+      post(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ping", params: { note: "[".repeat(1000) } }))
+    );
+    assert(
+      "57. brackets inside a JSON string don't count toward nesting depth",
+      bracketsInString.status === 200 && reached === 6
+    );
   }
 
   {
