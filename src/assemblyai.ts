@@ -269,7 +269,7 @@ export async function requestWithRetry<T>(
     );
   }
   const deadline = Date.now() + timeoutMs;
-  const signal = AbortSignal.timeout(timeoutMs);
+  const deadlineSignal = AbortSignal.timeout(timeoutMs);
   let lastError: unknown;
   let attempts = 0;
   for (let attempt = 0; attempt < retries; attempt++) {
@@ -277,8 +277,16 @@ export async function requestWithRetry<T>(
       // Back off only between attempts, and only if the next one still fits.
       const delayMs = 2 ** (attempt - 1) * 1000;
       if (deadline - Date.now() < delayMs + MIN_ATTEMPT_MS) break;
-      await sleep(delayMs);
+      try {
+        await sleepUnlessAborted(delayMs, deadlineSignal);
+      } catch {
+        break;
+      }
+      if (deadline - Date.now() < MIN_ATTEMPT_MS) break;
     }
+    const remaining = deadline - Date.now();
+    if (remaining < MIN_ATTEMPT_MS) break;
+    const signal = AbortSignal.timeout(remaining);
     attempts++;
     let response: Response;
     try {
@@ -339,8 +347,19 @@ async function errorFromResponse(response: Response): Promise<AssemblyAIError> {
   return new AssemblyAIError(`HTTP ${response.status}: ${text.slice(0, 500)}`, response.status);
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms));
+function sleepUnlessAborted(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) return reject(signal.reason);
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal.reason);
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 function gatewayErrorReasons(body: unknown): string[] {
