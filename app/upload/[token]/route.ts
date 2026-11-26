@@ -30,7 +30,11 @@ async function handle(req: Request, { params }: { params: Promise<{ token: strin
   }
   if (!data) return tooLarge();
   if (data.byteLength === 0) {
-    return json(400, { error: 'The request body is empty. Send the file with curl --data-binary @"/path/to/file".' });
+    return json(400, {
+      error:
+        'The request body is empty: check the file path. Send the file with curl --data-binary @"/path/to/file" ' +
+        '(on Windows: curl.exe --data-binary "@C:\\path\\to\\file").',
+    });
   }
 
   try {
