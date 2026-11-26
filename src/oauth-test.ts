@@ -365,7 +365,11 @@ async function run() {
   }
 
   {
+    const savedHosts = process.env.PUBLIC_HOSTS;
+    process.env.PUBLIC_HOSTS = "mcp.example.com";
     const res = resourceMetadata(new Request("https://mcp.example.com/.well-known/oauth-protected-resource"));
+    if (savedHosts === undefined) delete process.env.PUBLIC_HOSTS;
+    else process.env.PUBLIC_HOSTS = savedHosts;
     const body = (await res.json()) as Record<string, unknown>;
     assert(
       "10. the metadata names the authorization server and scopes",
@@ -373,6 +377,18 @@ async function run() {
         JSON.stringify(body.scopes_supported) === JSON.stringify(["aai:api", "offline_access"]) &&
         body.resource === "https://mcp.example.com/mcp",
       JSON.stringify(body)
+    );
+
+    const forwardedRes = resourceMetadata(
+      new Request("http://localhost:3000/.well-known/oauth-protected-resource", {
+        headers: { "x-forwarded-host": "mcp.assemblyai.com" },
+      })
+    );
+    const forwardedBody = (await forwardedRes.json()) as Record<string, unknown>;
+    assert(
+      "10b. uses x-forwarded-host for resource metadata when behind reverse proxy",
+      forwardedBody.resource === "https://mcp.assemblyai.com/mcp",
+      JSON.stringify(forwardedBody)
     );
   }
 
