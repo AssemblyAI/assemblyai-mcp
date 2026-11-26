@@ -2574,6 +2574,64 @@ async function run() {
         !result.isError && JSON.stringify(result.structuredContent?.speech_understanding) === JSON.stringify(speech_understanding ?? undefined));
     }
   });
+  // #134. A Gateway 429 on summarize_transcript names the LLM Gateway's limits and passes on Retry-After.
+  await withClientServer(async (client) => {
+    const rateLimited = (retryAfter?: string) =>
+      new Response(JSON.stringify({ error: "rate limit exceeded" }), {
+        status: 429,
+        headers: { "Content-Type": "application/json", ...(retryAfter !== undefined ? { "Retry-After": retryAfter } : {}) },
+      });
+    const summarize = async (retryAfter?: string) => {
+      resetMock([rateLimited(retryAfter)]);
+      const result = await callTool(client, "summarize_transcript", { transcript_id: "txn-rl" }, "k");
+      return { result, text: result.content?.[0]?.text ?? "" };
+    };
+
+    const withHeader = await summarize("12");
+    assert(
+      "#134 summarize 429 names the LLM Gateway and its limits, not Speech Understanding's",
+      withHeader.result.isError === true &&
+        withHeader.text.includes("LLM Gateway") &&
+        withHeader.text.includes("https://www.assemblyai.com/docs/llm-gateway/rate-limits") &&
+        !withHeader.text.includes("Speech Understanding") &&
+        !withHeader.text.includes("2/min"),
+      withHeader.text
+    );
+    assert("#134 summarize 429 passes on Retry-After", withHeader.text.includes("Wait 12 seconds"), withHeader.text);
+    assert("#134 a 429 is not retried (billable POST)", calls.length === 1, String(calls.length));
+
+    const inThirty = new Date(Date.now() + 30_000).toUTCString();
+    const withDate = await summarize(inThirty);
+    assert("#134 an HTTP-date Retry-After becomes seconds", /Wait (29|30) seconds/.test(withDate.text), withDate.text);
+
+    for (const retryAfter of [undefined, "soon", "-5", ""]) {
+      const { result, text } = await summarize(retryAfter);
+      assert(
+        `#134 summarize 429 with Retry-After ${JSON.stringify(retryAfter)} still names the LLM Gateway, with no made-up wait`,
+        result.isError === true &&
+          text.includes("LLM Gateway") &&
+          text.toLowerCase().includes("retry") &&
+          !/Wait \S+ seconds/.test(text) &&
+          !text.includes("undefined") &&
+          !text.includes("NaN"),
+        text
+      );
+    }
+
+    resetMock([rateLimited("12")]);
+    const understand = await callTool(
+      client,
+      "understand_transcript",
+      { transcript_id: "txn-rl", speech_understanding: { request: { action_items: {} } } },
+      "k"
+    );
+    assert(
+      "#134 understand_transcript keeps its Speech Understanding message",
+      (understand.content?.[0]?.text ?? "").includes("Speech Understanding rate limit reached"),
+      understand.content?.[0]?.text
+    );
+  });
+
   delete process.env.UPLOAD_TOKEN_SECRET;
   // 65. a blank custom_prompt falls back to the style prompt instead of an empty instruction
   for (const blank of ["", "   "]) {

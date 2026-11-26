@@ -7,7 +7,7 @@ interface ToolErrorContext {
   start: number;
   transcriptId?: string;
   notFoundMessage?: string;
-  rateLimitMessage?: string;
+  rateLimitMessage?: string | ((retryAfterSeconds: number | undefined) => string);
   errorEvent: string;
 }
 
@@ -46,7 +46,11 @@ export function handleToolError(err: unknown, ctx: ToolErrorContext): never {
   }
   if (err instanceof AssemblyAIError && err.status === 429 && ctx.rateLimitMessage) {
     logError({ ...payload, event: ctx.errorEvent }, err);
-    throw new Error(ctx.rateLimitMessage);
+    throw new Error(
+      typeof ctx.rateLimitMessage === "function"
+        ? ctx.rateLimitMessage(err.retryAfterSeconds)
+        : ctx.rateLimitMessage
+    );
   }
   logError({ ...payload, event: ctx.errorEvent }, err);
   // Gateway reasons can echo caller input, so they go to the caller only, never to the log.
