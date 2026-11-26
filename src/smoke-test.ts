@@ -2273,13 +2273,25 @@ async function run() {
 
   const badIds = ["..", ".", "a/b", "%2e%2e", "", "abc?x=1", "../upload"];
   await withClientServer(async (client) => {
+    // Each tool's other arguments must be valid on their own, so a refusal
+    // can only come from the id. The control call below proves that.
+    const argsFor = (tool: string, id: string): Record<string, unknown> => {
+      const args: Record<string, unknown> = { transcript_id: id };
+      if (tool === "understand_transcript") args.speech_understanding = { request: { action_items: {} } };
+      if (tool === "summarize_transcript") args.style = "bullets";
+      return args;
+    };
     for (const tool of ["get_transcript", "delete_transcript", "understand_transcript", "summarize_transcript"]) {
+      resetMock([jsonResponse(200, { id: "x", status: "completed", text: "hi" })]);
+      const control = await callTool(client, tool, argsFor(tool, "5551722-f677-48a6-9287-39c0aafd9ac1"), "k");
+      assert(
+        `64. control: ${tool} with a valid id and the same arguments reaches AssemblyAI`,
+        calls.length > 0,
+        JSON.stringify(control.content)
+      );
       for (const id of badIds) {
         resetMock([jsonResponse(200, { id: "x", status: "completed", text: "hi" })]);
-        const args: Record<string, unknown> = { transcript_id: id };
-        if (tool === "understand_transcript") args.speech_understanding = { sentiment_analysis: true };
-        if (tool === "summarize_transcript") args.style = "bullets";
-        const r = await callTool(client, tool, args, "k");
+        const r = await callTool(client, tool, argsFor(tool, id), "k");
         assert(
           `64. ${tool} refuses transcript_id ${JSON.stringify(id)} with no fetch`,
           r.isError === true && calls.length === 0,
