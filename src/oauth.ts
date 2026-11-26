@@ -1,25 +1,4 @@
-/**
- * "Sign in with AssemblyAI" for MCP clients.
- *
- * A client that signed the member in through AssemblyAI's authorization server
- * sends its OAuth access token as the Bearer. AssemblyAI's API takes API keys,
- * not access tokens, so before the request reaches `withMcpAuth` the token is
- * exchanged for the API key of the member's connection to this client
- * (`POST /api/v2/oauth/api-key`), and the request continues with that key, as
- * if the client had sent it. A Bearer that isn't an access token is an API key
- * and passes through untouched, as before.
- *
- * The exchange authenticates this server too: the deployment's Vercel OIDC
- * token goes in `X-AAI-Service-Token`, so only this project's production
- * deployment (or, against a non-production AssemblyAI environment, its
- * previews) can exchange on a member's behalf.
- *
- * Keys are cached per access token for a few minutes (never past the key's
- * rotation or the token's expiry), so a busy session doesn't exchange on every
- * request, while a connection revoked meanwhile (signed out in the dashboard,
- * the member deleted) is noticed within minutes and the client sent back to
- * sign-in, instead of calling the API with a dead key.
- */
+/** AssemblyAI's API takes API keys, not OAuth access tokens: exchange the token for its connection's key before withMcpAuth. */
 
 import { createHash } from "node:crypto";
 
@@ -28,44 +7,42 @@ import { getPublicOrigin } from "mcp-handler";
 
 import { keyHash, log, scrubForLog } from "./log";
 
-/** The authorization server MCP clients sign in with, advertised in the
- * protected resource metadata. */
 export const OAUTH_ISSUER = (
   process.env.ASSEMBLYAI_OAUTH_ISSUER ?? "https://auth.assemblyai.com"
 ).replace(/\/+$/, "");
 
-/** Where access tokens are exchanged for API keys. */
 const EXCHANGE_ORIGIN = (
   process.env.ASSEMBLYAI_OAUTH_EXCHANGE_ORIGIN ?? "https://www.assemblyai.com"
 ).replace(/\/+$/, "");
 
-/** Scopes a client asks for: the API itself, and a refresh token so the
- * member isn't sent back to the consent page every few hours. */
 export const OAUTH_SCOPES = ["aai:api", "offline_access"];
 
 export const RESOURCE_METADATA_PATH = "/.well-known/oauth-protected-resource";
 
-/** Give up on an exchange after this long and answer 503, rather than let a
- * stalled AssemblyAI hold the request until the function times out. */
 const EXCHANGE_TIMEOUT_MS = 10_000;
 
-/** Re-exchange at least this often, to notice a revoked connection. */
 const MAX_CACHE_MS = 5 * 60 * 1000;
 const MAX_CACHE_ENTRIES = 1000;
+
+const REFUSED_CACHE_MS = 60 * 1000;
+/** Keys returned refund the count: hosted connectors (Claude.ai, ChatGPT) send many members from one IP. */
+export const MAX_EXCHANGES_PER_IP_PER_MINUTE = 30;
+const RATE_WINDOW_MS = 60 * 1000;
+const MAX_TRACKED_IPS = 10_000;
+export const MAX_CONCURRENT_EXCHANGES = 25;
+const EXP_SKEW_MS = 60 * 1000;
 
 /** A JWT: three base64url segments. API keys are opaque hex with no dots. */
 export function looksLikeAccessToken(token: string): boolean {
   return /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(token);
 }
 
-export type ExchangeOutcome =
+type ExchangeOutcome =
   | { kind: "key"; apiKey: string }
-  /** The token, the member or their access was refused: sign in again. */
   | { kind: "rejected"; detail: string }
-  /** The token lacks `aai:api` (a member whose role can't create keys). */
   | { kind: "insufficient_scope"; detail: string }
-  /** AssemblyAI couldn't answer, or this server couldn't authenticate itself. */
-  | { kind: "unavailable"; detail: string };
+  | { kind: "unavailable"; detail: string }
+  | { kind: "rate_limited"; detail: string; retryAfterSeconds: number };
 
 export interface ExchangeDeps {
   fetch: typeof fetch;
@@ -86,42 +63,65 @@ interface CachedKey {
   until: number;
 }
 
-/**
- * Shared across requests on purpose: that's what spares a session an exchange
- * per request. Keyed by the full SHA-256 of the access token (never the token
- * itself), so only the exact token that was exchanged gets its key back; the
- * short `keyHash` is for logs only.
- */
 const cache = new Map<string, CachedKey>();
+
+type Refusal = Extract<ExchangeOutcome, { kind: "rejected" | "insufficient_scope" }>;
+const refused = new Map<string, { outcome: Refusal; until: number }>();
+const exchangesByIp = new Map<string, { windowStart: number; count: number }>();
+let inFlight = 0;
 
 function cacheKey(accessToken: string): string {
   return createHash("sha256").update(accessToken).digest("hex");
 }
 
-/** Test hook: forget every cached key. */
 export function clearExchangeCache(): void {
   cache.clear();
+  refused.clear();
+  exchangesByIp.clear();
+  inFlight = 0;
 }
 
-/** A JWT's claims, read without verifying it. */
+function setBounded<K, V>(map: Map<K, V>, key: K, value: V, max: number): void {
+  map.delete(key);
+  if (map.size >= max) {
+    const oldest = map.keys().next().value;
+    if (oldest !== undefined) map.delete(oldest);
+  }
+  map.set(key, value);
+}
+
 function claimsOf(jwt: string): Record<string, unknown> {
   try {
-    return JSON.parse(Buffer.from(jwt.split(".")[1] ?? "", "base64url").toString("utf8"));
+    const claims = JSON.parse(Buffer.from(jwt.split(".")[1] ?? "", "base64url").toString("utf8"));
+    return claims && typeof claims === "object" ? claims : {};
   } catch {
     return {};
   }
 }
 
-/** The access token's own expiry: it only bounds how long a key is cached for
- * it. AssemblyAI verifies the token. */
+function headerOf(jwt: string): Record<string, unknown> {
+  try {
+    const header = JSON.parse(Buffer.from(jwt.split(".")[0] ?? "", "base64url").toString("utf8"));
+    return header && typeof header === "object" ? header : {};
+  } catch {
+    return {};
+  }
+}
+
+export function localRejection(accessToken: string, now: number): string | undefined {
+  const alg = headerOf(accessToken).alg;
+  if (typeof alg !== "string" || alg.toLowerCase() === "none") return "The access token is not a signed JWT";
+  const exp = claimsOf(accessToken).exp;
+  if (typeof exp !== "number" || !Number.isFinite(exp)) return "The access token has no expiry";
+  if (exp * 1000 + EXP_SKEW_MS <= now) return "The access token has expired";
+  return undefined;
+}
+
 function tokenExpiry(accessToken: string): number | undefined {
   const exp = claimsOf(accessToken).exp;
   return typeof exp === "number" ? exp * 1000 : undefined;
 }
 
-/** The response body as JSON, or null when it isn't JSON. Throws when the
- * body can't be read at all (the deadline passed mid-body, the connection
- * dropped): that's an outage, not an answer, whatever the status said. */
 async function jsonBody(response: Response): Promise<unknown> {
   const text = await response.text();
   try {
@@ -137,11 +137,10 @@ function detailOf(body: unknown, status: number): string {
   return typeof text === "string" ? text : `HTTP ${status}`;
 }
 
-/** Exchange an access token for its connection's API key, from the cache when
- * the cached entry is still fresh. */
-export async function exchangeAccessToken(
+async function exchangeAccessToken(
   accessToken: string,
-  deps: ExchangeDeps = defaultDeps
+  deps: ExchangeDeps = defaultDeps,
+  clientIp = "unknown"
 ): Promise<ExchangeOutcome> {
   const entry = cacheKey(accessToken);
   const now = deps.now();
@@ -149,14 +148,80 @@ export async function exchangeAccessToken(
   if (cached && cached.until > now) return { kind: "key", apiKey: cached.apiKey };
   cache.delete(entry);
 
+  const known = refused.get(entry);
+  if (known && known.until > now) return known.outcome;
+  refused.delete(entry);
+
+  const local = localRejection(accessToken, now);
+  if (local) {
+    log({ event: "oauth_exchange_rejected", level: "warn", tokenHash: keyHash(accessToken), reason: "local", detail: local });
+    return { kind: "rejected", detail: local };
+  }
+
+  const window = exchangesByIp.get(clientIp);
+  const count = window && now - window.windowStart < RATE_WINDOW_MS ? window.count : 0;
+  if (count >= MAX_EXCHANGES_PER_IP_PER_MINUTE) {
+    const retryAfterSeconds = Math.max(1, Math.ceil((window!.windowStart + RATE_WINDOW_MS - now) / 1000));
+    log({ event: "oauth_exchange_rate_limited", level: "warn", reason: "per_ip", retryAfterSeconds });
+    return { kind: "rate_limited", detail: "Too many sign-in exchanges from this client", retryAfterSeconds };
+  }
+  if (inFlight >= MAX_CONCURRENT_EXCHANGES) {
+    log({ event: "oauth_exchange_rate_limited", level: "warn", reason: "concurrency" });
+    return { kind: "rate_limited", detail: "Too many sign-in exchanges in progress", retryAfterSeconds: 1 };
+  }
+  const windowStart = count === 0 ? now : window!.windowStart;
+  setBounded(exchangesByIp, clientIp, { windowStart, count: count + 1 }, MAX_TRACKED_IPS);
+
+  inFlight++;
+  try {
+    const outcome = await exchangeUpstream(accessToken, entry, now, deps);
+    if (outcome.kind === "rejected" || outcome.kind === "insufficient_scope") {
+      setBounded(refused, entry, { outcome, until: now + REFUSED_CACHE_MS }, MAX_CACHE_ENTRIES);
+    }
+    if (outcome.kind === "key") {
+      const current = exchangesByIp.get(clientIp);
+      if (current && current.windowStart === windowStart && current.count > 0) current.count--;
+    }
+    return outcome;
+  } finally {
+    inFlight--;
+  }
+}
+
+function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      }
+    );
+  });
+}
+
+async function exchangeUpstream(
+  accessToken: string,
+  entry: string,
+  now: number,
+  deps: ExchangeDeps
+): Promise<ExchangeOutcome> {
+  const deadline = AbortSignal.timeout(deps.timeoutMs);
   let serviceToken: string;
   try {
-    serviceToken = await deps.serviceToken();
+    serviceToken = await untilAborted(deps.serviceToken(), deadline);
   } catch (error) {
+    const timedOut = error instanceof Error && error.name === "TimeoutError";
     log({
       event: "oauth_exchange_unavailable",
       level: "error",
-      reason: "no_service_token",
+      reason: timedOut ? "service_token_timeout" : "no_service_token",
       detail: scrubForLog(error instanceof Error ? error.message : String(error)),
     });
     return { kind: "unavailable", detail: "This server could not authenticate to AssemblyAI" };
@@ -171,9 +236,7 @@ export async function exchangeAccessToken(
         "X-AAI-Service-Token": serviceToken,
         Accept: "application/json",
       },
-      // Also aborts reading the body below: a stalled body parses as no key
-      // (503), like a stalled connection.
-      signal: AbortSignal.timeout(deps.timeoutMs),
+      signal: deadline,
     });
   } catch (error) {
     const timedOut = error instanceof Error && error.name === "TimeoutError";
@@ -203,7 +266,6 @@ export async function exchangeAccessToken(
   }
 
   if (response.ok) {
-    // `?? {}`: a body of JSON `null`, or none at all, has no fields.
     const body = (parsed ?? {}) as {
       api_key?: unknown;
       api_key_rotates_at?: unknown;
@@ -220,16 +282,9 @@ export async function exchangeAccessToken(
       Number.isNaN(rotatesAt) ? Infinity : rotatesAt,
       tokenExpiry(accessToken) ?? Infinity
     );
-    if (cache.size >= MAX_CACHE_ENTRIES) {
-      // Maps iterate in insertion order: drop the oldest.
-      const oldest = cache.keys().next().value;
-      if (oldest !== undefined) cache.delete(oldest);
-    }
-    cache.set(entry, { apiKey: body.api_key, until });
+    setBounded(cache, entry, { apiKey: body.api_key, until }, MAX_CACHE_ENTRIES);
     log({
       event: "oauth_exchange_ok",
-      // Not a secret, and stable for the connection's life: joins these logs
-      // to AssemblyAI's own, its audit log and the member's Connected apps.
       connectionId: typeof body.connection_id === "string" ? body.connection_id : undefined,
       tokenHash: tokenId,
       keyHash: keyHash(body.api_key),
@@ -239,11 +294,7 @@ export async function exchangeAccessToken(
 
   const detail = scrubForLog(detailOf(parsed, response.status)) ?? `HTTP ${response.status}`;
   if (response.status === 401 && detail === "Unknown client") {
-    // AssemblyAI didn't accept this deployment's service token (not the
-    // deployment it trusts, or its OIDC settings aren't in place). Signing
-    // in again can't fix that, so it must not read as a refused token.
-    // The claims AssemblyAI matches against its settings, to compare with
-    // them; the token itself is never logged.
+    // "Unknown client": AssemblyAI refused this deployment's service token, which sign-in can't fix. Log its claims, never the token.
     const { iss, aud, project_id, environment } = claimsOf(serviceToken);
     log({
       event: "oauth_exchange_unavailable",
@@ -260,9 +311,7 @@ export async function exchangeAccessToken(
   }
   if (response.status === 403) {
     log({ event: "oauth_exchange_rejected", level: "warn", tokenHash: tokenId, status: 403, detail });
-    // A missing scope is the one 403 a new consent with the right role fixes
-    // as asked; the others (revoked access, a disabled member) need a fresh
-    // sign-in, which a 401 starts.
+    // Only a missing-scope 403 is fixed by a new consent; other AssemblyAI 403s need a fresh sign-in, which a 401 starts.
     return /scope/i.test(detail)
       ? { kind: "insufficient_scope", detail }
       : { kind: "rejected", detail };
@@ -277,13 +326,7 @@ export async function exchangeAccessToken(
   return { kind: "unavailable", detail: "AssemblyAI could not issue an API key; try again" };
 }
 
-/**
- * The same request with another Bearer. Built from the request's public parts,
- * not `new Request(req, init)`: on Vercel the incoming request is Next's own
- * Request subclass, from a different copy of the fetch implementation than the
- * global `Request`, whose copy constructor reads private fields the subclass
- * doesn't have and throws.
- */
+/** Not `new Request(req, init)`: on Vercel, the global Request copy constructor throws on Next's Request subclass. */
 function withBearer(req: Request, token: string): Request {
   const headers = new Headers(req.headers);
   headers.set("Authorization", `Bearer ${token}`);
@@ -299,18 +342,20 @@ function withBearer(req: Request, token: string): Request {
   return new Request(req.url, init);
 }
 
+/** On Vercel the platform sets x-forwarded-for and a client can't. */
+function clientIpOf(req: Request): string {
+  const forwarded = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
+  return forwarded || req.headers.get("x-real-ip")?.trim() || "unknown";
+}
+
 function bearerOf(req: Request): string | undefined {
-  // Any run of whitespace after the scheme, not just one space: a split on
-  // " " reads "Bearer  <token>" as an empty token and skips the exchange.
   const match = /^bearer\s+(\S+)\s*$/i.exec(req.headers.get("Authorization")?.trim() ?? "");
   return match?.[1];
 }
 
 function challenge(req: Request, status: 401 | 403, error: string, description: string): Response {
   const metadata = `${getPublicOrigin(req)}${RESOURCE_METADATA_PATH}`;
-  // A header value takes printable ASCII only: an upstream detail with a
-  // newline or a curly apostrophe would make `new Response` throw, turning the
-  // challenge into a 500. The JSON body keeps the original wording.
+  // Header values take printable ASCII only; anything else makes `new Response` throw.
   const quoted = description.replace(/[^\x20-\x7E]|["\\]/g, "");
   const scope = status === 403 ? `, scope="${OAUTH_SCOPES.join(" ")}"` : "";
   return new Response(JSON.stringify({ error, error_description: description }), {
@@ -322,13 +367,6 @@ function challenge(req: Request, status: 401 | 403, error: string, description: 
   });
 }
 
-/**
- * Wrap the MCP route: exchange an access token for its API key and hand the
- * request on with the key as the Bearer. A refused token is a 401 (or a 403
- * for a missing scope) that points the client back at sign-in; an outage is a
- * 503, not a 401, so a client doesn't send the member through sign-in again
- * for a problem sign-in can't fix.
- */
 export function withOAuthExchange(
   handler: (req: Request) => Promise<Response>,
   deps: ExchangeDeps = defaultDeps
@@ -337,7 +375,7 @@ export function withOAuthExchange(
     const bearer = bearerOf(req);
     if (!bearer || !looksLikeAccessToken(bearer)) return handler(req);
 
-    const outcome = await exchangeAccessToken(bearer, deps);
+    const outcome = await exchangeAccessToken(bearer, deps, clientIpOf(req));
     switch (outcome.kind) {
       case "key":
         return handler(withBearer(req, outcome.apiKey));
@@ -350,6 +388,34 @@ export function withOAuthExchange(
           status: 503,
           headers: { "Content-Type": "application/json", "Retry-After": "5" },
         });
+      case "rate_limited":
+        return new Response(JSON.stringify({ error: "rate_limited", error_description: outcome.detail }), {
+          status: 429,
+          headers: { "Content-Type": "application/json", "Retry-After": String(outcome.retryAfterSeconds) },
+        });
     }
+  };
+}
+
+/**
+ * `withMcpAuth` answers a request with no Bearer as `invalid_token`. RFC 6750
+ * section 3.1: when the request lacks any authentication information, the
+ * challenge should carry no error code. `invalid_token` says a token was sent
+ * and refused, which can send a client down a refresh or re-register path
+ * instead of plain discovery. So a 401 for a request with no Bearer is
+ * rewritten to `Bearer resource_metadata="..."`. A 401 for a Bearer that was
+ * sent keeps its error code.
+ */
+export function withMissingCredentialsChallenge(
+  handler: (req: Request) => Promise<Response>
+): (req: Request) => Promise<Response> {
+  return async (req) => {
+    const res = await handler(req);
+    if (res.status !== 401 || bearerOf(req) !== undefined) return res;
+    const metadata = /resource_metadata="[^"]*"/.exec(res.headers.get("WWW-Authenticate") ?? "")?.[0];
+    if (!metadata) return res;
+    const headers = new Headers(res.headers);
+    headers.set("WWW-Authenticate", `Bearer ${metadata}`);
+    return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
   };
 }

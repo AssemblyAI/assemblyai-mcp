@@ -1,34 +1,16 @@
-/**
- * Offline tests for the OAuth exchange (`src/oauth.ts`), with a stubbed
- * exchange endpoint and service token. Run with `npm test`.
- *
- * Coverage:
- *   1. looksLikeAccessToken tells a JWT from an API key
- *   2. an API key passes through untouched; no exchange
- *   3. an access token is exchanged (both credentials sent) and the handler sees the key
- *   3b. a request that isn't this runtime's own Request class (Next's, on Vercel) still works
- *   3c. the success log names the connection and hashes, never the token or key
- *   3d. extra whitespace after "Bearer" still exchanges the token
- *   4. the key is cached per token for at most 5 minutes, and never past its rotation
- *   5. the cache never outlives the access token
- *   6. AssemblyAI's 401 → 401 with a challenge pointing at the resource metadata
- *   7. a 403 for a missing scope → 403 insufficient_scope; other 403s → 401
- *   8. 5xx, network errors, a missing or refused service token → 503, never 401
- *   8b. a successful exchange with no usable key (no body, JSON null) → 503
- *   8c. a stalled exchange gives up after its deadline → 503
- *   8d. a 401 whose body can't be read is an outage (503), not a refused token
- *   6b. a refusal whose detail isn't printable ASCII still answers its challenge
- *   9. no Bearer at all reaches the handler (withMcpAuth answers it)
- *  10. the protected resource metadata names the authorization server and scopes
- */
+import { withMcpAuth } from "mcp-handler";
 
+import { GET as pathAwareResourceMetadata } from "../app/.well-known/oauth-protected-resource/mcp/route";
 import { GET as resourceMetadata, OPTIONS as resourceOptions } from "../app/.well-known/oauth-protected-resource/route";
 import { OPTIONS as mcpOptions } from "../app/mcp/[[...path]]/route";
 import {
   clearExchangeCache,
   type ExchangeDeps,
   looksLikeAccessToken,
+  MAX_CONCURRENT_EXCHANGES,
+  MAX_EXCHANGES_PER_IP_PER_MINUTE,
   OAUTH_ISSUER,
+  withMissingCredentialsChallenge,
   withOAuthExchange,
 } from "./oauth";
 
@@ -46,7 +28,6 @@ function assert(name: string, condition: boolean, detail?: string) {
 
 const NOW = Date.parse("2026-10-29T12:00:00Z");
 
-/** An unsigned JWT-shaped token; only its shape and `exp` matter here. */
 function accessToken(expMs = NOW + 8 * 60 * 60 * 1000, nonce = "a"): string {
   const part = (o: object) => Buffer.from(JSON.stringify(o)).toString("base64url");
   return `${part({ alg: "RS256" })}.${part({ exp: Math.floor(expMs / 1000), nonce })}.c2ln`;
@@ -73,7 +54,6 @@ function stub(
       const next = responses.shift();
       if (!next) throw new Error("unexpected exchange");
       if (next === "stall") {
-        // Never answers; only the request's abort signal ends it.
         return new Promise<Response>((_, reject) => {
           init?.signal?.addEventListener("abort", () => reject(init.signal?.reason));
         });
@@ -96,7 +76,6 @@ function keyResponse(apiKey: string, rotatesAt: string | null = "2026-11-10T12:0
   });
 }
 
-/** A handler that records the Bearer and body it was given. */
 function recorder() {
   const seen: Array<string | null> = [];
   const bodies: string[] = [];
@@ -150,9 +129,7 @@ async function run() {
   }
 
   {
-    // On Vercel the incoming request is Next's Request subclass from another
-    // copy of undici; `new Request(req, init)` throws on it. Stand in with an
-    // object that only has Request's public members.
+    // On Vercel the request is Next's Request subclass, and `new Request(req, init)` throws on it.
     clearExchangeCache();
     const { deps } = stub([keyResponse("connection-key")]);
     const { handler, seen, bodies } = recorder();
@@ -351,10 +328,7 @@ async function run() {
     const { deps } = stub(["stall"], { timeoutMs: 50 });
     const { handler, seen } = recorder();
     const started = Date.now();
-    // AbortSignal.timeout's timer doesn't keep Node alive (a server's open
-    // socket does), so the race's timer also holds the process open.
-    // The 2s race is the test's own limit: without a deadline it fails
-    // rather than hanging.
+    // AbortSignal.timeout's timer doesn't keep Node alive.
     let keepAlive: NodeJS.Timeout | undefined;
     const res = await Promise.race([
       withOAuthExchange(handler, deps)(mcpRequest(accessToken(undefined, "stall"))),
@@ -371,8 +345,6 @@ async function run() {
   }
 
   {
-    // The deadline firing mid-body, or the connection dropping, after a 401
-    // status line: the detail ("Unknown client"?) never arrived.
     clearExchangeCache();
     const brokenBody = new ReadableStream({
       start(controller) {
@@ -427,6 +399,251 @@ async function run() {
         allowHeaders.includes("mcp-protocol-version") &&
         allowHeaders.includes("last-event-id"),
       allowHeaders
+    );
+  }
+
+
+  const fromIp = (bearer: string, ip: string) => {
+    const req = mcpRequest(bearer);
+    const headers = new Headers(req.headers);
+    headers.set("x-forwarded-for", `${ip}, 10.0.0.1`);
+    return new Request(req.url, { method: "POST", headers, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }) });
+  };
+  const b64 = (o: unknown) => Buffer.from(JSON.stringify(o)).toString("base64url");
+
+  {
+    clearExchangeCache();
+    const { deps, exchanges } = stub([]);
+    const { handler, seen } = recorder();
+    const wrapped = withOAuthExchange(handler, deps);
+    const fakes: Record<string, string> = {
+      "aaa.bbb.ccc (not JSON)": "aaa.bbb.ccc",
+      "alg none": `${b64({ alg: "none" })}.${b64({ exp: NOW / 1000 + 3600 })}.c2ln`,
+      "no alg": `${b64({})}.${b64({ exp: NOW / 1000 + 3600 })}.c2ln`,
+      "no exp": `${b64({ alg: "RS256" })}.${b64({ sub: "x" })}.c2ln`,
+      "string exp": `${b64({ alg: "RS256" })}.${b64({ exp: "9999999999" })}.c2ln`,
+      "claims are null": `${b64({ alg: "RS256" })}.${b64(null)}.c2ln`,
+      expired: accessToken(NOW - 10 * 60 * 1000, "old"),
+    };
+    for (const [name, token] of Object.entries(fakes)) {
+      const res = await wrapped(fromIp(token, "203.0.113.9"));
+      assert(
+        `11. ${name} → 401 challenge, no upstream call`,
+        res.status === 401 && (res.headers.get("WWW-Authenticate") ?? "").includes('error="invalid_token"'),
+        String(res.status)
+      );
+    }
+    assert("11. none of them reached AssemblyAI or the handler", exchanges.length === 0 && seen.length === 0, String(exchanges.length));
+  }
+
+  {
+    clearExchangeCache();
+    const { deps, exchanges, advance } = stub([
+      Response.json({ detail: "Invalid access token" }, { status: 401 }),
+      Response.json({ detail: "Invalid access token" }, { status: 401 }),
+    ]);
+    const { handler } = recorder();
+    const wrapped = withOAuthExchange(handler, deps);
+    const token = accessToken(undefined, "revoked");
+    const first = await wrapped(mcpRequest(token));
+    const second = await wrapped(mcpRequest(token));
+    assert("12. a refused token, sent twice, is exchanged once", first.status === 401 && second.status === 401 && exchanges.length === 1);
+    advance(61 * 1000);
+    await wrapped(mcpRequest(token));
+    assert("12. after a minute it is exchanged again", exchanges.length === 2);
+  }
+
+  {
+    clearExchangeCache();
+    const n = MAX_EXCHANGES_PER_IP_PER_MINUTE;
+    const refusal = () => Response.json({ detail: "Invalid access token" }, { status: 401 });
+    const responses = [...Array.from({ length: n + 2 }, refusal), keyResponse("key-after-window"), ...Array.from({ length: n }, refusal)];
+    const { deps, exchanges, advance } = stub(responses);
+    const { handler } = recorder();
+    const wrapped = withOAuthExchange(handler, deps);
+    const statuses: number[] = [];
+    for (let i = 0; i < n + 5; i++) statuses.push((await wrapped(fromIp(accessToken(undefined, `flood${i}`), "198.51.100.7"))).status);
+    const limited = statuses.slice(n);
+    assert(
+      `13. ${n} unique tokens from one IP reach AssemblyAI; the rest get 429 with no call`,
+      exchanges.length === n && statuses.slice(0, n).every((s) => s === 401) && limited.every((s) => s === 429),
+      `exchanges=${exchanges.length} statuses=${statuses.join(",")}`
+    );
+    const blocked = await wrapped(fromIp(accessToken(undefined, "more"), "198.51.100.7"));
+    const retryAfter = Number(blocked.headers.get("Retry-After"));
+    assert("13. the 429 has a Retry-After within the minute and no sign-in challenge",
+      blocked.status === 429 && retryAfter >= 1 && retryAfter <= 60 && !blocked.headers.get("WWW-Authenticate"), String(retryAfter));
+    const other = await wrapped(fromIp(accessToken(undefined, "other-ip"), "192.0.2.1"));
+    assert("13. another IP is not limited", other.status === 401 && exchanges.length === n + 1);
+    advance(61 * 1000);
+    const later = await wrapped(fromIp(accessToken(undefined, "later"), "198.51.100.7"));
+    assert("13. the window resets after a minute", later.status === 401 && exchanges.length === n + 2);
+    const good = accessToken(undefined, "good");
+    const ok1 = await wrapped(fromIp(good, "198.51.100.8"));
+    for (let i = 0; i < n; i++) await wrapped(fromIp(accessToken(undefined, `fill${i}`), "198.51.100.8")).catch(() => undefined);
+    const ok2 = await wrapped(fromIp(good, "198.51.100.8"));
+    assert("13. a cached key still works while its IP is limited", ok1.status === 200 && ok2.status === 200, `${ok1.status} ${ok2.status}`);
+  }
+
+  {
+    clearExchangeCache();
+    const n = MAX_EXCHANGES_PER_IP_PER_MINUTE;
+    const members = 2 * n;
+    const refusal = () => Response.json({ detail: "Invalid access token" }, { status: 401 });
+    const responses = [
+      ...Array.from({ length: members }, (_, i) => keyResponse(`member-key-${i}`)),
+      ...Array.from({ length: n }, refusal),
+    ];
+    const { deps, exchanges } = stub(responses);
+    const { handler } = recorder();
+    const wrapped = withOAuthExchange(handler, deps);
+    const ip = "198.51.100.20";
+    const signIns: number[] = [];
+    for (let i = 0; i < members; i++) signIns.push((await wrapped(fromIp(accessToken(undefined, `member${i}`), ip))).status);
+    assert(
+      `13b. ${members} members behind one IP all sign in within a minute`,
+      signIns.every((s) => s === 200) && exchanges.length === members,
+      signIns.join(",")
+    );
+    const flood: number[] = [];
+    for (let i = 0; i < n + 1; i++) flood.push((await wrapped(fromIp(accessToken(undefined, `fake${i}`), ip))).status);
+    assert(
+      `13b. failed exchanges from that IP are still capped at ${n}`,
+      flood.slice(0, n).every((s) => s === 401) && flood[n] === 429 && exchanges.length === members + n,
+      `exchanges=${exchanges.length} statuses=${flood.join(",")}`
+    );
+  }
+
+  {
+    clearExchangeCache();
+    const c = MAX_CONCURRENT_EXCHANGES;
+    const stalls: Array<"stall"> = Array.from({ length: c }, () => "stall" as const);
+    const { deps, exchanges } = stub(stalls, { timeoutMs: 200 });
+    const { handler } = recorder();
+    const wrapped = withOAuthExchange(handler, deps);
+    const pending = Array.from({ length: c }, (_, i) => wrapped(fromIp(accessToken(undefined, `slow${i}`), `10.1.0.${i}`)));
+    await new Promise((r) => setTimeout(r, 20));
+    const extra = await wrapped(fromIp(accessToken(undefined, "one-more"), "10.2.0.1"));
+    assert(`14. with ${c} exchanges in flight, one more gets 429 with no call`, extra.status === 429 && exchanges.length === c, `${extra.status} ${exchanges.length}`);
+    // AbortSignal.timeout's timer doesn't keep Node alive: hold it open meanwhile.
+    const keepAlive = setTimeout(() => undefined, 5_000);
+    const done = await Promise.all(pending);
+    clearTimeout(keepAlive);
+    assert("14. the stalled exchanges end as 503", done.every((r) => r.status === 503));
+  }
+
+  {
+    clearExchangeCache();
+    const c = MAX_CONCURRENT_EXCHANGES;
+    const responses: Array<Response | "stall"> = [...Array.from({ length: c }, () => "stall" as const), keyResponse("key-after-stall")];
+    const { deps, exchanges } = stub(responses, { timeoutMs: 200 });
+    const { handler } = recorder();
+    const wrapped = withOAuthExchange(handler, deps);
+    const keepAlive = setTimeout(() => undefined, 5_000);
+    await Promise.all(Array.from({ length: c }, (_, i) => wrapped(fromIp(accessToken(undefined, `slot${i}`), `10.3.0.${i}`))));
+    clearTimeout(keepAlive);
+    const next = await wrapped(fromIp(accessToken(undefined, "after-stall"), "10.4.0.1"));
+    assert("14b. after stalled exchanges time out, a new exchange reaches AssemblyAI", next.status === 200 && exchanges.length === c + 1, `${next.status} ${exchanges.length}`);
+  }
+
+  {
+    clearExchangeCache();
+    const c = MAX_CONCURRENT_EXCHANGES;
+    let stall = true;
+    const { deps, exchanges } = stub([keyResponse("key-after-oidc")], {
+      timeoutMs: 200,
+      serviceToken: () => (stall ? new Promise<string>(() => undefined) : Promise.resolve("vercel-oidc-token")),
+    });
+    const { handler } = recorder();
+    const wrapped = withOAuthExchange(handler, deps);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const hung = new Promise<"hung">((resolve) => (timer = setTimeout(() => resolve("hung"), 2_000)));
+    const stalled = await Promise.race([
+      Promise.all(Array.from({ length: c }, (_, i) => wrapped(fromIp(accessToken(undefined, `oidc${i}`), `10.5.0.${i}`)))),
+      hung,
+    ]);
+    clearTimeout(timer);
+    assert(
+      "14c. a stalled service-token lookup ends as 503 at the deadline",
+      stalled !== "hung" && stalled.every((r) => r.status === 503) && exchanges.length === 0,
+      stalled === "hung" ? "still pending after 2 s" : undefined
+    );
+    stall = false;
+    const next = await wrapped(fromIp(accessToken(undefined, "oidc-ok"), "10.6.0.1"));
+    assert("14c. and frees its slot: the next exchange reaches AssemblyAI", next.status === 200 && exchanges.length === 1, `${next.status} ${exchanges.length}`);
+  }
+
+  // #117. Discovery follows RFC 9728 / RFC 6750.
+  {
+    const root = await resourceMetadata(new Request("https://mcp.example.com/.well-known/oauth-protected-resource")).text();
+    const pathAware = pathAwareResourceMetadata(new Request("https://mcp.example.com/.well-known/oauth-protected-resource/mcp"));
+    const pathAwareBody = await pathAware.text();
+    assert(
+      "15. the path-aware metadata URL serves the same document as the root URL",
+      pathAware.status === 200 && pathAwareBody === root && JSON.parse(pathAwareBody).resource === "https://mcp.example.com/mcp",
+      pathAwareBody
+    );
+  }
+
+  {
+    // Through the real withMcpAuth, as app/mcp/[[...path]]/route.ts wires it.
+    const verifyToken = async (_req: Request, bearer?: string) =>
+      bearer && bearer.trim() ? { token: bearer.trim(), scopes: [], clientId: "test" } : undefined;
+    const { handler } = recorder();
+    const authed = withMissingCredentialsChallenge(
+      withMcpAuth(handler, verifyToken, { required: true, resourceMetadataPath: "/.well-known/oauth-protected-resource" })
+    );
+    const expected = 'Bearer resource_metadata="https://mcp.example.com/.well-known/oauth-protected-resource"';
+
+    const noAuth = await authed(mcpRequest());
+    assert(
+      "15. no Authorization header → 401 with only resource_metadata, no error code",
+      noAuth.status === 401 && noAuth.headers.get("WWW-Authenticate") === expected,
+      String(noAuth.headers.get("WWW-Authenticate"))
+    );
+    assert(
+      "15. the 401 keeps its JSON body and content type",
+      noAuth.headers.get("Content-Type") === "application/json" && ((await noAuth.json()) as { error?: string }).error === "invalid_token"
+    );
+    for (const header of ["Bearer", "Bearer ", "Basic dXNlcjpwYXNz"]) {
+      const res = await authed(new Request("https://mcp.example.com/mcp", { method: "POST", headers: { Authorization: header }, body: "{}" }));
+      assert(
+        `15. "${header}" (no Bearer token) is answered without an error code`,
+        res.status === 401 && res.headers.get("WWW-Authenticate") === expected,
+        String(res.headers.get("WWW-Authenticate"))
+      );
+    }
+
+    const sent = await authed(mcpRequest("an-api-key"));
+    assert("15. a Bearer that was sent still reaches the handler", sent.status === 200 && (await sent.text()) === "ok");
+
+    const refused = withMissingCredentialsChallenge(
+      withMcpAuth(
+        handler,
+        async () => {
+          throw new Error("boom");
+        },
+        { required: true }
+      )
+    );
+    const refusedRes = await refused(mcpRequest("bad-token"));
+    assert(
+      "15. a Bearer that was sent and refused keeps error=invalid_token",
+      refusedRes.status === 401 && (refusedRes.headers.get("WWW-Authenticate") ?? "").includes('error="invalid_token"'),
+      String(refusedRes.headers.get("WWW-Authenticate"))
+    );
+
+    const forbidden = await withMissingCredentialsChallenge(
+      async () => new Response("no", { status: 403, headers: { "WWW-Authenticate": 'Bearer error="insufficient_scope"' } })
+    )(mcpRequest());
+    const bare = await withMissingCredentialsChallenge(
+      async () => new Response("no", { status: 401, headers: { "WWW-Authenticate": "Bearer" } })
+    )(mcpRequest());
+    assert(
+      "15. other statuses, and a 401 with no resource_metadata, are left alone",
+      forbidden.status === 403 &&
+        forbidden.headers.get("WWW-Authenticate") === 'Bearer error="insufficient_scope"' &&
+        bare.headers.get("WWW-Authenticate") === "Bearer"
     );
   }
 

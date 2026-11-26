@@ -3,13 +3,15 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import { getTranscript, getRedactedAudio, AssemblyAIError, type TranscriptRecord } from "../assemblyai";
 import { log, logError, keyHash } from "../log";
-import { handleToolError } from "../tool-errors";
+import { handleToolError, requireApiKey } from "../tool-errors";
 import {
   formatMs,
   renderTranslations,
   renderTranslatedUtterances,
   renderSpeechUnderstanding,
   renderContentSafety,
+  renderContentSafetyEvidence,
+  renderEntityEvidence,
   renderTopics,
   renderHighlights,
   renderUnredactedText,
@@ -35,9 +37,9 @@ export function registerGetTranscript(server: McpServer): void {
         "Poll this tool every ~3 seconds after `submit_transcript` until you see `completed` or `error`. " +
         "Per-word timestamps are left out unless you set `include_words` (only for word-level tasks such as subtitles); " +
           "they come per utterance with speaker_labels, otherwise as a top-level `words` list.",
-      // Reads a transcript's status and results.
       annotations: {
         readOnlyHint: true,
+        destructiveHint: false,
         openWorldHint: false,
       },
       inputSchema: {
@@ -54,13 +56,7 @@ export function registerGetTranscript(server: McpServer): void {
     },
     async (args, extra) => {
       const start = Date.now();
-      const apiKey = extra.authInfo?.token;
-      if (!apiKey) {
-        throw new Error(
-          "No AssemblyAI API key in request context. Configure your AssemblyAI API key " +
-            "as the Bearer token in your MCP client connection (or re-authenticate if using Claude.ai)."
-        );
-      }
+      const apiKey = requireApiKey(extra);
 
       try {
         const record = await getTranscript(apiKey, args.transcript_id);
@@ -73,12 +69,8 @@ export function registerGetTranscript(server: McpServer): void {
             redactedAudioUrl = audio.redacted_audio_url;
             redactedAudioPending = redactedAudioUrl === undefined;
           } catch (err) {
-            // 400 (not ready yet) and "200 but no URL yet" both mean "keep
-            // polling" — the existing pending note. Anything else (401/403/
-            // 404/5xx/network, all surfaced as AssemblyAIError by
-            // requestWithRetry) means the audio is genuinely unavailable
-            // (e.g. the ~24h link expiry), which is a different message.
-            if (err instanceof AssemblyAIError && err.status === 400) {
+            // 400, 200 with no URL, or 504 from our own deadline means not ready yet; any other failure means unavailable (the link expires after ~24h).
+            if (err instanceof AssemblyAIError && (err.status === 400 || err.status === 504)) {
               redactedAudioPending = true;
             } else {
               redactedAudioError = err instanceof AssemblyAIError ? `HTTP ${err.status}` : "unknown error";
@@ -118,12 +110,13 @@ export function registerGetTranscript(server: McpServer): void {
           structuredContent: shaped as unknown as Record<string, unknown>,
         };
       } catch (err) {
-        // No notFoundMessage: a 404 here stays the raw AssemblyAIError, unchanged from before.
         handleToolError(err, {
           tool: "get_transcript",
           apiKey,
           start,
           transcriptId: args.transcript_id,
+          rateLimitMessage:
+            "Rate limited by AssemblyAI. Wait ~60 seconds before calling get_transcript again — much longer than the usual ~3 seconds.",
           errorEvent: "tool_error",
         });
       }
@@ -143,7 +136,6 @@ interface ShapedTranscript {
   speech_model_used?: string;
   audio_duration?: number;
   speakers?: Array<TranslatedUtterance & { words?: WordTiming[] }>;
-  /** Only with include_words on a transcript without utterances (no speaker_labels). */
   words?: WordTiming[];
   summary?: string;
   error?: string;
@@ -158,9 +150,9 @@ interface ShapedTranscript {
   redacted_audio_url?: string;
   redacted_audio_pending?: boolean;
   redacted_audio_error?: string;
-  /** What to do next, when there is something to do. Claude Code shows the model only structuredContent. */
+  /** Claude Code shows the model only structuredContent. */
   next_step?: string;
-  metadata?: { domain_used?: string | null; warnings?: Array<{ message: string }> };
+  metadata?: { domain_used?: string | null; warnings?: Array<string | { message: string }> };
 }
 
 function shape(record: TranscriptRecord, redactedAudioUrl?: string, includeWords = false): ShapedTranscript {
@@ -174,8 +166,7 @@ function shape(record: TranscriptRecord, redactedAudioUrl?: string, includeWords
   if (record.language_detection != null) out.language_detection = record.language_detection;
   if (record.speech_model_used !== undefined) out.speech_model_used = record.speech_model_used;
   if (record.audio_duration !== undefined) out.audio_duration = record.audio_duration;
-  // != null (not !== undefined): an explicit `null` from the API means
-  // "no data", same as the field being absent — don't leak it downstream.
+  // The API sends explicit nulls for missing data.
   if (record.utterances != null && record.utterances.length > 0) {
     out.speakers = includeWords ? record.utterances : record.utterances.map(({ words: _words, ...u }) => u);
   } else if (includeWords && record.words != null && record.words.length > 0) {
@@ -188,7 +179,24 @@ function shape(record: TranscriptRecord, redactedAudioUrl?: string, includeWords
     out.sentiment = record.sentiment_analysis_results;
   if (record.entities && record.entities.length > 0) out.entities = record.entities;
   if (record.translated_texts != null) out.translated_texts = record.translated_texts;
-  if (record.speech_understanding != null) out.speech_understanding = record.speech_understanding;
+  if (record.speech_understanding != null) {
+    const su = record.speech_understanding;
+    const formatting = su.response?.custom_formatting;
+    // Clone only the affected path: preserve every other SU field and never
+    // mutate the API response when applying the per-word opt-in.
+    out.speech_understanding = !includeWords && formatting?.formatted_utterances
+      ? {
+          ...su,
+          response: {
+            ...su.response,
+            custom_formatting: {
+              ...formatting,
+              formatted_utterances: formatting.formatted_utterances.map(({ words: _words, ...u }) => u),
+            },
+          },
+        }
+      : su;
+  }
   if (record.content_safety_labels != null) out.content_safety_labels = record.content_safety_labels;
   if (record.iab_categories_result != null) out.iab_categories_result = record.iab_categories_result;
   if (record.auto_highlights_result != null) out.auto_highlights_result = record.auto_highlights_result;
@@ -198,13 +206,7 @@ function shape(record: TranscriptRecord, redactedAudioUrl?: string, includeWords
   return out;
 }
 
-/**
- * Format the transcript into the `content[].text` payload. Some MCP clients
- * (text-only clients) only surface this text
- * to the underlying model and ignore `structuredContent`. So everything the
- * agent might need — full text, per-speaker utterances with timestamps,
- * sentiment, entities, and summary — must appear here as plain text.
- */
+/** Some MCP clients show the model only content[].text, so everything the agent needs must appear here. */
 function formatTranscript(s: ShapedTranscript): string {
   if (s.status === "error") {
     return `status=error transcript_id=${s.transcript_id} error="${s.error ?? ""}"`;
@@ -261,6 +263,7 @@ function formatTranscript(s: ShapedTranscript): string {
     for (const e of s.entities) {
       lines.push(`${e.entity_type}: ${e.text}`);
     }
+    lines.push(...renderEntityEvidence(s.entities));
   }
 
   if (s.summary) {
@@ -278,13 +281,25 @@ function formatTranscript(s: ShapedTranscript): string {
   if (s.speech_understanding?.response) {
     lines.push(...renderSpeechUnderstanding(s.speech_understanding.response));
   }
-  if (s.content_safety_labels?.summary && Object.keys(s.content_safety_labels.summary).length > 0) {
+  if (s.content_safety_labels && (
+    (s.content_safety_labels.status !== undefined && s.content_safety_labels.status !== "success") ||
+    (s.content_safety_labels.summary && Object.keys(s.content_safety_labels.summary).length > 0)
+  )) {
     lines.push(...renderContentSafety(s.content_safety_labels));
   }
-  if (s.iab_categories_result?.summary && Object.keys(s.iab_categories_result.summary).length > 0) {
+  if (s.content_safety_labels) {
+    lines.push(...renderContentSafetyEvidence(s.content_safety_labels));
+  }
+  if (s.iab_categories_result && (
+    (s.iab_categories_result.status !== undefined && s.iab_categories_result.status !== "success") ||
+    (s.iab_categories_result.summary && Object.keys(s.iab_categories_result.summary).length > 0)
+  )) {
     lines.push(...renderTopics(s.iab_categories_result));
   }
-  if (s.auto_highlights_result?.results && s.auto_highlights_result.results.length > 0) {
+  if (s.auto_highlights_result && (
+    (s.auto_highlights_result.status !== undefined && s.auto_highlights_result.status !== "success") ||
+    (s.auto_highlights_result.results && s.auto_highlights_result.results.length > 0)
+  )) {
     lines.push(...renderHighlights(s.auto_highlights_result));
   }
   if (s.unredacted_text) {
