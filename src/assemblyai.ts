@@ -383,8 +383,24 @@ export async function requestWithRetry<T>(
   baseUrl: string = DEFAULT_BASE_URL,
   timeoutMs?: number
 ): Promise<T> {
+  let responded = false;
+  const send = (onStatus?: (status: number) => void) =>
+    attemptRequest<T>(apiKey, method, path, body, retries, baseUrl, timeoutMs, (status) => {
+      responded = true;
+      onStatus?.(status);
+    }).catch((error: unknown) => {
+      if (method !== "GET" && !responded && error instanceof AssemblyAIError && error.status === 502) {
+        throw new AssemblyAIError(
+          `${error.message}. No response arrived, so the request may still have gone through, ` +
+            "and repeating it could run it twice.",
+          502
+        );
+      }
+      throw error;
+    });
+
   const probes = requestKeyProbes.getStore();
-  if (!probes) return attemptRequest<T>(apiKey, method, path, body, retries, baseUrl, timeoutMs);
+  if (!probes) return send();
 
   const existing = probes.get(apiKey);
   if (existing) {
@@ -392,7 +408,7 @@ export async function requestWithRetry<T>(
     if (await probeRejected(existing, Math.min(MAX_KEY_PROBE_WAIT_MS, spareMs))) {
       throw new AssemblyAIError("AssemblyAI rejected the API key (401).", 401);
     }
-    return attemptRequest<T>(apiKey, method, path, body, retries, baseUrl, timeoutMs);
+    return send();
   }
 
   let resolve!: (rejected: boolean) => void;
@@ -404,8 +420,7 @@ export async function requestWithRetry<T>(
     resolve(rejected);
   };
   try {
-    const result = await attemptRequest<T>(apiKey, method, path, body, retries, baseUrl, timeoutMs,
-      status => settle(status === 401));
+    const result = await send(status => settle(status === 401));
     settle(false);
     return result;
   } catch (error) {
