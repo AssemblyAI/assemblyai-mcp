@@ -1,5 +1,6 @@
 import { createMcpHandler, withMcpAuth } from "mcp-handler";
 
+import { withRequestKeyProbes } from "../../../src/assemblyai";
 import { withRequestClock } from "../../../src/deadline";
 import { withJsonBodyCheck } from "../../../src/json-body";
 import { RESOURCE_METADATA_PATH, withMissingCredentialsChallenge, withOAuthExchange } from "../../../src/oauth";
@@ -32,12 +33,14 @@ async function verifyToken(_req: Request, bearer?: string) {
 }
 
 const authed = withRequestClock(
-  withOAuthExchange(
-    withMissingCredentialsChallenge(
-      withMcpAuth(withJsonBodyCheck(handler), verifyToken, {
-        required: true,
-        resourceMetadataPath: RESOURCE_METADATA_PATH,
-      })
+  withRequestKeyProbes(
+    withOAuthExchange(
+      withMissingCredentialsChallenge(
+        withMcpAuth(withJsonBodyCheck(handler), verifyToken, {
+          required: true,
+          resourceMetadataPath: RESOURCE_METADATA_PATH,
+        })
+      )
     )
   )
 );

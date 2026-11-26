@@ -304,7 +304,10 @@ One row per feature. A PR names the rows it changes (see `.github/pull_request_t
 | Logging | all tools | `src/log.ts` | `smoke-test.ts` | |
 | Tool behavior annotations | `tools/list` | `src/tools/*.ts` | `smoke-test.ts` (explicit boolean hints and deletion classification) | |
 | API request deadline and retry | every AssemblyAI and LLM Gateway call | `src/assemblyai.ts`, `src/deadline.ts` | `request-timeout-test.ts`, `retry-test.ts`, `error-cap-test.ts` | |
+| Batch amplification guard | every tool call in one `/mcp` request | `src/assemblyai.ts`, `app/mcp/[[...path]]/route.ts` | `batch-key-test.ts` | |
 | End-to-end | real API | | `npm run test:live` | `ASSEMBLYAI_API_KEY` |
+
+Within a JSON-RPC batch, sibling calls share the first upstream status for their API key. A known 401 is reused immediately. A pending probe delays siblings for at most 250 ms, and less when their request budget is nearly spent. If authentication takes longer, siblings proceed independently, so slow 401 responses can still produce multiple outbound calls. Response bodies and retries never hold up siblings after the first status arrives.
 
 Use `https://mcp.assemblyai.com/assemblyai-logo-square.png` for directory submission icon fields. This is the approved 2048 × 2048 square PNG, served without authentication.
 
