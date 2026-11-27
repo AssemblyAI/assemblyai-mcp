@@ -108,9 +108,9 @@ try {
   }
 
   for (const status of [401, 404, 429]) {
-    await test(`body-stream ${status}: known 4xx never retries`, async () => {
+    await test(`body-stream ${status}: known 4xx never retries and preserves status`, async () => {
       const count = mock([() => failedBody(status)]);
-      await assert.rejects(get, isTransportError);
+      await assert.rejects(get, (err: unknown) => err instanceof AssemblyAIError && err.status === status);
       assert.equal(count(), 1);
     });
   }
@@ -181,9 +181,9 @@ try {
     await assert.rejects(get, SyntaxError);
     assert.equal(requests.length, 1);
   });
-  await test("real HTTP 404 socket drop: no replay", async () => {
+  await test("real HTTP 404 socket drop: no replay and preserves 404 status", async () => {
     realHttp([{ status: 404, body: '{"error":', drop: true }]);
-    await assert.rejects(get, isTransportError);
+    await assert.rejects(get, (err: unknown) => err instanceof AssemblyAIError && err.status === 404);
     assert.equal(requests.length, 1);
   });
   await test("real HTTP POST socket drop: no replay", async () => {

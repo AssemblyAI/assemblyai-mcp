@@ -2617,6 +2617,42 @@ async function run() {
     });
   }
 
+  // 66. dropped 4xx error bodies preserve 401/404/429 handling in handleToolError
+  {
+    const droppedBody = (status: number) =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          pull(controller) {
+            controller.error(new TypeError("terminated"));
+          },
+        }),
+        { status }
+      );
+    await withClientServer(async (client) => {
+      resetMock([droppedBody(401)]);
+      const auth = await callTool(client, "get_transcript", { transcript_id: "txn-401" }, "k");
+      assert(
+        "66. dropped 401 body still surfaces REJECTED_KEY_MESSAGE",
+        auth.isError === true && (auth.content?.[0]?.text ?? "").includes("rejected the API key (401)"),
+        auth.content?.[0]?.text
+      );
+      resetMock([droppedBody(429)]);
+      const rl = await callTool(client, "get_transcript", { transcript_id: "txn-429" }, "k");
+      assert(
+        "66. dropped 429 body still surfaces 60s rateLimitMessage",
+        rl.isError === true && (rl.content?.[0]?.text ?? "").includes("60 seconds"),
+        rl.content?.[0]?.text
+      );
+      resetMock([droppedBody(404)]);
+      const del = await callTool(client, "delete_transcript", { transcript_id: "txn-404" }, "k");
+      assert(
+        "66. dropped 404 body on delete_transcript still surfaces notFoundMessage",
+        del.isError === true && (del.content?.[0]?.text ?? "").includes("already deleted or not found"),
+        del.content?.[0]?.text
+      );
+    });
+  }
+
   globalThis.fetch = originalFetch;
 
   console.log(`\n${passed} passed, ${failed} failed`);
