@@ -99,7 +99,8 @@ export function withJsonBodyCheck(
     if (bytes === undefined) return tooLarge();
     const contentType = req.headers.get("content-type") ?? "";
     if (contentType.includes("application/json")) {
-      const text = bytes.toString("utf8");
+      // req.json(), which mcp-handler reads the body with, ignores one leading UTF-8 BOM.
+      const text = bytes.toString("utf8").replace(/^\uFEFF/, "");
       if (exceedsJsonDepth(text, MAX_JSON_DEPTH)) return tooDeep();
       try {
         JSON.parse(text);

@@ -2145,6 +2145,41 @@ async function run() {
       "57. a non-JSON body just under the limit is still passed on, unparsed",
       atLimitNonJson.status === 200 && reached === 7
     );
+
+    // Issue #188: req.json(), which mcp-handler reads the body with, ignores
+    // one leading UTF-8 BOM, so the guard must not refuse that body.
+    const parsedByHandler: unknown[] = [];
+    const parsing = withJsonBodyCheck(async (req) => {
+      parsedByHandler.push(await req.json());
+      return new Response("ok");
+    });
+    const initialize = JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "bom", version: "1" } },
+    });
+    const withBom = await parsing(post("\uFEFF" + initialize));
+    assert(
+      "57. a JSON body with a leading UTF-8 BOM (#188) is passed on, and the handler parses it",
+      withBom.status === 200 && parsedByHandler.length === 1 &&
+        (parsedByHandler[0] as { method?: string })?.method === "initialize",
+      `status=${withBom.status} parsed=${JSON.stringify(parsedByHandler)}`
+    );
+    const refusedBeforeHandler = async (body: string) => {
+      const before = parsedByHandler.length;
+      const res = await parsing(post(body));
+      return res.status === 400 && (await res.json())?.error?.code === -32700 && parsedByHandler.length === before;
+    };
+    assert("57. a BOM followed by invalid JSON still gets 400 with -32700", await refusedBeforeHandler("\uFEFFnot json"));
+    assert(
+      "57. only one leading BOM is ignored, as req.json() does: two get 400",
+      await refusedBeforeHandler("\uFEFF\uFEFF" + initialize)
+    );
+    assert(
+      "57. a BOM does not skip the depth limit",
+      await refusedBeforeHandler("\uFEFF" + "[".repeat(MAX_JSON_DEPTH + 1) + "]".repeat(MAX_JSON_DEPTH + 1))
+    );
   }
 
   {
