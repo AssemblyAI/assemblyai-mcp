@@ -1,3 +1,5 @@
+import { logError } from "./log";
+
 /** The MCP SDK's own body limit: it answers 413 above this. */
 export const MAX_BODY_BYTES = 4 * 1024 * 1024;
 
@@ -95,7 +97,13 @@ export function withJsonBodyCheck(
 ): (req: Request) => Promise<Response> {
   return async (req) => {
     if (req.method !== "POST") return handler(req);
-    const bytes = await readCappedBytes(req.clone());
+    let bytes: Buffer | undefined;
+    try {
+      bytes = await readCappedBytes(req.clone());
+    } catch (err) {
+      logError({ event: "mcp_read_error", status: "error" }, err);
+      return rpcError(400, -32700, "Parse error: the request body stream was interrupted or aborted.");
+    }
     if (bytes === undefined) return tooLarge();
     const contentType = req.headers.get("content-type") ?? "";
     if (contentType.includes("application/json")) {
