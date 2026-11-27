@@ -293,7 +293,8 @@ async function exchangeUpstream(
     return { kind: "key", apiKey: body.api_key };
   }
 
-  const detail = scrubForLog(detailOf(parsed, response.status)) ?? `HTTP ${response.status}`;
+  const detail = detailOf(parsed, response.status);
+  const loggedDetail = scrubForLog(detail) ?? `HTTP ${response.status}`;
   if (response.status === 401 && detail === "Unknown client") {
     // "Unknown client": AssemblyAI refused this deployment's service token, which sign-in can't fix. Log its claims, never the token.
     const { iss, aud, project_id, environment } = claimsOf(serviceToken);
@@ -307,11 +308,11 @@ async function exchangeUpstream(
     return { kind: "unavailable", detail: "AssemblyAI did not accept this server; try again later" };
   }
   if (response.status === 401) {
-    log({ event: "oauth_exchange_rejected", level: "warn", tokenHash: tokenId, status: 401, detail });
+    log({ event: "oauth_exchange_rejected", level: "warn", tokenHash: tokenId, status: 401, detail: loggedDetail });
     return { kind: "rejected", detail };
   }
   if (response.status === 403) {
-    log({ event: "oauth_exchange_rejected", level: "warn", tokenHash: tokenId, status: 403, detail });
+    log({ event: "oauth_exchange_rejected", level: "warn", tokenHash: tokenId, status: 403, detail: loggedDetail });
     // Only a missing-scope 403 is fixed by a new consent; other AssemblyAI 403s need a fresh sign-in, which a 401 starts.
     return /scope/i.test(detail)
       ? { kind: "insufficient_scope", detail }
@@ -322,7 +323,7 @@ async function exchangeUpstream(
     level: "error",
     reason: "upstream",
     status: response.status,
-    detail,
+    detail: loggedDetail,
   });
   return { kind: "unavailable", detail: "AssemblyAI could not issue an API key; try again" };
 }
