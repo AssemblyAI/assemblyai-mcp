@@ -2145,6 +2145,68 @@ async function run() {
       "57. a non-JSON body just under the limit is still passed on, unparsed",
       atLimitNonJson.status === 200 && reached === 7
     );
+
+    const logLines: string[] = [];
+    const origLog = console.log;
+    let abortedJson: Response;
+    let abortedNonJson: Response;
+    console.log = (line: string) => logLines.push(line);
+    try {
+      const abortedJsonStream = new ReadableStream<Uint8Array>({
+        start(c) {
+          c.enqueue(new TextEncoder().encode('{"jsonrpc":"2.0"'));
+        },
+        pull(c) {
+          c.error(new DOMException("The user aborted a request.", "AbortError"));
+        },
+      });
+      abortedJson = await checked(
+        new Request("http://localhost/mcp", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: abortedJsonStream,
+          duplex: "half",
+        } as RequestInit)
+      );
+
+      const abortedNonJsonStream = new ReadableStream<Uint8Array>({
+        pull() {
+          throw new TypeError("terminated");
+        },
+      });
+      abortedNonJson = await checked(
+        new Request("http://localhost/mcp", {
+          method: "POST",
+          headers: { "content-type": "text/plain" },
+          body: abortedNonJsonStream,
+          duplex: "half",
+        } as RequestInit)
+      );
+    } finally {
+      console.log = origLog;
+    }
+    const abortedJsonBody = await abortedJson.json();
+    assert(
+      "57. an aborted client stream answers 400 with JSON-RPC error -32700 (#159)",
+      abortedJson.status === 400 &&
+        abortedJsonBody?.error?.code === -32700 &&
+        abortedJsonBody?.id === null &&
+        reached === 7,
+      JSON.stringify({ status: abortedJson.status, body: abortedJsonBody, reached })
+    );
+    assert(
+      "57. an aborted non-JSON client stream also answers 400 (#159)",
+      abortedNonJson.status === 400 && reached === 7,
+      `status=${abortedNonJson.status}`
+    );
+    const parsedLogs = logLines.map((l) => JSON.parse(l));
+    assert(
+      "57. aborted streams log mcp_read_error without echoing request payload",
+      parsedLogs.length === 2 &&
+        parsedLogs.every((e) => e.event === "mcp_read_error" && e.level === "error") &&
+        !logLines.some((l) => l.includes("jsonrpc")),
+      JSON.stringify(logLines)
+    );
   }
 
   {

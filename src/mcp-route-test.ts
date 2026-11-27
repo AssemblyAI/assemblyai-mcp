@@ -75,6 +75,25 @@ async function runCase() {
   }));
   assert.equal(message.status, 404, "POST /mcp/message is not served");
 
+  const abortedStream = new ReadableStream<Uint8Array>({
+    start(c) {
+      c.enqueue(new TextEncoder().encode('{"jsonrpc":"2.0"'));
+    },
+    pull(c) {
+      c.error(new TypeError("terminated"));
+    },
+  });
+  const aborted = await POST(new Request("http://localhost/mcp", {
+    method: "POST",
+    headers: { ...headers, "content-type": "application/json" },
+    body: abortedStream,
+    duplex: "half",
+  } as RequestInit));
+  assert.equal(aborted.status, 400, "POST /mcp with aborted body answers 400");
+  const abortedBody = await aborted.json() as { error?: { code?: number }; id?: unknown };
+  assert.equal(abortedBody.error?.code, -32700, "POST /mcp aborted body returns JSON-RPC -32700");
+  assert.equal(abortedBody.id, null, "POST /mcp aborted body returns id: null");
+
   assert.deepEqual(urls, [], "no request path connects to Redis");
   redisMock.restore();
 }
