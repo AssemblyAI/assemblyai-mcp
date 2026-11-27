@@ -2,9 +2,9 @@ const HOST = /^(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.-]+)(:\d{1,5})?$/;
 
 const PRODUCTION_HOST = "mcp.assemblyai.com";
 const PRODUCTION_ORIGIN = `https://${PRODUCTION_HOST}`;
-const LOCAL_HOSTNAMES = new Set(["localhost", "127.0.0.1", "[::1]"]);
+export const LOCAL_HOSTNAMES = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
-function allowedHostnames(): Set<string> {
+export function allowedHostnames(): Set<string> {
   const hosts = new Set([PRODUCTION_HOST]);
   const listed = [
     process.env.VERCEL_URL,

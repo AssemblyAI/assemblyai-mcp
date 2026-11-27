@@ -3,7 +3,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import { submitTranscript } from "../assemblyai";
 import { log, keyHash } from "../log";
-import { publicOrigin } from "../origin";
+import { allowedHostnames, LOCAL_HOSTNAMES, publicOrigin } from "../origin";
 import { speechUnderstandingSchema } from "../speech-understanding-schema";
 import { handleToolError, requireApiKey } from "../tool-errors";
 import { uploadsConfigured } from "../upload-token";
@@ -131,7 +131,7 @@ function header(headers: Headers, name: string): string | undefined {
 
 function ownHostsOf(headers: Headers): Set<string> {
   const requestHost = new URL(publicOrigin(header(headers, "x-forwarded-host"), header(headers, "host"))).host;
-  return new Set(["mcp.assemblyai.com", requestHost.toLowerCase()]);
+  return new Set([...allowedHostnames(), ...LOCAL_HOSTNAMES, requestHost.toLowerCase()]);
 }
 
 function pickAudioUrl(

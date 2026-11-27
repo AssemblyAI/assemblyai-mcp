@@ -2617,6 +2617,37 @@ async function run() {
     });
   }
 
+  // 66. isOwnUploadLink blocks upload links on other PUBLIC_HOSTS, Vercel, and loopback hosts
+  {
+    const prevPublic = process.env.PUBLIC_HOSTS;
+    const prevVercel = process.env.VERCEL_URL;
+    process.env.PUBLIC_HOSTS = "custom-mcp.example.com";
+    process.env.VERCEL_URL = "preview-123.vercel.app";
+    try {
+      await withClientServer(async (client) => {
+        for (const uploadUrl of [
+          "https://custom-mcp.example.com/upload/tok123",
+          "https://preview-123.vercel.app/upload/tok123",
+          "http://127.0.0.1:3000/upload/tok123",
+        ]) {
+          resetMock([]);
+          const res = await callTool(client, "submit_transcript", { audio_url: uploadUrl }, "k");
+          const text = res.content?.[0]?.text ?? "";
+          assert(
+            `66. upload link on ${new URL(uploadUrl).host} is refused before calling AssemblyAI`,
+            res.isError === true && text.includes("create_upload_url") && calls.length === 0,
+            `isError=${res.isError} calls=${calls.length} text=${text}`
+          );
+        }
+      });
+    } finally {
+      if (prevPublic === undefined) delete process.env.PUBLIC_HOSTS;
+      else process.env.PUBLIC_HOSTS = prevPublic;
+      if (prevVercel === undefined) delete process.env.VERCEL_URL;
+      else process.env.VERCEL_URL = prevVercel;
+    }
+  }
+
   globalThis.fetch = originalFetch;
 
   console.log(`\n${passed} passed, ${failed} failed`);
