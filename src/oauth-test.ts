@@ -599,6 +599,27 @@ async function run() {
 
   {
     clearExchangeCache();
+    const n = MAX_EXCHANGES_PER_IP_PER_MINUTE;
+    const outage = () => Response.json({ detail: "Service unavailable" }, { status: 503 });
+    const responses = [...Array.from({ length: n }, outage), keyResponse("recovered-key")];
+    const { deps, exchanges } = stub(responses);
+    const { handler } = recorder();
+    const wrapped = withOAuthExchange(handler, deps);
+    const ip = "198.51.100.30";
+    const duringOutage: number[] = [];
+    for (let i = 0; i < n; i++) {
+      duringOutage.push((await wrapped(fromIp(accessToken(undefined, `outage${i}`), ip))).status);
+    }
+    const recovered = await wrapped(fromIp(accessToken(undefined, "after-outage"), ip));
+    assert(
+      `13c. ${n} upstream 503s from one IP do not lock it out with 429 once upstream recovers`,
+      duringOutage.every((s) => s === 503) && recovered.status === 200 && exchanges.length === n + 1,
+      `outage=${duringOutage.join(",")} recovered=${recovered.status} exchanges=${exchanges.length}`
+    );
+  }
+
+  {
+    clearExchangeCache();
     const c = MAX_CONCURRENT_EXCHANGES;
     const stalls: Array<"stall"> = Array.from({ length: c }, () => "stall" as const);
     const { deps, exchanges } = stub(stalls, { timeoutMs: 200 });

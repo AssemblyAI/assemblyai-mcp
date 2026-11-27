@@ -179,7 +179,7 @@ async function exchangeAccessToken(
     if (outcome.kind === "rejected" || outcome.kind === "insufficient_scope") {
       setBounded(refused, entry, { outcome, until: now + REFUSED_CACHE_MS }, MAX_CACHE_ENTRIES);
     }
-    if (outcome.kind === "key") {
+    if (outcome.kind === "key" || outcome.kind === "unavailable") {
       const current = exchangesByIp.get(clientIp);
       if (current && current.windowStart === windowStart && current.count > 0) current.count--;
     }
