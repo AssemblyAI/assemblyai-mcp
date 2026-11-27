@@ -66,7 +66,10 @@ export function registerGetTranscript(server: McpServer): void {
         if (record.status === "completed" && record.redact_pii_audio === true) {
           try {
             const audio = await getRedactedAudio(apiKey, args.transcript_id);
-            redactedAudioUrl = audio.redacted_audio_url;
+            redactedAudioUrl =
+              typeof audio.redacted_audio_url === "string" && audio.redacted_audio_url.length > 0
+                ? audio.redacted_audio_url
+                : undefined;
             redactedAudioPending = redactedAudioUrl === undefined;
           } catch (err) {
             // 400, 200 with no URL, or 504 from our own deadline means not ready yet; any other failure means unavailable (the link expires after ~24h).

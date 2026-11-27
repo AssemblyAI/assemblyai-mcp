@@ -2617,6 +2617,27 @@ async function run() {
     });
   }
 
+  // 66. redacted_audio_url null or empty string is treated as pending, not silently dropped
+  for (const redactedAudioUrl of [null, ""]) {
+    await withClientServer(async (client) => {
+      resetMock([
+        jsonResponse(200, { id: "txn-redacted-null", status: "completed", text: "hi", redact_pii_audio: true }),
+        jsonResponse(200, { status: "processing", redacted_audio_url: redactedAudioUrl }),
+      ]);
+      const result = await callTool(client, "get_transcript", { transcript_id: "txn-redacted-null" }, "k");
+      const text = result.content?.[0]?.text ?? "";
+      assert(
+        `66. redacted_audio_url=${JSON.stringify(redactedAudioUrl)} reports redacted_audio_pending and next_step`,
+        result.isError !== true &&
+          result.structuredContent?.redacted_audio_pending === true &&
+          result.structuredContent?.redacted_audio_url === undefined &&
+          typeof result.structuredContent?.next_step === "string" &&
+          text.includes("redacted audio not ready yet"),
+        `structured=${JSON.stringify(result.structuredContent)} text=${text}`
+      );
+    });
+  }
+
   globalThis.fetch = originalFetch;
 
   console.log(`\n${passed} passed, ${failed} failed`);
