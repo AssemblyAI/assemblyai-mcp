@@ -141,6 +141,14 @@ const HANDLED_KEYS = new Set<keyof TranscriptSubmitOptions>([
   "redact_pii_sub",
 ]);
 
+const REDACT_OPTION_KEYS = new Set<keyof TranscriptSubmitOptions>([
+  "redact_pii_audio",
+  "redact_pii_audio_quality",
+  "redact_pii_audio_options",
+  "redact_pii_return_unredacted",
+  "redact_static_entities",
+]);
+
 export async function submitTranscript(
   apiKey: string,
   options: TranscriptSubmitOptions
@@ -155,11 +163,15 @@ export async function submitTranscript(
   if (options.entity_detection) payload.entity_detection = true;
   if (options.redact_pii) {
     payload.redact_pii = true;
-    payload.redact_pii_policies = options.redact_pii_policies ?? DEFAULT_REDACT_PII_POLICIES;
+    payload.redact_pii_policies = options.redact_pii_policies?.length
+      ? options.redact_pii_policies
+      : DEFAULT_REDACT_PII_POLICIES;
     payload.redact_pii_sub = options.redact_pii_sub ?? "entity_name";
   }
   for (const [key, value] of Object.entries(options)) {
-    if (HANDLED_KEYS.has(key as keyof TranscriptSubmitOptions)) continue;
+    const k = key as keyof TranscriptSubmitOptions;
+    if (HANDLED_KEYS.has(k)) continue;
+    if (!options.redact_pii && REDACT_OPTION_KEYS.has(k)) continue;
     if (value !== undefined) payload[key] = value;
   }
   // retries=1: POST /v2/transcript is billable and non-idempotent; a retry on 5xx could double-charge.

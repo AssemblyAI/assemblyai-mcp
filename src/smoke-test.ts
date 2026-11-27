@@ -2617,6 +2617,42 @@ async function run() {
     });
   }
 
+  // 66. falsy redact_pii_* flags do not leak without redact_pii: true, and empty redact_pii_policies falls back to defaults
+  await withClientServer(async (client) => {
+    resetMock([jsonResponse(200, { id: "txn-pii-false", status: "queued" })]);
+    const resFalse = await callTool(
+      client,
+      "submit_transcript",
+      { audio_url: "https://example.com/x.mp3", redact_pii: false, redact_pii_audio: false, redact_pii_return_unredacted: false },
+      "k"
+    );
+    const bodyFalse = JSON.parse(calls[0]?.body ?? "{}") as Record<string, unknown>;
+    assert(
+      "66. falsy redact_pii_audio/redact_pii_return_unredacted are omitted when redact_pii is false",
+      resFalse.isError !== true &&
+        bodyFalse.redact_pii === undefined &&
+        bodyFalse.redact_pii_audio === undefined &&
+        bodyFalse.redact_pii_return_unredacted === undefined,
+      JSON.stringify(bodyFalse)
+    );
+
+    resetMock([jsonResponse(200, { id: "txn-pii-empty", status: "queued" })]);
+    const resEmpty = await callTool(
+      client,
+      "submit_transcript",
+      { audio_url: "https://example.com/x.mp3", redact_pii: true, redact_pii_policies: [] },
+      "k"
+    );
+    const bodyEmpty = JSON.parse(calls[0]?.body ?? "{}") as Record<string, unknown>;
+    assert(
+      "66. redact_pii_policies: [] falls back to DEFAULT_REDACT_PII_POLICIES",
+      resEmpty.isError !== true &&
+        Array.isArray(bodyEmpty.redact_pii_policies) &&
+        bodyEmpty.redact_pii_policies.includes("person_name"),
+      JSON.stringify(bodyEmpty)
+    );
+  });
+
   globalThis.fetch = originalFetch;
 
   console.log(`\n${passed} passed, ${failed} failed`);
