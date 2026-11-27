@@ -301,7 +301,10 @@ async function attemptRequest<T>(
     } catch (err) {
       if (signal.aborted) throw timeoutError(method, timeoutMs);
       if (response && response.status >= 400 && response.status < 500) {
-        throw new AssemblyAIError(`HTTP ${response.status}: failed to read AssemblyAI error response: ${String(err)}`, 502);
+        throw new AssemblyAIError(
+          `HTTP ${response.status}: failed to read AssemblyAI error response: ${String(err)}`,
+          response.status
+        );
       }
       lastError = err;
       continue;
