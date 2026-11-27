@@ -3,7 +3,13 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import { understandTranscript } from "../llm-gateway";
 import { speechUnderstandingSchema } from "../speech-understanding-schema";
-import { renderTranslations, renderTranslatedUtterances, renderSpeechUnderstanding } from "../transcript-sections";
+import {
+  normalizeTranslatedTexts,
+  normalizeTranslatedUtterances,
+  renderTranslations,
+  renderTranslatedUtterances,
+  renderSpeechUnderstanding,
+} from "../transcript-sections";
 import { log, keyHash } from "../log";
 import { handleToolError, requireApiKey } from "../tool-errors";
 import { transcriptIdSchema } from "../transcript-id";
@@ -53,15 +59,15 @@ export function registerUnderstandTranscript(server: McpServer): void {
           latencyMs: Date.now() - start,
         });
 
+        const translatedTexts = normalizeTranslatedTexts(response.translated_texts);
+        const utterances = normalizeTranslatedUtterances(response.utterances);
+
         const lines: string[] = [`transcript_id=${args.transcript_id}`];
-        if (response.translated_texts && Object.keys(response.translated_texts).length > 0) {
-          lines.push(...renderTranslations(response.translated_texts));
+        if (translatedTexts) {
+          lines.push(...renderTranslations(translatedTexts));
         }
-        if (
-          response.utterances &&
-          response.utterances.some((u) => u.translated_texts && Object.keys(u.translated_texts).length > 0)
-        ) {
-          lines.push(...renderTranslatedUtterances(response.utterances));
+        if (utterances && utterances.length > 0) {
+          lines.push(...renderTranslatedUtterances(utterances));
         }
         if (response.speech_understanding?.response) {
           lines.push(...renderSpeechUnderstanding(response.speech_understanding.response));
@@ -73,9 +79,9 @@ export function registerUnderstandTranscript(server: McpServer): void {
           content: [{ type: "text" as const, text: lines.join("\n") }],
           structuredContent: {
             transcript_id: args.transcript_id,
-            translated_texts: response.translated_texts,
+            translated_texts: translatedTexts,
             speech_understanding: response.speech_understanding,
-            utterances: response.utterances,
+            utterances,
             request_id: response.request_id,
           },
         };

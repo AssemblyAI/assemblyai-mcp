@@ -102,22 +102,60 @@ export function renderContentSafetyEvidence(labels: ContentSafetyLabels): string
   return evidence.length ? ["", "--- content_safety_evidence ---", ...evidence] : [];
 }
 
-export function renderTranslations(translatedTexts: Record<string, string>): string[] {
+/**
+ * Parse `translated_texts` whether the API returned an object map or a JSON-encoded string.
+ * Returns undefined when empty, non-object, or unparseable so callers never iterate string indices.
+ */
+export function normalizeTranslatedTexts(value: unknown): Record<string, string> | undefined {
+  let raw = value;
+  if (typeof raw === "string") {
+    try {
+      raw = JSON.parse(raw);
+    } catch {
+      return undefined;
+    }
+  }
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const out: Record<string, string> = {};
+  for (const [lang, text] of Object.entries(raw)) {
+    if (typeof text === "string") out[lang] = text;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+/** Return shallow-cloned utterances with any serialized `translated_texts` normalized without mutating input. */
+export function normalizeTranslatedUtterances<T extends { translated_texts?: unknown }>(
+  utterances: T[] | undefined
+): Array<Omit<T, "translated_texts"> & { translated_texts?: Record<string, string> }> | undefined {
+  if (!Array.isArray(utterances)) return undefined;
+  return utterances.map((u) => {
+    if (!("translated_texts" in u)) return u as Omit<T, "translated_texts"> & { translated_texts?: Record<string, string> };
+    const normalized = normalizeTranslatedTexts(u.translated_texts);
+    if (normalized) return { ...u, translated_texts: normalized };
+    const { translated_texts: _dropped, ...rest } = u;
+    return rest as Omit<T, "translated_texts"> & { translated_texts?: Record<string, string> };
+  });
+}
+
+export function renderTranslations(translatedTexts: unknown): string[] {
+  const normalized = normalizeTranslatedTexts(translatedTexts);
+  if (!normalized) return [];
   const lines: string[] = [];
-  for (const [lang, text] of Object.entries(translatedTexts)) {
+  for (const [lang, text] of Object.entries(normalized)) {
     lines.push("", `--- translation:${lang} ---`, text);
   }
   return lines;
 }
 
 export function renderTranslatedUtterances(utterances: TranslatedUtterance[]): string[] {
-  const withTranslations = utterances.filter(
-    (u) => u.translated_texts && Object.keys(u.translated_texts).length > 0
-  );
-  if (withTranslations.length === 0) return [];
-  const lines = ["", "--- translated_utterances (per-speaker; start/end ms from audio start) ---"];
-  for (const u of withTranslations) {
-    for (const [lang, text] of Object.entries(u.translated_texts!)) {
+  const lines: string[] = [];
+  for (const u of utterances) {
+    const normalized = normalizeTranslatedTexts(u.translated_texts);
+    if (!normalized) continue;
+    if (lines.length === 0) {
+      lines.push("", "--- translated_utterances (per-speaker; start/end ms from audio start) ---");
+    }
+    for (const [lang, text] of Object.entries(normalized)) {
       lines.push(`[${u.speaker}] ${formatMs(u.start)}–${formatMs(u.end)} ${lang}: ${text}`);
     }
   }

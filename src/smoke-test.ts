@@ -1333,6 +1333,62 @@ async function run() {
     );
   });
 
+  // #161. JSON-stringified translated_texts must be parsed rather than character-split.
+  await withClientServer(async (client) => {
+    const id = "55517222-f677-48a6-9287-39c0aafd9ac1";
+    resetMock([
+      jsonResponse(200, {
+        request_id: "req-161",
+        translated_texts: JSON.stringify({ es: "Hola mundo", fr: "Bonjour le monde" }),
+        utterances: [
+          { speaker: "A", text: "Hello", start: 0, end: 1000, translated_texts: JSON.stringify({ es: "Hola" }) },
+        ],
+        speech_understanding: { response: { translation: { status: "success" } } },
+      }),
+    ]);
+    const und = await callTool(
+      client,
+      "understand_transcript",
+      { transcript_id: id, speech_understanding: { request: { translation: { target_languages: ["es"] } } } },
+      "k"
+    );
+    const undText = und.content?.[0]?.text ?? "";
+    const scTranslated = und.structuredContent?.translated_texts as Record<string, string> | undefined;
+    const scUtterances = und.structuredContent?.utterances as Array<{ translated_texts?: Record<string, string> }> | undefined;
+    assert(
+      "40b. #161 understand_transcript parses JSON-stringified translated_texts in text and structuredContent",
+      !und.isError &&
+        undText.includes("--- translation:es ---\nHola mundo") &&
+        undText.includes("--- translation:fr ---\nBonjour le monde") &&
+        undText.includes("[A] 0:00–0:01 es: Hola") &&
+        !undText.includes("--- translation:0 ---") &&
+        scTranslated?.es === "Hola mundo" &&
+        scTranslated?.fr === "Bonjour le monde" &&
+        scUtterances?.[0]?.translated_texts?.es === "Hola",
+      undText.slice(0, 400)
+    );
+
+    resetMock([
+      jsonResponse(200, {
+        id,
+        status: "completed",
+        text: "Hello",
+        translated_texts: "{}",
+        utterances: [{ speaker: "A", text: "Hello", start: 0, end: 1000, translated_texts: "not-json" }],
+      }),
+    ]);
+    const gt = await callTool(client, "get_transcript", { transcript_id: id }, "k");
+    const gtText = gt.content?.[0]?.text ?? "";
+    assert(
+      "40b. #161 empty or invalid stringified translated_texts emits no character sections",
+      !gt.isError &&
+        !gtText.includes("--- translation:") &&
+        !gtText.includes("--- translated_utterances") &&
+        gt.structuredContent?.translated_texts === undefined,
+      gtText.slice(0, 400)
+    );
+  });
+
   await withClientServer(async (client) => {
     resetMock([
       jsonResponse(200, {

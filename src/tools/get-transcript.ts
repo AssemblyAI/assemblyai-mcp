@@ -6,6 +6,8 @@ import { log, logError, keyHash } from "../log";
 import { handleToolError, requireApiKey } from "../tool-errors";
 import {
   formatMs,
+  normalizeTranslatedTexts,
+  normalizeTranslatedUtterances,
   renderTranslations,
   renderTranslatedUtterances,
   renderSpeechUnderstanding,
@@ -168,7 +170,8 @@ function shape(record: TranscriptRecord, redactedAudioUrl?: string, includeWords
   if (record.audio_duration !== undefined) out.audio_duration = record.audio_duration;
   // The API sends explicit nulls for missing data.
   if (record.utterances != null && record.utterances.length > 0) {
-    out.speakers = includeWords ? record.utterances : record.utterances.map(({ words: _words, ...u }) => u);
+    const rawUtterances = includeWords ? record.utterances : record.utterances.map(({ words: _words, ...u }) => u);
+    out.speakers = normalizeTranslatedUtterances(rawUtterances);
   } else if (includeWords && record.words != null && record.words.length > 0) {
     // No speaker_labels: utterances are null and the words only exist at the top level.
     out.words = record.words;
@@ -178,7 +181,8 @@ function shape(record: TranscriptRecord, redactedAudioUrl?: string, includeWords
   if (record.sentiment_analysis_results && record.sentiment_analysis_results.length > 0)
     out.sentiment = record.sentiment_analysis_results;
   if (record.entities && record.entities.length > 0) out.entities = record.entities;
-  if (record.translated_texts != null) out.translated_texts = record.translated_texts;
+  const translatedTexts = normalizeTranslatedTexts(record.translated_texts);
+  if (translatedTexts) out.translated_texts = translatedTexts;
   if (record.speech_understanding != null) {
     const su = record.speech_understanding;
     const formatting = su.response?.custom_formatting;
@@ -272,10 +276,10 @@ function formatTranscript(s: ShapedTranscript): string {
     lines.push(s.summary);
   }
 
-  if (s.translated_texts && Object.keys(s.translated_texts).length > 0) {
+  if (s.translated_texts) {
     lines.push(...renderTranslations(s.translated_texts));
   }
-  if (s.speakers && s.speakers.some((u) => u.translated_texts && Object.keys(u.translated_texts).length > 0)) {
+  if (s.speakers && s.speakers.length > 0) {
     lines.push(...renderTranslatedUtterances(s.speakers));
   }
   if (s.speech_understanding?.response) {
