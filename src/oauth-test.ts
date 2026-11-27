@@ -265,6 +265,47 @@ async function run() {
 
   {
     clearExchangeCache();
+    const scopeDetail = "missing_required_aai_api_scope";
+    const urlDetail = "Re-authorize at https://www.assemblyai.com/app/connections";
+    const { deps } = stub([
+      Response.json({ detail: scopeDetail }, { status: 403 }),
+      Response.json({ detail: urlDetail }, { status: 401 }),
+    ]);
+    const { handler } = recorder();
+    const wrapped = withOAuthExchange(handler, deps);
+    const lines: string[] = [];
+    const originalLog = console.log;
+    console.log = (line: string) => lines.push(line);
+    let scopeRes: Response;
+    let urlRes: Response;
+    try {
+      scopeRes = await wrapped(mcpRequest(accessToken(undefined, "scope24")));
+      urlRes = await wrapped(mcpRequest(accessToken(undefined, "url401")));
+    } finally {
+      console.log = originalLog;
+    }
+    const scopeBody = (await scopeRes.json()) as { error_description?: string };
+    const urlBody = (await urlRes.json()) as { error_description?: string };
+    const joinedLogs = lines.join("\n");
+    assert(
+      "7b. a 24+ char scope refusal stays 403 insufficient_scope with unscrubbed error_description",
+      scopeRes.status === 403 &&
+        scopeBody.error_description === scopeDetail &&
+        (scopeRes.headers.get("WWW-Authenticate") ?? "").includes(`error_description="${scopeDetail}"`),
+      `status=${scopeRes.status} body=${JSON.stringify(scopeBody)}`
+    );
+    assert(
+      "7b. a 401 detail preserves URLs for the client while logs remain scrubbed",
+      urlRes.status === 401 &&
+        urlBody.error_description === urlDetail &&
+        !joinedLogs.includes(scopeDetail) &&
+        !joinedLogs.includes("https://www.assemblyai.com/app/connections"),
+      `body=${JSON.stringify(urlBody)} logs=${joinedLogs}`
+    );
+  }
+
+  {
+    clearExchangeCache();
     const detail = "This app\u2019s access was revoked;\nauthorize the app again";
     const { deps } = stub([Response.json({ detail }, { status: 401 })]);
     const { handler } = recorder();
