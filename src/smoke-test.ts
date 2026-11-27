@@ -427,6 +427,26 @@ async function run() {
   });
 
   await withClientServer(async (client) => {
+    for (const customPrompt of ["Extract dates from {{transcript}}.", "Summarize:\n{{  Transcript  }}"]) {
+      resetMock([jsonResponse(200, { choices: [{ message: { content: "ok" } }] })]);
+      await callTool(
+        client,
+        "summarize_transcript",
+        { transcript_id: "txn-ai", style: "custom", custom_prompt: customPrompt },
+        "k"
+      );
+      const body = JSON.parse(calls[0]?.body ?? "{}");
+      const content = body.messages?.[0]?.content ?? "";
+      const occurrences = (content.match(/\{\{ transcript \}\}/g) ?? []).length;
+      assert(
+        `14c. #164 normalizes ${JSON.stringify(customPrompt)} to {{ transcript }} without duplicating`,
+        occurrences === 1 && !/\{\{(?! transcript \}\})/i.test(content),
+        content
+      );
+    }
+  });
+
+  await withClientServer(async (client) => {
     resetMock([]);
     const result = await callTool(
       client,

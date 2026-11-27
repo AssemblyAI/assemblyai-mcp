@@ -27,9 +27,10 @@ export async function summarizeViaLlmGateway(
   apiKey: string,
   options: SummarizeOptions
 ): Promise<string> {
-  const promptContent = options.prompt.includes("{{ transcript }}")
-    ? options.prompt
-    : `${options.prompt}\n\n{{ transcript }}`;
+  const normalizedPrompt = options.prompt.replace(/\{\{\s*transcript\s*\}\}/gi, "{{ transcript }}");
+  const promptContent = normalizedPrompt.includes("{{ transcript }}")
+    ? normalizedPrompt
+    : `${normalizedPrompt}\n\n{{ transcript }}`;
   const body = {
     model: LLM_GATEWAY_MODEL,
     messages: [{ role: "user", content: promptContent }],
