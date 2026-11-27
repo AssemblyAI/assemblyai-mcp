@@ -374,7 +374,12 @@ export function withOAuthExchange(
 ): (req: Request) => Promise<Response> {
   return async (req) => {
     const bearer = bearerOf(req);
-    if (!bearer || !looksLikeAccessToken(bearer)) return handler(req);
+    if (!bearer) return handler(req);
+    if (!looksLikeAccessToken(bearer)) {
+      // withMcpAuth (mcp-handler) splits the header on exactly one space.
+      const canonical = /^bearer \S+$/i.test(req.headers.get("Authorization") ?? "");
+      return handler(canonical ? req : withBearer(req, bearer));
+    }
 
     const outcome = await exchangeAccessToken(bearer, deps, clientIpOf(req));
     switch (outcome.kind) {
