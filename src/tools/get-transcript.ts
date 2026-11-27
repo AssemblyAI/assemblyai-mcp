@@ -25,6 +25,13 @@ import {
 } from "../transcript-sections";
 import { transcriptIdSchema } from "../transcript-id";
 
+/** AssemblyAI's documented, permanent 400: "A redacted audio file for this transcript ID doesn't exist." */
+const REDACTED_AUDIO_MISSING = /doesn['’]t exist|does not exist/i;
+
+const REDACTED_AUDIO_MISSING_STEP =
+  "No redacted audio file exists for this transcript, and calling get_transcript again will not create one. " +
+  "To get redacted audio, submit the audio again with redact_pii: true and redact_pii_audio: true.";
+
 export function registerGetTranscript(server: McpServer): void {
   server.registerTool(
     "get_transcript",
@@ -63,14 +70,18 @@ export function registerGetTranscript(server: McpServer): void {
         let redactedAudioUrl: string | undefined;
         let redactedAudioPending = false;
         let redactedAudioError: string | undefined;
+        let redactedAudioMissing = false;
         if (record.status === "completed" && record.redact_pii_audio === true) {
           try {
             const audio = await getRedactedAudio(apiKey, args.transcript_id);
             redactedAudioUrl = audio.redacted_audio_url;
             redactedAudioPending = redactedAudioUrl === undefined;
           } catch (err) {
-            // 400, 200 with no URL, or 504 from our own deadline means not ready yet; any other failure means unavailable (the link expires after ~24h).
-            if (err instanceof AssemblyAIError && (err.status === 400 || err.status === 504)) {
+            // Any other 400, 200 with no URL, or 504 from our own deadline means not ready yet; any other failure means unavailable (the link expires after ~24h).
+            if (err instanceof AssemblyAIError && err.status === 400 && REDACTED_AUDIO_MISSING.test(err.message)) {
+              redactedAudioMissing = true;
+              redactedAudioError = "HTTP 400";
+            } else if (err instanceof AssemblyAIError && (err.status === 400 || err.status === 504)) {
               redactedAudioPending = true;
             } else {
               redactedAudioError = err instanceof AssemblyAIError ? `HTTP ${err.status}` : "unknown error";
@@ -95,6 +106,8 @@ export function registerGetTranscript(server: McpServer): void {
           shaped.next_step = "Not finished yet. Call get_transcript again with the same transcript_id in ~3 seconds.";
         } else if (redactedAudioPending) {
           shaped.next_step = "The redacted audio is not ready yet. Call get_transcript again shortly to get redacted_audio_url.";
+        } else if (redactedAudioMissing) {
+          shaped.next_step = REDACTED_AUDIO_MISSING_STEP;
         }
         log({
           event: "tool_call",
@@ -106,7 +119,7 @@ export function registerGetTranscript(server: McpServer): void {
           latencyMs: Date.now() - start,
         });
         return {
-          content: [{ type: "text" as const, text: formatTranscript(shaped) }],
+          content: [{ type: "text" as const, text: formatTranscript(shaped, redactedAudioMissing) }],
           structuredContent: shaped as unknown as Record<string, unknown>,
         };
       } catch (err) {
@@ -207,7 +220,7 @@ function shape(record: TranscriptRecord, redactedAudioUrl?: string, includeWords
 }
 
 /** Some MCP clients show the model only content[].text, so everything the agent needs must appear here. */
-function formatTranscript(s: ShapedTranscript): string {
+function formatTranscript(s: ShapedTranscript, redactedAudioMissing = false): string {
   if (s.status === "error") {
     return `status=error transcript_id=${s.transcript_id} error="${s.error ?? ""}"`;
   }
@@ -310,6 +323,12 @@ function formatTranscript(s: ShapedTranscript): string {
   }
   if (s.redacted_audio_url) {
     lines.push(...renderRedactedAudio(s.redacted_audio_url));
+  } else if (redactedAudioMissing) {
+    lines.push(
+      "",
+      `(redacted audio unavailable (${s.redacted_audio_error}) — no redacted audio file exists for this transcript; ` +
+        "submit the audio again with redact_pii: true and redact_pii_audio: true to get one)"
+    );
   } else if (s.redacted_audio_error) {
     lines.push(
       "",

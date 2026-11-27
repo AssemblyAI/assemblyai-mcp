@@ -860,6 +860,35 @@ async function run() {
   });
   await withClientServer(async (client) => {
     resetMock([
+      jsonResponse(200, { id: "txn-rf", status: "completed", text: "hi", audio_duration: 3, redact_pii_audio: true }),
+      // The documented body: https://www.assemblyai.com/docs/pre-recorded-audio/guides/common_errors_and_solutions
+      jsonResponse(400, {
+        error:
+          "A redacted audio file for this transcript ID doesn't exist. " +
+          "Try submitting the transcript again with`redact_pii_audio`set to`true`.",
+      }),
+    ]);
+    const result = await callTool(client, "get_transcript", { transcript_id: "txn-rf" }, "k");
+    const text = result.content?.[0]?.text ?? "";
+    const sc = result.structuredContent;
+    const nextStep = typeof sc?.next_step === "string" ? sc.next_step : "";
+    assert(
+      "25. a redacted audio file that doesn't exist is unavailable, not pending (#169)",
+      result.isError !== true &&
+        sc?.redacted_audio_pending === undefined &&
+        sc?.redacted_audio_error === "HTTP 400" &&
+        !text.includes("not ready yet") &&
+        text.includes("no redacted audio file exists for this transcript"),
+      `isError=${result.isError} text=${text} structuredContent=${JSON.stringify(sc)}`
+    );
+    assert(
+      "25. the missing redacted audio next_step says to resubmit, not to poll (#169)",
+      nextStep.includes("redact_pii_audio: true") && !/again shortly/.test(nextStep),
+      JSON.stringify(sc)
+    );
+  });
+  await withClientServer(async (client) => {
+    resetMock([
       jsonResponse(200, { id: "txn-rc", status: "completed", text: "hi", audio_duration: 3, redact_pii_audio: true }),
       jsonResponse(200, { status: "redacted_audio_processing" }),
     ]);
