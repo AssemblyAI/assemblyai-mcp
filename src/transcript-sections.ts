@@ -110,6 +110,11 @@ export function renderTranslations(translatedTexts: Record<string, string>): str
   return lines;
 }
 
+/** Format an optional speaker tag prefix without emitting "[undefined]" or "[null]". */
+export function speakerPrefix(speaker: unknown): string {
+  return typeof speaker === "string" && speaker.length > 0 ? `[${speaker}] ` : "";
+}
+
 export function renderTranslatedUtterances(utterances: TranslatedUtterance[]): string[] {
   const withTranslations = utterances.filter(
     (u) => u.translated_texts && Object.keys(u.translated_texts).length > 0
@@ -118,7 +123,7 @@ export function renderTranslatedUtterances(utterances: TranslatedUtterance[]): s
   const lines = ["", "--- translated_utterances (per-speaker; start/end ms from audio start) ---"];
   for (const u of withTranslations) {
     for (const [lang, text] of Object.entries(u.translated_texts!)) {
-      lines.push(`[${u.speaker}] ${formatMs(u.start)}–${formatMs(u.end)} ${lang}: ${text}`);
+      lines.push(`${speakerPrefix(u.speaker)}${formatMs(u.start)}–${formatMs(u.end)} ${lang}: ${text}`);
     }
   }
   return lines;
@@ -204,11 +209,17 @@ export function renderSpeechUnderstanding(response: SpeechUnderstandingResponse)
       }
       case "custom_formatting": {
         const cf = response.custom_formatting;
-        if (cf?.formatted_text) {
-          lines.push(...renderCustomFormatting(cf.formatted_text));
-          if (cf.formatted_utterances && cf.formatted_utterances.length > 0) {
-            for (const u of cf.formatted_utterances) {
-              lines.push(`[${u.speaker}] ${formatMs(u.start)}–${formatMs(u.end)}: ${u.text}`);
+        const formattedUtterances = cf?.formatted_utterances;
+        const hasFormattedUtterances = Array.isArray(formattedUtterances) && formattedUtterances.length > 0;
+        if (cf?.formatted_text || hasFormattedUtterances) {
+          if (cf?.formatted_text) {
+            lines.push(...renderCustomFormatting(cf.formatted_text));
+          } else {
+            lines.push("", CUSTOM_FORMATTING_HEADER);
+          }
+          if (hasFormattedUtterances) {
+            for (const u of formattedUtterances) {
+              lines.push(`${speakerPrefix(u.speaker)}${formatMs(u.start)}–${formatMs(u.end)}: ${u.text}`);
             }
           }
         } else if (cf?.mapping && Object.keys(cf.mapping).length > 0) {

@@ -6,6 +6,7 @@ import { log, logError, keyHash } from "../log";
 import { handleToolError, requireApiKey } from "../tool-errors";
 import {
   formatMs,
+  speakerPrefix,
   renderTranslations,
   renderTranslatedUtterances,
   renderSpeechUnderstanding,
@@ -232,7 +233,7 @@ function formatTranscript(s: ShapedTranscript): string {
     lines.push("");
     lines.push("--- utterances (per-speaker segments; start/end are milliseconds from audio start) ---");
     for (const u of s.speakers) {
-      lines.push(`[${u.speaker}] ${formatMs(u.start)}–${formatMs(u.end)}: ${u.text}`);
+      lines.push(`${speakerPrefix(u.speaker)}${formatMs(u.start)}–${formatMs(u.end)}: ${u.text}`);
     }
   }
 
@@ -240,12 +241,12 @@ function formatTranscript(s: ShapedTranscript): string {
     lines.push("");
     lines.push("--- words (start/end are milliseconds from audio start) ---");
     for (const u of s.speakers) {
-      for (const w of u.words ?? []) lines.push(`[${w.speaker ?? u.speaker}] ${w.start}–${w.end}: ${w.text}`);
+      for (const w of u.words ?? []) lines.push(`${speakerPrefix(w.speaker ?? u.speaker)}${w.start}–${w.end}: ${w.text}`);
     }
   } else if (s.words && s.words.length > 0) {
     lines.push("");
     lines.push("--- words (start/end are milliseconds from audio start) ---");
-    for (const w of s.words) lines.push(`${w.speaker ? `[${w.speaker}] ` : ""}${w.start}–${w.end}: ${w.text}`);
+    for (const w of s.words) lines.push(`${speakerPrefix(w.speaker)}${w.start}–${w.end}: ${w.text}`);
   }
 
   if (s.sentiment && s.sentiment.length > 0) {

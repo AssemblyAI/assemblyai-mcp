@@ -1033,6 +1033,37 @@ async function run() {
     );
   });
   await withClientServer(async (client) => {
+    const id = "55517222-f677-48a6-9287-39c0aafd9ac1";
+    resetMock([
+      jsonResponse(200, {
+        id,
+        status: "completed",
+        text: "Hello world.",
+        utterances: [{ speaker: null, text: "Hello world.", start: 0, end: 1500, translated_texts: { es: "Hola mundo." } }],
+        speech_understanding: {
+          response: {
+            custom_formatting: {
+              status: "success",
+              formatted_utterances: [{ speaker: undefined, start: 0, end: 1500, text: "Hello, world." }],
+            },
+          },
+        },
+      }),
+    ]);
+    const result = await callTool(client, "get_transcript", { transcript_id: id }, "k");
+    const text = result.content?.[0]?.text ?? "";
+    assert(
+      "31c. #163 custom_formatting renders formatted_utterances without formatted_text and omits missing speakers",
+      !result.isError &&
+        text.includes("--- custom_formatting (transcript with requested formats applied) ---\n0:00–0:01: Hello, world.") &&
+        text.includes("--- utterances (per-speaker segments; start/end are milliseconds from audio start) ---\n0:00–0:01: Hello world.") &&
+        text.includes("0:00–0:01 es: Hola mundo.") &&
+        !text.includes("[undefined]") &&
+        !text.includes("[null]"),
+      text
+    );
+  });
+  await withClientServer(async (client) => {
     resetMock([
       jsonResponse(200, {
         id: "txn-su4",
