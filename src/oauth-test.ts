@@ -730,6 +730,48 @@ async function run() {
     );
   }
 
+  // #170. withMcpAuth splits the header on exactly one space, so an API key needs the canonical form.
+  {
+    clearExchangeCache();
+    const { deps, exchanges } = stub([]);
+    const verifyToken = async (_req: Request, bearer?: string) =>
+      bearer && bearer.trim() ? { token: bearer.trim(), scopes: [], clientId: "test" } : undefined;
+    const keys: Array<string | undefined> = [];
+    const handler = async (req: Request) => {
+      keys.push((req as Request & { auth?: { token: string } }).auth?.token);
+      return new Response("ok");
+    };
+    const authed = withOAuthExchange(
+      withMissingCredentialsChallenge(
+        withMcpAuth(handler, verifyToken, { required: true, resourceMetadataPath: "/.well-known/oauth-protected-resource" })
+      ),
+      deps
+    );
+    const apiKey = "0123456789abcdef0123456789abcdef";
+    for (const [label, header] of [["two spaces", `Bearer  ${apiKey}`], ["a tab", `Bearer\t${apiKey}`]] as const) {
+      keys.length = 0;
+      const res = await authed(new Request("https://mcp.example.com/mcp", {
+        method: "POST",
+        headers: { Authorization: header },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+      }));
+      assert(
+        `16. an API key after Bearer and ${label} reaches the handler as that key`,
+        res.status === 200 && keys[0] === apiKey,
+        `${res.status} ${String(res.headers.get("WWW-Authenticate"))} key=${String(keys[0])}`
+      );
+    }
+    assert("16. and is never exchanged", exchanges.length === 0);
+
+    const noAuth = await authed(mcpRequest());
+    assert(
+      "16. no Authorization header still gets a 401 with no error code",
+      noAuth.status === 401 &&
+        noAuth.headers.get("WWW-Authenticate") === 'Bearer resource_metadata="https://mcp.example.com/.well-known/oauth-protected-resource"',
+      String(noAuth.headers.get("WWW-Authenticate"))
+    );
+  }
+
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed === 0 ? 0 : 1);
 }
