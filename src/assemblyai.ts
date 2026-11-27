@@ -374,17 +374,19 @@ async function probeRejected(probe: KeyProbe, timeoutMs: number): Promise<boolea
   }
 }
 
-export async function requestWithRetry<T>(
+/**
+ * Run an outbound API-keyed request within the current batch's shared key probe gate.
+ * Sibling calls with the same key wait up to 250 ms for the first probe and short-circuit with 401 if rejected.
+ */
+export async function runWithBatchKeyProbe<T>(
   apiKey: string,
-  method: "GET" | "POST" | "DELETE",
-  path: string,
-  body?: unknown,
-  retries = 3,
-  baseUrl: string = DEFAULT_BASE_URL,
-  timeoutMs?: number
+  timeoutMs: number | undefined,
+  fn: (setRejected: (rejected: boolean) => void) => Promise<T>,
+  isRejectedError: (error: unknown) => boolean = (error) =>
+    error instanceof AssemblyAIError && error.status === 401
 ): Promise<T> {
   const probes = requestKeyProbes.getStore();
-  if (!probes) return attemptRequest<T>(apiKey, method, path, body, retries, baseUrl, timeoutMs);
+  if (!probes) return fn(() => {});
 
   const existing = probes.get(apiKey);
   if (existing) {
@@ -392,7 +394,7 @@ export async function requestWithRetry<T>(
     if (await probeRejected(existing, Math.min(MAX_KEY_PROBE_WAIT_MS, spareMs))) {
       throw new AssemblyAIError("AssemblyAI rejected the API key (401).", 401);
     }
-    return attemptRequest<T>(apiKey, method, path, body, retries, baseUrl, timeoutMs);
+    return fn(() => {});
   }
 
   let resolve!: (rejected: boolean) => void;
@@ -404,14 +406,28 @@ export async function requestWithRetry<T>(
     resolve(rejected);
   };
   try {
-    const result = await attemptRequest<T>(apiKey, method, path, body, retries, baseUrl, timeoutMs,
-      status => settle(status === 401));
+    const result = await fn(settle);
     settle(false);
     return result;
   } catch (error) {
-    settle(error instanceof AssemblyAIError && error.status === 401);
+    settle(isRejectedError(error));
     throw error;
   }
+}
+
+export async function requestWithRetry<T>(
+  apiKey: string,
+  method: "GET" | "POST" | "DELETE",
+  path: string,
+  body?: unknown,
+  retries = 3,
+  baseUrl: string = DEFAULT_BASE_URL,
+  timeoutMs?: number
+): Promise<T> {
+  return runWithBatchKeyProbe(apiKey, timeoutMs, (setRejected) =>
+    attemptRequest<T>(apiKey, method, path, body, retries, baseUrl, timeoutMs,
+      status => setRejected(status === 401))
+  );
 }
 
 async function errorFromResponse(response: Response): Promise<AssemblyAIError> {

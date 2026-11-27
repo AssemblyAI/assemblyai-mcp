@@ -69,7 +69,7 @@ async function ssePayloads(res: Response): Promise<JsonRpcResult[]> {
 }
 
 function textOf(payload: JsonRpcResult | undefined): string {
-  return payload?.result.content?.[0]?.text ?? "";
+  return payload?.result.content?.map((c) => c.text ?? "").join("\n") ?? "";
 }
 
 async function run() {
@@ -242,6 +242,91 @@ async function run() {
         assert("6. an expired request budget prevents a sibling fetch", outcome instanceof AssemblyAIError && outcome.status === 504 && calls === 1);
       }))(undefined);
     } finally { Date.now = realNow; }
+  }
+
+  const prevTtsEnabled = process.env.TTS_ENABLED;
+  process.env.TTS_ENABLED = "1";
+  try {
+    const createSpeechCall = (id: number, delivery: "file" | "inline") => ({
+      jsonrpc: "2.0",
+      id,
+      method: "tools/call",
+      params: { name: "create_speech", arguments: { text: `Line ${id}.`, delivery } },
+    });
+
+    for (const delivery of ["file", "inline"] as const) {
+      let calls = 0;
+      globalThis.fetch = (async () => {
+        calls++;
+        return new Response(
+          delivery === "file" ? JSON.stringify({ error: "Invalid API key" }) : JSON.stringify({ code: "unauthorized", message: "Invalid API key" }),
+          {
+            status: delivery === "file" ? 404 : 401,
+            headers: { "content-type": "application/json" },
+          }
+        );
+      }) as typeof fetch;
+
+      const N = 20;
+      const messages = Array.from({ length: N }, (_, i) => createSpeechCall(i + 1, delivery));
+      const res = await POST(batchRequest("garbage-tts-key", messages));
+      const payloads = await ssePayloads(res);
+      const everyRejected = payloads.every((p) => textOf(p).includes("rejected the API key"));
+      assert(
+        `7. #162 20-call create_speech(${delivery}) batch with bad key makes at most 2 calls and rejects all`,
+        res.status === 200 && calls <= 2 && payloads.length === N && everyRejected,
+        `calls=${calls} payloads=${payloads.length} everyRejected=${everyRejected}`
+      );
+    }
+
+    {
+      const urls: string[] = [];
+      globalThis.fetch = (async (url: string | URL | Request) => {
+        urls.push(String(url));
+        return new Response(JSON.stringify({ error: "Invalid API key" }), {
+          status: 401,
+          headers: { "content-type": "application/json" },
+        });
+      }) as typeof fetch;
+
+      const messages = [
+        getTranscriptCall(1, "00000000-0000-0000-0000-000000000000"),
+        ...Array.from({ length: 5 }, (_, i) => createSpeechCall(i + 2, i % 2 === 0 ? "file" : "inline")),
+      ];
+      const res = await POST(batchRequest("garbage-mixed-key", messages));
+      const payloads = await ssePayloads(res);
+      assert(
+        "7. #162 mixed get_transcript + create_speech batch shares key rejection outcome",
+        res.status === 200 && urls.length <= 2 && payloads.length === messages.length &&
+          payloads.every((p) => textOf(p).includes("rejected the API key")),
+        `urls=${JSON.stringify(urls)}`
+      );
+    }
+
+    {
+      let calls = 0;
+      globalThis.fetch = (async () => {
+        calls++;
+        return new Response(new Uint8Array([0xff, 0xfb, 0x90, 0x00]), {
+          status: 200,
+          headers: { "content-type": "audio/mpeg", "x-tts-billed-characters": "8" },
+        });
+      }) as typeof fetch;
+
+      const N = 5;
+      const messages = Array.from({ length: N }, (_, i) => createSpeechCall(i + 1, "inline"));
+      const res = await POST(batchRequest("valid-tts-key", messages));
+      const payloads = await ssePayloads(res);
+      assert(
+        "7. #162 valid-key create_speech batch still executes every call",
+        res.status === 200 && calls === N && payloads.length === N &&
+          payloads.every((p) => textOf(p).includes("8 characters billed")),
+        `calls=${calls} payloads=${payloads.length}`
+      );
+    }
+  } finally {
+    if (prevTtsEnabled === undefined) delete process.env.TTS_ENABLED;
+    else process.env.TTS_ENABLED = prevTtsEnabled;
   }
 
   globalThis.fetch = originalFetch;

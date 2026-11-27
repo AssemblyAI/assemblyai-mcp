@@ -1,4 +1,4 @@
-import { AssemblyAIError, readErrorText } from "./assemblyai";
+import { AssemblyAIError, readErrorText, runWithBatchKeyProbe } from "./assemblyai";
 
 export function ttsEnabled(): boolean {
   return process.env.TTS_ENABLED === "1";
@@ -157,24 +157,28 @@ export async function createSpeech(
   options: SpeechOptions,
   limits: SpeechLimits = {}
 ): Promise<SpeechResult> {
-  const response = await fetch(`${ttsBaseUrl()}/v1/speech`, {
-    method: "POST",
-    headers: { Authorization: apiKey, "Content-Type": "application/json" },
-    body: JSON.stringify(speechRequestBody(options)),
-    signal: AbortSignal.timeout(limits.timeoutMs ?? SPEECH_TIMEOUT_MS),
+  const timeoutMs = limits.timeoutMs ?? SPEECH_TIMEOUT_MS;
+  return runWithBatchKeyProbe(apiKey, timeoutMs, async (setRejected) => {
+    const response = await fetch(`${ttsBaseUrl()}/v1/speech`, {
+      method: "POST",
+      headers: { Authorization: apiKey, "Content-Type": "application/json" },
+      body: JSON.stringify(speechRequestBody(options)),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    setRejected(response.status === 401);
+    if (!response.ok) throw await ttsError(response);
+    return {
+      audio:
+        limits.maxBytes === undefined
+          ? Buffer.from(await response.arrayBuffer())
+          : await readCapped(response, limits.maxBytes),
+      mimeType: ((response.headers.get("content-type") ?? "audio/mpeg").split(";")[0] ?? "audio/mpeg").trim(),
+      voiceId: response.headers.get("x-tts-voice-id") ?? undefined,
+      language: response.headers.get("x-tts-language") ?? undefined,
+      billedCharacters: numberHeader(response, "x-tts-billed-characters"),
+      durationMs: numberHeader(response, "x-tts-audio-duration-ms"),
+    };
   });
-  if (!response.ok) throw await ttsError(response);
-  return {
-    audio:
-      limits.maxBytes === undefined
-        ? Buffer.from(await response.arrayBuffer())
-        : await readCapped(response, limits.maxBytes),
-    mimeType: ((response.headers.get("content-type") ?? "audio/mpeg").split(";")[0] ?? "audio/mpeg").trim(),
-    voiceId: response.headers.get("x-tts-voice-id") ?? undefined,
-    language: response.headers.get("x-tts-language") ?? undefined,
-    billedCharacters: numberHeader(response, "x-tts-billed-characters"),
-    durationMs: numberHeader(response, "x-tts-audio-duration-ms"),
-  };
 }
 
 // product: "tts" alone does not keep the token off the LLM Gateway, so deny it explicitly.
@@ -188,47 +192,52 @@ export async function createTtsToken(
   expiresInSeconds: number,
   deadlineMs: number = TOKEN_DEADLINE_MS
 ): Promise<string> {
-  // Retrying is safe here: a token costs nothing, unlike the speech itself.
-  const signal = AbortSignal.timeout(deadlineMs);
-  let lastError: unknown;
-  for (let attempt = 0; attempt < TOKEN_ATTEMPTS; attempt++) {
-    try {
-      if (attempt > 0) await sleepUnlessAborted(TOKEN_BACKOFF_MS, signal);
-      const response = await fetch(`${tokenBaseUrl()}/v1/token`, {
-        method: "POST",
-        headers: { Authorization: apiKey, "Content-Type": "application/json" },
-        body: JSON.stringify({ product: "tts", expires_in_seconds: expiresInSeconds, access: TTS_TOKEN_ACCESS }),
-        signal,
-      });
-      if (response.status >= 500) {
-        lastError = new AssemblyAIError(await errorMessage(response), response.status);
-        continue;
+  return runWithBatchKeyProbe(apiKey, deadlineMs, async (setRejected) => {
+    // Retrying is safe here: a token costs nothing, unlike the speech itself.
+    const signal = AbortSignal.timeout(deadlineMs);
+    let lastError: unknown;
+    for (let attempt = 0; attempt < TOKEN_ATTEMPTS; attempt++) {
+      try {
+        if (attempt > 0) await sleepUnlessAborted(TOKEN_BACKOFF_MS, signal);
+        const response = await fetch(`${tokenBaseUrl()}/v1/token`, {
+          method: "POST",
+          headers: { Authorization: apiKey, "Content-Type": "application/json" },
+          body: JSON.stringify({ product: "tts", expires_in_seconds: expiresInSeconds, access: TTS_TOKEN_ACCESS }),
+          signal,
+        });
+        // The token host answers a bad key with 404 "Invalid API key"; wait for its body before settling 404.
+        if (response.status === 401) setRejected(true);
+        else if (response.status !== 404) setRejected(false);
+        if (response.status >= 500) {
+          lastError = new AssemblyAIError(await errorMessage(response), response.status);
+          continue;
+        }
+        if (!response.ok) {
+          const message = await errorMessage(response);
+          const status = response.status === 404 && /invalid api key/i.test(message) ? 401 : response.status;
+          setRejected(status === 401);
+          throw new AssemblyAIError(message, status);
+        }
+        const { token } = (await response.json()) as { token?: unknown };
+        if (typeof token !== "string" || token.length === 0) {
+          throw new AssemblyAIError("The token service returned no token.", 502);
+        }
+        return token;
+      } catch (err) {
+        if (err instanceof AssemblyAIError) throw err;
+        if (signal.aborted) {
+          throw new AssemblyAIError(
+            `The token service did not answer within ${deadlineMs / 1000} seconds. ` +
+              "This is temporary; nothing was billed. Call again once; if it fails again, tell the user.",
+            504
+          );
+        }
+        lastError = err;
       }
-      if (!response.ok) {
-        const message = await errorMessage(response);
-        // The token host answers a bad key with 404 "Invalid API key"; report it as the 401 it is.
-        const status = response.status === 404 && /invalid api key/i.test(message) ? 401 : response.status;
-        throw new AssemblyAIError(message, status);
-      }
-      const { token } = (await response.json()) as { token?: unknown };
-      if (typeof token !== "string" || token.length === 0) {
-        throw new AssemblyAIError("The token service returned no token.", 502);
-      }
-      return token;
-    } catch (err) {
-      if (err instanceof AssemblyAIError) throw err;
-      if (signal.aborted) {
-        throw new AssemblyAIError(
-          `The token service did not answer within ${deadlineMs / 1000} seconds. ` +
-            "This is temporary; nothing was billed. Call again once; if it fails again, tell the user.",
-          504
-        );
-      }
-      lastError = err;
     }
-  }
-  if (lastError instanceof AssemblyAIError) throw lastError;
-  throw new AssemblyAIError(`The token service could not be reached: ${String(lastError)}`, 502);
+    if (lastError instanceof AssemblyAIError) throw lastError;
+    throw new AssemblyAIError(`The token service could not be reached: ${String(lastError)}`, 502);
+  });
 }
 
 async function errorMessage(response: Response): Promise<string> {
