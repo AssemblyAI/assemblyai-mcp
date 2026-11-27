@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -871,6 +871,45 @@ async function run() {
       );
     }
   });
+
+  // Issue #189: the homepage lists create_speech exactly when tools/list offers it.
+  // next/headers needs a request scope, so the page renders in a child process with it mocked.
+  const homepageTools = (ttsEnabled: string | undefined): string[] => {
+    const env = { ...process.env };
+    if (ttsEnabled === undefined) delete env.TTS_ENABLED;
+    else env.TTS_ENABLED = ttsEnabled;
+    const render = [
+      'import { mock } from "node:test";',
+      'mock.module("next/headers", { exports: { headers: async () => new Headers({ host: "localhost:3000" }) } });',
+      'const { renderToStaticMarkup } = await import("react-dom/server");',
+      'const { default: Home } = await import("./app/page.tsx");',
+      "console.log(JSON.stringify([...renderToStaticMarkup(await Home()).matchAll(/<code>([a-z_]+)<\\/code>/g)].map((m) => m[1])));",
+    ].join("\n");
+    const child = spawnSync(
+      process.execPath,
+      ["--import", "tsx", "--experimental-test-module-mocks", "--input-type=module", "--eval", render],
+      { cwd: join(import.meta.dirname, ".."), env, encoding: "utf8", timeout: 30_000 }
+    );
+    try {
+      return JSON.parse(child.stdout.trim().split("\n").pop() ?? "");
+    } catch {
+      return [`(render failed: ${child.stderr.slice(0, 300)})`];
+    }
+  };
+  for (const value of [undefined, "0", "true"]) {
+    const listed = homepageTools(value);
+    assert(
+      `22. the homepage does not list create_speech with TTS_ENABLED=${JSON.stringify(value)}`,
+      listed.includes("submit_transcript") && !listed.includes("create_speech"),
+      listed.join(", ")
+    );
+  }
+  const listedWithTts = homepageTools("1");
+  assert(
+    "22. the homepage lists create_speech once with TTS_ENABLED=1, as tools/list does (#189)",
+    listedWithTts.includes("submit_transcript") && listedWithTts.filter((name) => name === "create_speech").length === 1,
+    listedWithTts.join(", ")
+  );
 
   console.log(`\n${passed} passed, ${failed} failed`);
   finished = true;

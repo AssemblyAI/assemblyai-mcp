@@ -2,6 +2,7 @@ import { headers } from "next/headers";
 
 import { publicOrigin } from "../src/origin";
 import { uploadsConfigured } from "../src/upload-token";
+import { ttsEnabled } from "../src/tts";
 
 const TOOLS = [
   { name: "submit_transcript", what: "Start transcribing a public audio or video URL" },
@@ -11,6 +12,7 @@ const TOOLS = [
   { name: "delete_transcript", what: "Permanently delete a transcript" },
 ];
 const UPLOAD_TOOL = { name: "create_upload_url", what: "Upload a local file (up to 4.5 MB) to transcribe" };
+const SPEECH_TOOL = { name: "create_speech", what: "Turn text into spoken audio (billed per character)" };
 
 const css = `
   :root { --bg:#f6f7fb; --fg:#16192b; --muted:#5b6078; --card:#fff; --line:#d9dcea; --accent:#2f5bea; color-scheme: light; }
@@ -60,7 +62,7 @@ export default async function Home() {
       <section>
         <h2>Tools</h2>
         <ul>
-          {(uploadsConfigured() ? [UPLOAD_TOOL, ...TOOLS] : TOOLS).map((t) => (
+          {[...(uploadsConfigured() ? [UPLOAD_TOOL] : []), ...TOOLS, ...(ttsEnabled() ? [SPEECH_TOOL] : [])].map((t) => (
             <li key={t.name}>
               <code>{t.name}</code>
               <span>{t.what}</span>
