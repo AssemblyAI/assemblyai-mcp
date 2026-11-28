@@ -42,6 +42,14 @@ function powershellQuote(value: string): string {
   return `'${value.replace(/['\u2018\u2019\u201A\u201B]/g, "$&$&")}'`;
 }
 
+/** Escape non-ASCII code units so shell-embedded JSON stays 7-bit ASCII across locales. */
+function asciiJsonStringify(value: unknown): string {
+  return JSON.stringify(value).replace(
+    /[\u0080-\uffff]/g,
+    (ch) => `\\u${ch.charCodeAt(0).toString(16).padStart(4, "0")}`
+  );
+}
+
 function knownVoiceLanguage(voiceId: string): SpeechLanguage | undefined {
   return Object.hasOwn(KNOWN_VOICES, voiceId) ? KNOWN_VOICES[voiceId] : undefined;
 }
@@ -285,7 +293,7 @@ export function registerCreateSpeech(server: McpServer): void {
 
         const token = await createTtsToken(apiKey, SPEECH_TOKEN_TTL_SECONDS, Math.min(TOKEN_DEADLINE_MS, budget));
         const outputFile = `speech-${randomBytes(4).toString("hex")}.${format}`;
-        const body = JSON.stringify(
+        const body = asciiJsonStringify(
           speechRequestBody({ text: args.text, voice_id: args.voice_id, language: args.language, format })
         );
         // No --fail-with-body: it needs curl 7.76+.

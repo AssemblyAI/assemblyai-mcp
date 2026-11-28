@@ -872,6 +872,22 @@ async function run() {
     }
   });
 
+  await withClient(async (client) => {
+    const sample = "Café — naïve ‘quote’ 😀🎉";
+    resetMock([tokenOk()]);
+    const res = await speak(client, { text: sample });
+    const command = String(res.structuredContent?.command ?? "");
+    const ps = String(res.structuredContent?.command_powershell ?? "");
+    const isAscii = (s: string) => /^[\x20-\x7e]+$/.test(s);
+    const bashJson = JSON.parse(command.match(/-d '(\{.*\})' /)?.[1] ?? "{}") as { text?: string };
+    const psJson = JSON.parse(ps.match(/Join-Path \$PWD '[^']+'\), '(\{.*\})'\)/)?.[1] ?? "{}") as { text?: string };
+    assert(
+      "22. file commands escape non-ASCII JSON payloads as printable 7-bit ASCII and preserve text",
+      isAscii(command) && isAscii(ps) && bashJson.text === sample && psJson.text === sample,
+      `${command} | ${ps}`
+    );
+  });
+
   console.log(`\n${passed} passed, ${failed} failed`);
   finished = true;
   process.exit(failed === 0 ? 0 : 1);
